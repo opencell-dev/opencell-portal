@@ -114,3 +114,15 @@ export async function signInWithPasskey(page: Page) {
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   await expect(page).toHaveURL(/\/numbers$/);
 }
+
+/** Collect CSP violations the page reports (securitypolicyviolation events), across navigations. */
+export async function watchCsp(page: Page): Promise<string[]> {
+  const seen: string[] = [];
+  await page.exposeFunction('__ocCspViolation', (s: string) => seen.push(s));
+  await page.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (e) => {
+      (window as unknown as { __ocCspViolation: (s: string) => void }).__ocCspViolation(`${e.violatedDirective} ${e.blockedURI}`);
+    });
+  });
+  return seen;
+}
