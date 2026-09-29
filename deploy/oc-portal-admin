@@ -1,10 +1,23 @@
 #!/bin/bash
 # The portal's admin CLI on the guest, as the service user with the service's
 # configuration: oc-portal-admin promote you@example.org
+#
+# Runs the CLI as a transient systemd unit so the two EnvironmentFile=
+# directives are parsed exactly as systemd parses them for oc-portal.service
+# itself. Bash-sourcing /etc/opencell/portal.env does NOT work: systemd's
+# env-file format allows unquoted values with spaces and angle brackets
+# (OC_MAIL_FROM=OpenCell <opencell@k4ozi.com>), which is a bash syntax
+# error. This also picks up portal-smtp.env, which bash-sourcing skipped
+# entirely, so config() used to throw with OC_MAIL=smtp. --pipe keeps
+# stdin/stdout/stderr connected to the caller's terminal, so any prompt a
+# future subcommand adds still works interactively (the current CLI takes
+# only argv and prompts for nothing).
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
-set -a
-. /etc/opencell/portal.env
-set +a
-cd /opt/oc-portal/current
-exec runuser -u oc-portal -- env HOME=/var/lib/oc-portal ./node_modules/.bin/tsx scripts/oc-portal-admin.ts "$@"
+exec systemd-run --quiet --wait --pipe --collect \
+  -p User=oc-portal \
+  -p Group=oc-portal \
+  -p WorkingDirectory=/opt/oc-portal/current \
+  -p EnvironmentFile=/etc/opencell/portal.env \
+  -p EnvironmentFile=/etc/opencell/portal-smtp.env \
+  -- /usr/bin/env HOME=/var/lib/oc-portal node ./node_modules/.bin/tsx scripts/oc-portal-admin.ts "$@"

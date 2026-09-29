@@ -6,5 +6,9 @@ DB=/var/lib/oc-portal/portal.db
 DIR=/var/lib/oc-portal/backups
 mkdir -p "$DIR"
 [ -f "$DB" ] || { echo "no database yet"; exit 0; }
-sqlite3 "$DB" ".backup '$DIR/portal-$(date -u +%Y%m%dT%H%M%SZ).db'"
+OUT="$DIR/portal-$(date -u +%Y%m%dT%H%M%SZ).db"
+TMP="$OUT.tmp.$$"
+trap 'rm -f "$TMP"' EXIT
+sqlite3 "$DB" ".backup '$TMP'"
+mv -- "$TMP" "$OUT"
 find "$DIR" -name 'portal-*.db' -mtime +14 -delete

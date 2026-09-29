@@ -20,7 +20,7 @@ apt-get update
 apt-get install -y nodejs
 node --version | grep -q '^v22\.' || { echo "Node.js 22 did not install" >&2; exit 1; }
 
-id oc-portal >/dev/null 2>&1 || useradd --system --home-dir /var/lib/oc-portal --shell /usr/sbin/nologin oc-portal
+id oc-portal >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/oc-portal --shell /usr/sbin/nologin oc-portal
 install -d -o oc-portal -g oc-portal -m 0700 /var/lib/oc-portal /var/lib/oc-portal/backups
 install -d -o root -g root -m 0755 /opt/oc-portal /opt/oc-portal/releases
 install -d -o root -g root -m 0700 /etc/opencell
@@ -32,8 +32,19 @@ nft -f /etc/nftables.conf
 
 install -m 0755 "$HERE/oc-portal-admin" /usr/local/bin/oc-portal-admin
 install -m 0755 "$HERE/oc-portal-backup" /usr/local/sbin/oc-portal-backup
+
+# Re-running this script (e.g. after editing a unit) should pick up the
+# change: restart the affected units instead of leaving the old ones running.
+UNITS_CHANGED=0
+for f in oc-portal.service oc-portal-backup.service oc-portal-backup.timer; do
+  cmp -s "$HERE/$f" "/etc/systemd/system/$f" 2>/dev/null || UNITS_CHANGED=1
+done
 install -m 0644 "$HERE/oc-portal.service" "$HERE/oc-portal-backup.service" "$HERE/oc-portal-backup.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable oc-portal.service
 systemctl enable --now oc-portal-backup.timer
+if [ "$UNITS_CHANGED" -eq 1 ]; then
+  systemctl try-restart oc-portal.service oc-portal-backup.timer
+  echo "unit files changed: restarted the affected units"
+fi
 echo "bootstrap done: node $(node --version); now write /etc/opencell/portal.env and portal-smtp.env, then deploy"
