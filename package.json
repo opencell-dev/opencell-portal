@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "postinstall": "node scripts/copy-altcha.mjs"
   },
   "dependencies": {
     "@simplewebauthn/browser": "14.0.0",
