@@ -1,0 +1,58 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { writeAudit, listAudit } from '@/lib/audit';
+import { hit, limitOf, setLimit } from '@/lib/ratelimit';
+import { type TestCtx, testCtx } from '../helpers/ctx';
+
+let ctx: TestCtx;
+beforeEach(() => {
+  ctx = testCtx();
+});
+
+describe('rate limits (portal spec §3)', () => {
+  it('has the spec’s numbers', () => {
+    expect(limitOf(ctx, 'signup_ip')).toEqual({ max: 5, windowS: 3600 });
+    expect(limitOf(ctx, 'signup_email')).toEqual({ max: 3, windowS: 86400 });
+    expect(limitOf(ctx, 'magic_email')).toEqual({ max: 5, windowS: 3600 });
+    expect(limitOf(ctx, 'number_account')).toEqual({ max: 10, windowS: 86400 });
+  });
+
+  it('allows max hits per window per key, then answers with a plain message', () => {
+    for (let i = 0; i < 5; i++) expect(hit(ctx, 'signup_ip', '192.0.2.1').ok).toBe(true);
+    const sixth = hit(ctx, 'signup_ip', '192.0.2.1');
+    expect(sixth).toEqual({
+      ok: false,
+      message: 'Too many sign-ups from your network. Please try again in about an hour.',
+      retryAfterS: 3600,
+    });
+    expect(hit(ctx, 'signup_ip', '192.0.2.2').ok).toBe(true); // another key
+    ctx.clock.t += 3600_000;
+    expect(hit(ctx, 'signup_ip', '192.0.2.1').ok).toBe(true); // the window slid past
+  });
+
+  it('does not count refused attempts', () => {
+    for (let i = 0; i < 3; i++) hit(ctx, 'signup_email', 'a@example.org');
+    for (let i = 0; i < 10; i++) expect(hit(ctx, 'signup_email', 'a@example.org').ok).toBe(false);
+    ctx.clock.t += 86400_000;
+    expect(hit(ctx, 'signup_email', 'a@example.org').ok).toBe(true);
+  });
+
+  it('can be adjusted by an admin', () => {
+    setLimit(ctx, 'magic_email', 1);
+    expect(limitOf(ctx, 'magic_email')).toEqual({ max: 1, windowS: 3600 });
+    expect(hit(ctx, 'magic_email', 'a@example.org').ok).toBe(true);
+    expect(hit(ctx, 'magic_email', 'a@example.org').ok).toBe(false);
+    expect(() => setLimit(ctx, 'magic_email', 0)).toThrow();
+  });
+});
+
+describe('audit', () => {
+  it('records portal actions, newest first', () => {
+    writeAudit(ctx, { actorId: 1, action: 'account.signup', target: 'user:1', ip: '192.0.2.1' });
+    ctx.clock.t += 1;
+    writeAudit(ctx, { actorId: null, action: 'limit.set', detail: { name: 'magic_email', max: 1 } });
+    const rows = listAudit(ctx, 10);
+    expect(rows.map((r) => r.action)).toEqual(['limit.set', 'account.signup']);
+    expect(rows[0].detail).toBe('{"name":"magic_email","max":1}');
+    expect(rows[1]).toMatchObject({ actorId: 1, target: 'user:1', ip: '192.0.2.1', at: ctx.clock.t - 1 });
+  });
+});
