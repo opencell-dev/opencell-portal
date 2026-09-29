@@ -19,11 +19,13 @@ export async function promoteAction(email: string): Promise<AdminResult> {
   const ctx = appCtx();
   const u = findUserByEmail(ctx, p.data.email);
   if (!u?.emailVerifiedAt) return { ok: false, message: 'No verified account has that address.' };
+  let added: boolean;
   try {
-    grantRole(ctx, u.id, 'admin', f.s.user.id);
+    added = grantRole(ctx, u.id, 'admin', f.s.user.id);
   } catch (e) {
     return { ok: false, message: publicMessage(e, 'That account could not be made an admin. Please try again.') };
   }
+  if (!added) return { ok: true, message: `${u.email} is already an admin.` };
   revalidatePath('/admin/users');
   return { ok: true, message: `${u.email} is now an admin.` };
 }

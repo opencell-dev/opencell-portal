@@ -75,6 +75,13 @@ describe('sessions (spec §3)', () => {
 });
 
 describe('roles (spec §2)', () => {
+  it('audits a grant only when it added the role, and says whether it did', () => {
+    expect(grantRole(ctx, uid, 'admin', null)).toBe(true);
+    expect(grantRole(ctx, uid, 'admin', null)).toBe(false);
+    expect(ctx.db.select().from(audit).where(eq(audit.action, 'role.grant')).all()).toHaveLength(1);
+    expect(rolesOf(ctx, uid)).toEqual(['subscriber', 'admin']);
+  });
+
   it('does not audit a revoke that removed nothing', () => {
     const before = ctx.db.select().from(audit).all().length;
     expect(revokeRole(ctx, uid, 'operator', null)).toEqual({ ok: true });

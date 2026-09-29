@@ -31,22 +31,27 @@ export function isAdmin(ctx: Ctx, userId: number): boolean {
   return rolesOf(ctx, userId).includes('admin');
 }
 
-/** Grant a role. Admin sessions last 12 h, so open sessions are shortened to that. */
-export function grantRole(ctx: Ctx, userId: number, role: GrantedRole, byId: number | null): void {
+/**
+ * Grant a role; true when it was added, false when the account already had it
+ * (then nothing is audited). Admin sessions last 12 h, so open sessions are shortened to that.
+ */
+export function grantRole(ctx: Ctx, userId: number, role: GrantedRole, byId: number | null): boolean {
   const u = getUser(ctx, userId);
   if (!u) throw new Error(`no user ${userId}`);
   if (!u.emailVerifiedAt) throw new Error('only a verified account can get a role');
   const now = ctx.now();
-  ctx.db.transaction((tx) => {
-    tx.insert(userRoles).values({ userId, role, grantedAt: now, grantedBy: byId }).onConflictDoNothing().run();
+  const added = ctx.db.transaction((tx) => {
+    const ins = tx.insert(userRoles).values({ userId, role, grantedAt: now, grantedBy: byId }).onConflictDoNothing().run();
     if (role === 'admin') {
       tx.update(sessions)
         .set({ expiresAt: sql`min(${sessions.expiresAt}, ${now + ADMIN_SESSION_MS})` })
         .where(eq(sessions.userId, userId))
         .run();
     }
+    return ins.changes > 0;
   });
-  writeAudit(ctx, { actorId: byId, action: 'role.grant', target: `user:${userId}`, detail: { role } });
+  if (added) writeAudit(ctx, { actorId: byId, action: 'role.grant', target: `user:${userId}`, detail: { role } });
+  return added;
 }
 
 export type RoleResult = { ok: true } | { ok: false; error: string };

@@ -44,9 +44,14 @@ export async function requireUser() {
 }
 
 /**
- * An admin signed in with a passkey (spec §3). Anyone else gets a 404, so
- * admin pages don't reveal themselves; an admin on an email session is sent
- * to sign in with a passkey.
+ * An admin signed in with a passkey (spec §3); what everyone else gets:
+ * - signed out: this calls notFound(), but on a page the (app) layout's
+ *   requireUser has already redirected to /sign-in, so that is what they see;
+ * - signed in without the admin role: a 404, so admin pages don't reveal themselves;
+ * - an admin whose session can't use admin pages (email link, no user
+ *   verification, or older than the 12 h admin window): a redirect to
+ *   /sign-in?admin=1 to sign in with a passkey.
+ * In a server action, the 404 or redirect reaches the client as a thrown call.
  */
 export async function requireAdmin() {
   const s = await currentSession();

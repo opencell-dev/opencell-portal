@@ -24,8 +24,9 @@ export function PromoteForm() {
       }
       setMessage('reauth' in r ? 'The passkey confirmation expired; try again.' : r.message);
     } catch {
-      // The action throws only when the admin session itself is gone (expired or signed out).
-      setMessage('Your admin session has ended. Please sign in with your passkey again.');
+      // A network failure lands here, and so does an admin session that has ended
+      // (requireAdmin's redirect or 404 reaches the client as a thrown action).
+      setMessage("Couldn't reach the portal or your admin session has ended. Sign in again with your passkey.");
     } finally {
       setBusy(false);
     }
