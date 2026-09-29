@@ -9,7 +9,7 @@ import {
   verifyRegistrationResponse,
 } from '@simplewebauthn/server';
 import { and, eq } from 'drizzle-orm';
-import { challenges, passkeys } from '@/db/schema';
+import { challenges, passkeys, sessions } from '@/db/schema';
 import type { Result } from '@/lib/accounts';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
@@ -18,31 +18,49 @@ import { newToken } from '@/lib/tokens';
 import { getUser, isAdmin } from '@/lib/users';
 
 // Passkeys (spec §3) with SimpleWebAuthn: discoverable credentials, so sign-in
-// needs no email; "none" attestation; user verification preferred.
+// needs no email; "none" attestation; user verification preferred, except
+// where an admin session is at stake (re-auth, always; sign-in and
+// registration for an admin account), where it's required.
 
 const CHALLENGE_MS = 5 * 60_000;
 type Purpose = 'register' | 'signin' | 'reauth';
 
 export type Passkey = typeof passkeys.$inferSelect;
 
-function saveChallenge(ctx: Ctx, purpose: Purpose, challenge: string, userId: number | null): string {
+/** A short, log-friendly prefix of a credential id, for audit details. */
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+function isConstraintError(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && 'code' in e && typeof e.code === 'string' && e.code.startsWith('SQLITE_CONSTRAINT');
+}
+
+function saveChallenge(ctx: Ctx, purpose: Purpose, challenge: string, userId: number | null, sessionId: string | null): string {
   const id = newToken();
-  ctx.db.insert(challenges).values({ id, purpose, userId, challenge, expiresAt: ctx.now() + CHALLENGE_MS }).run();
+  ctx.db.insert(challenges).values({ id, purpose, userId, sessionId, challenge, expiresAt: ctx.now() + CHALLENGE_MS }).run();
   return id;
 }
 
-/** Take a challenge out of the table (single use); null if missing, expired or of another kind. */
-function takeChallenge(ctx: Ctx, id: string, purpose: Purpose, userId: number | null): string | null {
+/**
+ * Take a challenge out of the table (single use); null if missing, expired,
+ * of another kind, or not issued to this user's own session.
+ */
+function takeChallenge(ctx: Ctx, id: string, purpose: Purpose, userId: number | null, sessionId: string | null): string | null {
   const row = ctx.db.select().from(challenges).where(eq(challenges.id, id)).get();
   if (!row) return null;
   ctx.db.delete(challenges).where(eq(challenges.id, id)).run();
-  if (row.purpose !== purpose || row.expiresAt <= ctx.now() || row.userId !== userId) return null;
+  if (row.purpose !== purpose || row.expiresAt <= ctx.now() || row.userId !== userId || row.sessionId !== sessionId) return null;
   return row.challenge;
 }
 
 /** A stable, opaque WebAuthn user handle (no email or id in it). */
 function userHandle(ctx: Ctx, userId: number): Uint8Array<ArrayBuffer> {
   return new Uint8Array(createHmac('sha256', ctx.config.secret).update(`user-handle:${userId}`).digest().subarray(0, 16));
+}
+
+function userHandleB64(ctx: Ctx, userId: number): string {
+  return Buffer.from(userHandle(ctx, userId)).toString('base64url');
 }
 
 function transportsOf(p: Passkey): AuthenticatorTransport[] | undefined {
@@ -53,7 +71,12 @@ export function listPasskeys(ctx: Ctx, userId: number): Passkey[] {
   return ctx.db.select().from(passkeys).where(eq(passkeys.userId, userId)).all();
 }
 
-/** Admins change passkeys only from a passkey session confirmed in the last 5 minutes. */
+/** The session's current row, not the possibly-stale snapshot a caller is holding. */
+function currentSession(ctx: Ctx, id: string): Session | undefined {
+  return ctx.db.select().from(sessions).where(eq(sessions.id, id)).get();
+}
+
+/** Admins change passkeys only from a passkey session confirmed (with UV) in the last 5 minutes. */
 function mayChangePasskeys(ctx: Ctx, s: Session): boolean {
   return !isAdmin(ctx, s.userId) || (s.method === 'passkey' && isFresh(ctx, s));
 }
@@ -62,6 +85,7 @@ export async function registrationOptions(ctx: Ctx, s: Session) {
   const u = getUser(ctx, s.userId);
   if (!u?.emailVerifiedAt) throw new Error('Only a verified account can add a passkey.');
   if (!mayChangePasskeys(ctx, s)) throw new Error('Admins confirm with a fresh passkey before adding one.');
+  const admin = isAdmin(ctx, u.id);
   const options = await generateRegistrationOptions({
     rpName: 'OpenCell',
     rpID: ctx.config.rpId,
@@ -70,9 +94,9 @@ export async function registrationOptions(ctx: Ctx, s: Session) {
     userID: userHandle(ctx, u.id),
     attestationType: 'none',
     excludeCredentials: listPasskeys(ctx, u.id).map((p) => ({ id: p.id, transports: transportsOf(p) })),
-    authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
+    authenticatorSelection: { residentKey: 'required', userVerification: admin ? 'required' : 'preferred' },
   });
-  return { challengeId: saveChallenge(ctx, 'register', options.challenge, u.id), options };
+  return { challengeId: saveChallenge(ctx, 'register', options.challenge, u.id, s.id), options };
 }
 
 export async function finishRegistration(
@@ -83,8 +107,15 @@ export async function finishRegistration(
   name: string | undefined,
   meta: RequestMeta,
 ): Promise<Result<{ credentialId: string }>> {
-  const expectedChallenge = takeChallenge(ctx, challengeId, 'register', s.userId);
+  const expectedChallenge = takeChallenge(ctx, challengeId, 'register', s.userId, s.id);
   if (!expectedChallenge) return { ok: false, error: 'The passkey request expired. Please try again.' };
+  // Re-check: time may have passed between requesting and finishing the options,
+  // against the session's current row, not the caller's possibly-stale copy.
+  const u = getUser(ctx, s.userId);
+  if (!u?.emailVerifiedAt) return { ok: false, error: 'Only a verified account can add a passkey.' };
+  const live = currentSession(ctx, s.id);
+  if (!live || !mayChangePasskeys(ctx, live)) return { ok: false, error: 'Admins confirm with a passkey before changing passkeys.' };
+  const admin = isAdmin(ctx, s.userId);
   let v: Awaited<ReturnType<typeof verifyRegistrationResponse>>;
   try {
     v = await verifyRegistrationResponse({
@@ -92,56 +123,92 @@ export async function finishRegistration(
       expectedChallenge,
       expectedOrigin: ctx.config.origin,
       expectedRPID: ctx.config.rpId,
-      requireUserVerification: false,
+      requireUserVerification: admin,
     });
   } catch {
     return { ok: false, error: 'The passkey could not be checked. Please try again.' };
   }
-  if (!v.verified) return { ok: false, error: 'The passkey could not be checked. Please try again.' };
+  if (!v.verified || !v.registrationInfo) return { ok: false, error: 'The passkey could not be checked. Please try again.' };
   const { credential, credentialDeviceType, credentialBackedUp } = v.registrationInfo;
-  ctx.db
-    .insert(passkeys)
-    .values({
-      id: credential.id,
-      userId: s.userId,
-      publicKey: Buffer.from(credential.publicKey),
-      counter: credential.counter,
-      transports: credential.transports ? JSON.stringify(credential.transports) : null,
-      deviceType: credentialDeviceType,
-      backedUp: credentialBackedUp,
-      name: name?.trim().slice(0, 40) || 'Passkey',
-      createdAt: ctx.now(),
-    })
-    .run();
-  writeAudit(ctx, { actorId: s.userId, action: 'passkey.add', target: `user:${s.userId}`, ip: meta.ip });
+  try {
+    ctx.db
+      .insert(passkeys)
+      .values({
+        id: credential.id,
+        userId: s.userId,
+        publicKey: Buffer.from(credential.publicKey),
+        counter: credential.counter,
+        transports: credential.transports ? JSON.stringify(credential.transports) : null,
+        deviceType: credentialDeviceType,
+        backedUp: credentialBackedUp,
+        name: name?.trim().slice(0, 40) || 'Passkey',
+        createdAt: ctx.now(),
+      })
+      .run();
+  } catch (e) {
+    if (isConstraintError(e)) return { ok: false, error: 'This passkey is already registered.' };
+    throw e;
+  }
+  writeAudit(ctx, { actorId: s.userId, action: 'passkey.add', target: `user:${s.userId}`, detail: { credentialId: shortId(credential.id) }, ip: meta.ip });
   return { ok: true, credentialId: credential.id };
 }
 
 export async function signInOptions(ctx: Ctx) {
   const options = await generateAuthenticationOptions({ rpID: ctx.config.rpId, userVerification: 'preferred' });
-  return { challengeId: saveChallenge(ctx, 'signin', options.challenge, null), options };
+  return { challengeId: saveChallenge(ctx, 'signin', options.challenge, null, null), options };
 }
 
-async function checkAssertion(ctx: Ctx, p: Passkey, response: AuthenticationResponseJSON, expectedChallenge: string) {
+interface AssertionResult {
+  userVerified: boolean;
+}
+
+/**
+ * Verify an assertion against a known passkey, update its counter and
+ * device metadata, and audit a counter regression (a signal of possible
+ * cloning) as its own event. Null on any failure.
+ */
+async function checkAssertion(
+  ctx: Ctx,
+  p: Passkey,
+  response: AuthenticationResponseJSON,
+  expectedChallenge: string,
+  requireUV: boolean,
+  meta: RequestMeta,
+): Promise<AssertionResult | null> {
+  let v: Awaited<ReturnType<typeof verifyAuthenticationResponse>>;
   try {
-    const v = await verifyAuthenticationResponse({
+    v = await verifyAuthenticationResponse({
       response,
       expectedChallenge,
       expectedOrigin: ctx.config.origin,
       expectedRPID: ctx.config.rpId,
       credential: { id: p.id, publicKey: new Uint8Array(p.publicKey), counter: p.counter, transports: transportsOf(p) },
-      requireUserVerification: false,
+      requireUserVerification: requireUV,
     });
-    if (!v.verified) return false;
-    ctx.db
-      .update(passkeys)
-      .set({ counter: v.authenticationInfo.newCounter, lastUsedAt: ctx.now() })
-      .where(eq(passkeys.id, p.id))
-      .run();
-    return true;
-  } catch {
-    return false;
+  } catch (e) {
+    // SimpleWebAuthn itself rejects a counter that didn't advance past what's on
+    // file (a signal of a possibly cloned authenticator); audit it distinctly.
+    if (e instanceof Error && /counter value/i.test(e.message)) {
+      writeAudit(ctx, {
+        actorId: p.userId,
+        action: 'passkey.counter_regression',
+        target: `user:${p.userId}`,
+        detail: { credentialId: shortId(p.id) },
+        ip: meta.ip,
+      });
+    }
+    return null;
   }
+  if (!v.verified) return null;
+  // A discoverable credential names its account; refuse a mismatch.
+  if (response.response.userHandle && response.response.userHandle !== userHandleB64(ctx, p.userId)) return null;
+  const { newCounter, credentialDeviceType, credentialBackedUp, userVerified } = v.authenticationInfo;
+  ctx.db
+    .update(passkeys)
+    .set({ counter: newCounter, lastUsedAt: ctx.now(), deviceType: credentialDeviceType, backedUp: credentialBackedUp })
+    .where(eq(passkeys.id, p.id))
+    .run();
+  return { userVerified };
 }
 
 export async function finishSignIn(
@@ -150,14 +217,15 @@ export async function finishSignIn(
   response: AuthenticationResponseJSON,
   meta: RequestMeta,
 ): Promise<Result<{ userId: number; sessionToken: string }>> {
-  const expectedChallenge = takeChallenge(ctx, challengeId, 'signin', null);
+  const expectedChallenge = takeChallenge(ctx, challengeId, 'signin', null, null);
   if (!expectedChallenge) return { ok: false, error: 'The passkey request expired. Please try again.' };
   const p = ctx.db.select().from(passkeys).where(eq(passkeys.id, String(response.id))).get();
   if (!p) return { ok: false, error: 'This passkey is not registered here.' };
-  if (!(await checkAssertion(ctx, p, response, expectedChallenge))) {
-    return { ok: false, error: 'The passkey could not be checked. Please try again.' };
-  }
-  const { token } = createSession(ctx, p.userId, 'passkey', meta);
+  // Sign-in doesn't demand UV up front (subscribers may not have it configured); an
+  // admin session from a non-UV assertion is simply not admin-capable (see sessions.ts).
+  const check = await checkAssertion(ctx, p, response, expectedChallenge, false, meta);
+  if (!check) return { ok: false, error: 'The passkey could not be checked. Please try again.' };
+  const { token } = createSession(ctx, p.userId, 'passkey', meta, { uv: check.userVerified, credentialId: p.id });
   writeAudit(ctx, { actorId: p.userId, action: 'session.passkey', target: `user:${p.userId}`, ip: meta.ip });
   return { ok: true, userId: p.userId, sessionToken: token };
 }
@@ -166,10 +234,10 @@ export async function finishSignIn(
 export async function reauthOptions(ctx: Ctx, s: Session) {
   const options = await generateAuthenticationOptions({
     rpID: ctx.config.rpId,
-    userVerification: 'preferred',
+    userVerification: 'required',
     allowCredentials: listPasskeys(ctx, s.userId).map((p) => ({ id: p.id, transports: transportsOf(p) })),
   });
-  return { challengeId: saveChallenge(ctx, 'reauth', options.challenge, s.userId), options };
+  return { challengeId: saveChallenge(ctx, 'reauth', options.challenge, s.userId, s.id), options };
 }
 
 export async function finishReauth(
@@ -179,7 +247,8 @@ export async function finishReauth(
   response: AuthenticationResponseJSON,
   meta: RequestMeta,
 ): Promise<Result> {
-  const expectedChallenge = takeChallenge(ctx, challengeId, 'reauth', s.userId);
+  if (s.method !== 'passkey') return { ok: false, error: 'Re-authentication needs a passkey session.' };
+  const expectedChallenge = takeChallenge(ctx, challengeId, 'reauth', s.userId, s.id);
   if (!expectedChallenge) return { ok: false, error: 'The passkey request expired. Please try again.' };
   const p = ctx.db
     .select()
@@ -187,9 +256,8 @@ export async function finishReauth(
     .where(and(eq(passkeys.id, String(response.id)), eq(passkeys.userId, s.userId)))
     .get();
   if (!p) return { ok: false, error: 'Use a passkey of this account.' };
-  if (!(await checkAssertion(ctx, p, response, expectedChallenge))) {
-    return { ok: false, error: 'The passkey could not be checked. Please try again.' };
-  }
+  const check = await checkAssertion(ctx, p, response, expectedChallenge, true, meta);
+  if (!check) return { ok: false, error: 'The passkey could not be checked. Please try again.' };
   markReauth(ctx, s.id);
   writeAudit(ctx, { actorId: s.userId, action: 'session.reauth', target: `user:${s.userId}`, ip: meta.ip });
   return { ok: true };
@@ -197,11 +265,13 @@ export async function finishReauth(
 
 export function removePasskey(ctx: Ctx, s: Session, passkeyId: string, meta: RequestMeta): Result {
   if (!mayChangePasskeys(ctx, s)) return { ok: false, error: 'Admins confirm with a passkey before changing passkeys.' };
-  const r = ctx.db
-    .delete(passkeys)
-    .where(and(eq(passkeys.id, passkeyId), eq(passkeys.userId, s.userId)))
-    .run();
-  if (r.changes !== 1) return { ok: false, error: 'No such passkey.' };
-  writeAudit(ctx, { actorId: s.userId, action: 'passkey.remove', target: `user:${s.userId}`, ip: meta.ip });
+  const own = listPasskeys(ctx, s.userId);
+  const target = own.find((p) => p.id === passkeyId);
+  if (!target) return { ok: false, error: 'No such passkey.' };
+  if (isAdmin(ctx, s.userId) && own.length <= 1) return { ok: false, error: 'Admins need at least one passkey.' };
+  ctx.db.delete(passkeys).where(and(eq(passkeys.id, passkeyId), eq(passkeys.userId, s.userId))).run();
+  // The credential is gone: any session it opened is no longer backed by anything real.
+  ctx.db.delete(sessions).where(eq(sessions.credentialId, passkeyId)).run();
+  writeAudit(ctx, { actorId: s.userId, action: 'passkey.remove', target: `user:${s.userId}`, detail: { credentialId: shortId(passkeyId) }, ip: meta.ip });
   return { ok: true };
 }

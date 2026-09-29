@@ -35,7 +35,12 @@ export class SoftAuthenticator {
     return attested ? Buffer.concat([head, attested]) : head;
   }
 
-  create(options: PublicKeyCredentialCreationOptionsJSON): RegistrationResponseJSON {
+  /**
+   * `forceId` lets a test collide two credentials on the same id (server
+   * must reject the second insert cleanly). `uv` false simulates an
+   * authenticator that didn't perform user verification.
+   */
+  create(options: PublicKeyCredentialCreationOptionsJSON, forceId?: Buffer, uv = true): RegistrationResponseJSON {
     const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
     const jwk = publicKey.export({ format: 'jwk' });
     const cose = encodeCBOR(
@@ -47,11 +52,12 @@ export class SoftAuthenticator {
         [-3, Buffer.from(jwk.y!, 'base64url')],
       ]),
     );
-    const id = randomBytes(16);
+    const id = forceId ?? randomBytes(16);
     const idLen = Buffer.alloc(2);
     idLen.writeUInt16BE(id.length);
     const attested = Buffer.concat([Buffer.alloc(16), idLen, id, Buffer.from(cose)]);
-    const authData = this.authData(options.rp.id!, 0x01 | 0x04 | 0x40, 0, attested);
+    const flags = 0x01 | (uv ? 0x04 : 0) | 0x40;
+    const authData = this.authData(options.rp.id!, flags, 0, attested);
     const attestationObject = encodeCBOR(
       new Map<string, CBORType>([
         ['fmt', 'none'],
@@ -75,11 +81,11 @@ export class SoftAuthenticator {
     };
   }
 
-  /** Assert with the credential `which` (default: the newest), as a discoverable passkey would. */
-  get(options: PublicKeyCredentialRequestOptionsJSON, which = this.creds.length - 1): AuthenticationResponseJSON {
+  /** Assert with the credential `which` (default: the newest), as a discoverable passkey would. `uv` false omits user verification. */
+  get(options: PublicKeyCredentialRequestOptionsJSON, which = this.creds.length - 1, uv = true): AuthenticationResponseJSON {
     const c = this.creds[which];
     c.count += 1;
-    const authData = this.authData(options.rpId!, 0x01 | 0x04, c.count);
+    const authData = this.authData(options.rpId!, 0x01 | (uv ? 0x04 : 0), c.count);
     const clientDataJSON = Buffer.from(
       JSON.stringify({ type: 'webauthn.get', challenge: options.challenge, origin: this.origin, crossOrigin: false }),
     );

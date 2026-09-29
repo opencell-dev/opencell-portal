@@ -14,8 +14,15 @@ export interface RequestMeta {
   userAgent?: string;
 }
 
+export interface SessionOpts {
+  /** From the assertion's authenticationInfo.userVerified (passkey sign-in only). */
+  uv?: boolean;
+  /** The passkey that opened this session, so removing it can revoke the session (spec §3). */
+  credentialId?: string;
+}
+
 /** A new server-side session; the caller puts `token` in the cookie. */
-export function createSession(ctx: Ctx, userId: number, method: SessionMethod, meta: RequestMeta) {
+export function createSession(ctx: Ctx, userId: number, method: SessionMethod, meta: RequestMeta, opts: SessionOpts = {}) {
   const token = newToken();
   const now = ctx.now();
   const expiresAt = now + (isAdmin(ctx, userId) ? ADMIN_SESSION_MS : SESSION_MS);
@@ -27,6 +34,8 @@ export function createSession(ctx: Ctx, userId: number, method: SessionMethod, m
       method,
       createdAt: now,
       expiresAt,
+      uv: opts.uv ?? false,
+      credentialId: opts.credentialId ?? null,
       ip: meta.ip,
       userAgent: meta.userAgent?.slice(0, 200) ?? null,
     })
@@ -57,10 +66,10 @@ export function markReauth(ctx: Ctx, sessionId: string): void {
 }
 
 export function isFresh(ctx: Ctx, s: Session): boolean {
-  return s.reauthAt !== null && ctx.now() - s.reauthAt < REAUTH_MS;
+  return s.method === 'passkey' && s.reauthAt !== null && ctx.now() - s.reauthAt < REAUTH_MS;
 }
 
-/** Admin pages need an admin whose session was opened with a passkey. */
+/** Admin pages need an admin whose session was opened with a UV-verified passkey. */
 export function canUseAdmin(ctx: Ctx, s: Session): boolean {
-  return s.method === 'passkey' && isAdmin(ctx, s.userId);
+  return s.method === 'passkey' && s.uv && isAdmin(ctx, s.userId);
 }

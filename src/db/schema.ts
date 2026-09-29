@@ -51,6 +51,12 @@ export const sessions = sqliteTable(
     createdAt: integer('created_at').notNull(),
     expiresAt: integer('expires_at').notNull(),
     reauthAt: integer('reauth_at'),
+    // Set from the assertion's authenticationInfo.userVerified at sign-in. A
+    // passkey session without UV never counts as admin-capable (spec §3).
+    uv: integer('uv', { mode: 'boolean' }).notNull().default(false),
+    // The passkey that opened this session (no FK: SQLite can't add an
+    // ON DELETE action via ALTER TABLE), so removing it can revoke the session.
+    credentialId: text('credential_id'),
     ip: text('ip'),
     userAgent: text('user_agent'),
   },
@@ -75,6 +81,9 @@ export const challenges = sqliteTable('challenges', {
   id: text('id').primaryKey(),
   purpose: text('purpose', { enum: ['register', 'signin', 'reauth'] }).notNull(),
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  // Bound to the session that requested it (null for signin, which has none),
+  // so one session can't finish a challenge issued to another (spec §3).
+  sessionId: text('session_id'),
   challenge: text('challenge').notNull(),
   expiresAt: integer('expires_at').notNull(),
 });
