@@ -23,6 +23,12 @@ describe('number rules (numbering-plan.md, portal spec §4.2)', () => {
     expect(isAssignable('+883171741101234')).toBe(false); // NXX 411
   });
 
+  it('refuses NPA 883 (numbering-plan.md: never assigned; firmware digits_ok memcmp)', () => {
+    expect(isFullNumber('+883188355512345')).toBe(false);
+    expect(isExchange('+8831883555')).toBe(false);
+    expect(isAssignable('+883188355512345')).toBe(false);
+  });
+
   it('assigns 01000–99998 except 09911', () => {
     expect(isAssignable('+883171746401000')).toBe(true);
     expect(isAssignable('+883171746499998')).toBe(true);
