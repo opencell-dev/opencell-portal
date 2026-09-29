@@ -1,8 +1,9 @@
 // OpenCell numbers in full form: +883 1 NPA NXX SSSSS (numbering-plan.md;
 // network-core spec §7.11). The portal only ever handles the full form.
 
-const FULL = /^\+8831[2-9]\d{2}[2-9]\d{2}\d{5}$/;
-const EXCHANGE = /^\+8831[2-9]\d{2}[2-9]\d{2}$/;
+// NPA and NXX are 2-9 first and never N11 (firmware oc_sig_number.c nanp_code_ok).
+const FULL = /^\+8831(?!\d11)[2-9]\d{2}(?!\d11)[2-9]\d{2}\d{5}$/;
+const EXCHANGE = /^\+8831(?!\d11)[2-9]\d{2}(?!\d11)[2-9]\d{2}$/;
 
 export function isFullNumber(s: string): boolean {
   return FULL.test(s);

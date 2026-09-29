@@ -10,6 +10,19 @@ describe('number rules (numbering-plan.md, portal spec §4.2)', () => {
     expect(isFullNumber('883171746401234')).toBe(false);
   });
 
+  it('refuses N11 NPA and NXX codes (firmware oc_sig_number.c nanp_code_ok)', () => {
+    expect(isFullNumber('+883121146401234')).toBe(false); // NPA 211
+    expect(isFullNumber('+883191146401234')).toBe(false); // NPA 911
+    expect(isFullNumber('+883171741101234')).toBe(false); // NXX 411
+    expect(isFullNumber('+883160655501234')).toBe(true); // normal NPA 606, NXX 555
+    expect(isExchange('+8831211464')).toBe(false); // NPA 211
+    expect(isExchange('+8831717411')).toBe(false); // NXX 411
+    expect(isExchange('+8831606555')).toBe(true); // normal NPA 606, NXX 555
+    expect(isAssignable('+883121146401234')).toBe(false); // NPA 211
+    expect(isAssignable('+883191146401234')).toBe(false); // NPA 911
+    expect(isAssignable('+883171741101234')).toBe(false); // NXX 411
+  });
+
   it('assigns 01000–99998 except 09911', () => {
     expect(isAssignable('+883171746401000')).toBe(true);
     expect(isAssignable('+883171746499998')).toBe(true);

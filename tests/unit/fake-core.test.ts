@@ -49,6 +49,10 @@ describe('FakeCore numbers', () => {
     await core.subCreate(7, '+883171746412345');
     expect(await core.numCheck(7, '+883171746412345')).toBe('taken');
   });
+
+  it('refuses an N11 NPA or NXX code', async () => {
+    expect(await core.numCheck(7, '+883121146401234')).toBe('not_assignable'); // NPA 211
+  });
 });
 
 describe('FakeCore subscribers', () => {
