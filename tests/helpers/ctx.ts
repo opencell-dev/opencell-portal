@@ -3,6 +3,7 @@ import { FakeCore } from '@/core/fake';
 import { openDb } from '@/db';
 import type { Ctx } from '@/lib/ctx';
 import { MemoryMailer } from '@/lib/mail';
+import { createMailQueue } from '@/lib/mailqueue';
 
 export const TEST_ORIGIN = 'https://portal.test';
 
@@ -12,6 +13,7 @@ export type TestCtx = Ctx & { mailer: MemoryMailer; core: FakeCore; clock: { t: 
 export function testCtx(): TestCtx {
   const clock = { t: 1_790_000_000_000 };
   const now = () => clock.t;
+  const mailer = new MemoryMailer();
   return {
     config: parseConfig({
       OC_ORIGIN: TEST_ORIGIN,
@@ -21,7 +23,8 @@ export function testCtx(): TestCtx {
       OC_ALTCHA_COUNTER_MAX: '20',
     }),
     db: openDb(':memory:'),
-    mailer: new MemoryMailer(),
+    mailer,
+    mailQueue: createMailQueue(mailer),
     core: new FakeCore(now),
     now,
     clock,

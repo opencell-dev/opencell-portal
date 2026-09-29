@@ -46,7 +46,8 @@ export function runAdmin(ctx: Ctx, argv: string[]): Out {
       }
       const had = ctx.db.select().from(userRoles).where(eq(userRoles.userId, u.id)).all().some((r) => r.role === 'admin');
       if (!had) return { code: 1, out: `${u.email} is not an admin` };
-      revokeRole(ctx, u.id, 'admin', null);
+      const r = revokeRole(ctx, u.id, 'admin', null);
+      if (!r.ok) return { code: 1, out: r.error };
       return { code: 0, out: `${u.email} is no longer an admin` };
     }
     case 'limit': {

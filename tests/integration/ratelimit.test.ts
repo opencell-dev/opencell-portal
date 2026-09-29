@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { rateEvents } from '@/db/schema';
 import { writeAudit, listAudit } from '@/lib/audit';
-import { hit, limitOf, setLimit } from '@/lib/ratelimit';
+import { hit, limitOf, rateKey, setLimit } from '@/lib/ratelimit';
 import { type TestCtx, testCtx } from '../helpers/ctx';
 
 let ctx: TestCtx;
@@ -13,7 +14,17 @@ describe('rate limits (portal spec §3)', () => {
     expect(limitOf(ctx, 'signup_ip')).toEqual({ max: 5, windowS: 3600 });
     expect(limitOf(ctx, 'signup_email')).toEqual({ max: 3, windowS: 86400 });
     expect(limitOf(ctx, 'magic_email')).toEqual({ max: 5, windowS: 3600 });
+    expect(limitOf(ctx, 'magic_ip')).toEqual({ max: 20, windowS: 3600 });
+    expect(limitOf(ctx, 'email_change_user')).toEqual({ max: 5, windowS: 86400 });
     expect(limitOf(ctx, 'number_account')).toEqual({ max: 10, windowS: 86400 });
+  });
+
+  it('stores only a hash of the key, never the value itself', () => {
+    hit(ctx, 'signup_email', 'ada@example.org');
+    const rows = ctx.db.select().from(rateEvents).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).not.toContain('ada@example.org');
+    expect(rows[0].key).toBe(rateKey('signup_email', 'ada@example.org'));
   });
 
   it('allows max hits per window per key, then answers with a plain message', () => {

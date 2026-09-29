@@ -1,12 +1,12 @@
-import { and, eq, isNull, lt } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import { z } from 'zod';
-import { challenges, emailTokens, sessions, users } from '@/db/schema';
+import { audit, challenges, emailTokens, rateEvents, sessions, users } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import { checkCaptcha } from '@/lib/captcha';
 import type { Ctx } from '@/lib/ctx';
 import { emailChangedNotice, emailChangeMail, magicLinkMail, type Template, verifyMail } from '@/lib/mail-templates';
 import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
-import { hit } from '@/lib/ratelimit';
+import { hit, longestWindowMs, rateKey } from '@/lib/ratelimit';
 import { createSession, type RequestMeta } from '@/lib/sessions';
 import { hashToken, newToken } from '@/lib/tokens';
 import { findUserByEmail, getUser } from '@/lib/users';
@@ -47,17 +47,23 @@ function issueEmailToken(ctx: Ctx, userId: number, purpose: Purpose, newEmail?: 
   return token;
 }
 
-async function mail(ctx: Ctx, to: string, t: Template) {
-  await ctx.mailer.send({ to, subject: t.subject, text: t.text });
+/**
+ * Queue a mail in the background. Never awaited on the request path: a
+ * known address must not answer any slower than an unknown one (spec §3, §10
+ * — no timing oracle for enumeration).
+ */
+function mail(ctx: Ctx, to: string, t: Template): void {
+  ctx.mailQueue.send({ to, subject: t.subject, text: t.text });
 }
 
-/** Remove what has run out: expired sessions, links and challenges, and unverified accounts after 7 days. */
+/** Remove what has run out: expired sessions, links, challenges, rate-limit rows and unverified accounts after 7 days. */
 export function purgeStale(ctx: Ctx): void {
   const now = ctx.now();
   ctx.db.delete(sessions).where(lt(sessions.expiresAt, now)).run();
   ctx.db.delete(emailTokens).where(lt(emailTokens.expiresAt, now - 24 * 3600_000)).run();
   ctx.db.delete(challenges).where(lt(challenges.expiresAt, now)).run();
   ctx.db.delete(users).where(and(isNull(users.emailVerifiedAt), lt(users.createdAt, now - UNVERIFIED_KEEP_MS))).run();
+  ctx.db.delete(rateEvents).where(lt(rateEvents.at, now - longestWindowMs(ctx))).run();
 }
 
 /**
@@ -82,7 +88,7 @@ export async function signUp(
 
   const existing = findUserByEmail(ctx, email);
   if (existing?.emailVerifiedAt) {
-    await mail(ctx, email, magicLinkMail(existing.name, linkFor(ctx, issueEmailToken(ctx, existing.id, 'magic'))));
+    mail(ctx, email, magicLinkMail(existing.name, linkFor(ctx, issueEmailToken(ctx, existing.id, 'magic'))));
     return { ok: true };
   }
   let userId: number;
@@ -93,23 +99,25 @@ export async function signUp(
     userId = ctx.db.insert(users).values({ name, email, createdAt: ctx.now() }).returning({ id: users.id }).get().id;
     writeAudit(ctx, { actorId: userId, action: 'account.signup', target: `user:${userId}`, ip: meta.ip });
   }
-  await mail(ctx, email, verifyMail(name, linkFor(ctx, issueEmailToken(ctx, userId, 'verify'))));
+  mail(ctx, email, verifyMail(name, linkFor(ctx, issueEmailToken(ctx, userId, 'verify'))));
   return { ok: true };
 }
 
 /** Sign-in fallback (spec §3): a 15-minute single-use link, same answer for unknown addresses. */
-export async function requestMagicLink(ctx: Ctx, input: { email: unknown }): Promise<Result> {
+export async function requestMagicLink(ctx: Ctx, input: { email: unknown }, meta: RequestMeta): Promise<Result> {
   const p = emailOnlySchema.safeParse(input);
   if (!p.success) return { ok: false, error: firstError(p.error) };
   const { email } = p.data;
+  const byIp = hit(ctx, 'magic_ip', meta.ip);
+  if (!byIp.ok) return { ok: false, error: byIp.message };
   const lim = hit(ctx, 'magic_email', email);
   if (!lim.ok) return { ok: false, error: lim.message };
   const u = findUserByEmail(ctx, email);
   if (!u) return { ok: true };
   if (!u.emailVerifiedAt) {
-    await mail(ctx, email, verifyMail(u.name, linkFor(ctx, issueEmailToken(ctx, u.id, 'verify'))));
+    mail(ctx, email, verifyMail(u.name, linkFor(ctx, issueEmailToken(ctx, u.id, 'verify'))));
   } else {
-    await mail(ctx, email, magicLinkMail(u.name, linkFor(ctx, issueEmailToken(ctx, u.id, 'magic'))));
+    mail(ctx, email, magicLinkMail(u.name, linkFor(ctx, issueEmailToken(ctx, u.id, 'magic'))));
   }
   return { ok: true };
 }
@@ -133,7 +141,9 @@ const TOKEN_ERRORS: Record<Exclude<TokenState, 'ok'>, string> = {
 
 /**
  * Use an emailed link once. Verification and magic links open a session
- * (`sessionToken`); an email-change link moves the account to the new address.
+ * (`sessionToken`); an email-change link moves the account to the new
+ * address and revokes every other session and unused magic/verify link, since
+ * whoever had the old address could still be holding one.
  */
 export async function consumeEmailToken(
   ctx: Ctx,
@@ -159,15 +169,19 @@ export async function consumeEmailToken(
     const holder = findUserByEmail(ctx, newEmail);
     if (holder && holder.id !== u.id) return { ok: false, error: 'That address now belongs to another account.' };
     ctx.db.update(users).set({ email: newEmail }).where(eq(users.id, u.id)).run();
+    // Nothing this action opens needs revoking (it opens no session of its
+    // own), but the old address may still be holding other live sessions or
+    // unused sign-in links; kill those so a compromised old inbox can't ride along.
+    ctx.db.delete(sessions).where(eq(sessions.userId, u.id)).run();
+    ctx.db.delete(emailTokens).where(and(eq(emailTokens.userId, u.id), inArray(emailTokens.purpose, ['verify', 'magic']), isNull(emailTokens.usedAt))).run();
     writeAudit(ctx, { actorId: u.id, action: 'account.email_change', target: `user:${u.id}`, ip: meta.ip });
-    try {
-      await mail(ctx, u.email, emailChangedNotice(u.name, newEmail));
-    } catch (e) {
-      console.error('email change notice to the old address failed:', e);
-    }
+    mail(ctx, u.email, emailChangedNotice(u.name, newEmail));
     return { ok: true, purpose: row.purpose, userId: u.id };
   }
-  if (row.purpose === 'verify' && !u.emailVerifiedAt) {
+  if (row.purpose === 'verify') {
+    // A verify link for an account that got verified some other way is as
+    // good as already used: it must not silently open a session.
+    if (u.emailVerifiedAt) return { ok: false, error: TOKEN_ERRORS.used };
     ctx.db.update(users).set({ emailVerifiedAt: now }).where(eq(users.id, u.id)).run();
     writeAudit(ctx, { actorId: u.id, action: 'account.verify', target: `user:${u.id}`, ip: meta.ip });
   }
@@ -184,10 +198,12 @@ export async function changeEmail(ctx: Ctx, userId: number, input: { email: unkn
   const u = getUser(ctx, userId);
   if (!u) return { ok: false, error: 'No such account.' };
   if (email === u.email) return { ok: false, error: 'That is already your address.' };
+  const perAccount = hit(ctx, 'email_change_user', String(userId));
+  if (!perAccount.ok) return { ok: false, error: perAccount.message };
   const lim = hit(ctx, 'magic_email', email);
   if (!lim.ok) return { ok: false, error: lim.message };
   if (findUserByEmail(ctx, email)) return { ok: true }; // say nothing about other accounts
-  await mail(ctx, email, emailChangeMail(u.name, linkFor(ctx, issueEmailToken(ctx, userId, 'email_change', email))));
+  mail(ctx, email, emailChangeMail(u.name, linkFor(ctx, issueEmailToken(ctx, userId, 'email_change', email))));
   return { ok: true };
 }
 
@@ -198,41 +214,80 @@ export function setDirectoryListed(ctx: Ctx, userId: number, listed: boolean, me
 
 export type NumberChoice = 'keep' | 'disable';
 
+const numberChoiceSchema = z.enum(['keep', 'disable']);
+const deleteAccountSchema = z.object({
+  confirmEmail: z.string().max(254),
+  choices: z.record(z.string(), numberChoiceSchema),
+});
+
+export type DeleteResult = { ok: true } | { ok: false; error: string; changed?: Record<string, string> };
+
 /**
  * Delete an account (spec §3, §10): numbers never activated are released;
  * each activated number is kept working unmanaged or disabled, as the user
- * chose. The personal data goes; the audit keeps the account id only.
+ * chose. Every choice is checked before anything changes; if the core still
+ * fails partway through, nothing here throws — the account is left in place
+ * and the result says what did change, so the caller can show that and let
+ * the user retry. On success: the personal data goes (including the
+ * rate-limit rows and audit IPs it can reach); the audit keeps the account
+ * id and a count of numbers, never their digits or the address.
  */
 export async function deleteAccount(
   ctx: Ctx,
   userId: number,
-  input: { confirmEmail: string; choices: Record<string, NumberChoice> },
+  input: unknown,
   meta: RequestMeta,
   owned: OwnedNumber[] = ownedNumbers(ctx, userId),
-): Promise<Result> {
+): Promise<DeleteResult> {
+  const p = deleteAccountSchema.safeParse(input);
+  if (!p.success) return { ok: false, error: firstError(p.error) };
+  const { confirmEmail, choices } = p.data;
   const u = getUser(ctx, userId);
   if (!u) return { ok: false, error: 'No such account.' };
-  if (input.confirmEmail.trim().toLowerCase() !== u.email) {
+  if (confirmEmail.trim().toLowerCase() !== u.email) {
     return { ok: false, error: 'Type your email address exactly to confirm.' };
   }
   for (const n of owned) {
-    if (n.activated && input.choices[n.number] !== 'keep' && input.choices[n.number] !== 'disable') {
+    if (n.activated && choices[n.number] !== 'keep' && choices[n.number] !== 'disable') {
       return { ok: false, error: `Choose what happens to ${n.number}.` };
     }
   }
-  const outcome: Record<string, string> = {};
+  const changed: Record<string, string> = {};
   for (const n of owned) {
-    if (!n.activated) {
-      await ctx.core.subRelease(userId, n.number);
-      outcome[n.number] = 'released';
-    } else if (input.choices[n.number] === 'disable') {
-      await ctx.core.subDisable(userId, n.number);
-      outcome[n.number] = 'disabled';
-    } else {
-      outcome[n.number] = 'kept';
+    try {
+      if (!n.activated) {
+        await ctx.core.subRelease(userId, n.number);
+        changed[n.number] = 'released';
+      } else if (choices[n.number] === 'disable') {
+        await ctx.core.subDisable(userId, n.number);
+        changed[n.number] = 'disabled';
+      } else {
+        changed[n.number] = 'kept';
+      }
+    } catch (e) {
+      return {
+        ok: false,
+        error: `We could not finish deleting your account: ${n.number} could not be updated. Nothing else was changed; please try again.`,
+        changed,
+      };
     }
   }
+  const counts = { released: 0, disabled: 0, kept: 0 };
+  for (const outcome of Object.values(changed)) {
+    if (outcome === 'released') counts.released++;
+    else if (outcome === 'disabled') counts.disabled++;
+    else counts.kept++;
+  }
+  // No trace of the address should survive: rate-limit rows are keyed by a
+  // hash of it, and past audit rows carry the IP the account acted from.
+  ctx.db
+    .delete(rateEvents)
+    .where(
+      inArray(rateEvents.key, [rateKey('signup_email', u.email), rateKey('magic_email', u.email), rateKey('email_change_user', String(userId))]),
+    )
+    .run();
+  ctx.db.update(audit).set({ ip: null }).where(eq(audit.actorId, userId)).run();
   ctx.db.delete(users).where(eq(users.id, userId)).run();
-  writeAudit(ctx, { actorId: userId, action: 'account.delete', target: `user:${userId}`, detail: { numbers: outcome }, ip: meta.ip });
+  writeAudit(ctx, { actorId: userId, action: 'account.delete', target: `user:${userId}`, detail: { numbers: counts } });
   return { ok: true };
 }

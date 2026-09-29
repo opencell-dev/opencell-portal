@@ -49,7 +49,19 @@ export function grantRole(ctx: Ctx, userId: number, role: GrantedRole, byId: num
   writeAudit(ctx, { actorId: byId, action: 'role.grant', target: `user:${userId}`, detail: { role } });
 }
 
-export function revokeRole(ctx: Ctx, userId: number, role: GrantedRole, byId: number | null): void {
-  ctx.db.delete(userRoles).where(and(eq(userRoles.userId, userId), eq(userRoles.role, role))).run();
-  writeAudit(ctx, { actorId: byId, action: 'role.revoke', target: `user:${userId}`, detail: { role } });
+export type RoleResult = { ok: true } | { ok: false; error: string };
+
+/** Revoke a role. Refuses to leave the portal with no admin at all. */
+export function revokeRole(ctx: Ctx, userId: number, role: GrantedRole, byId: number | null): RoleResult {
+  if (role === 'admin') {
+    const admins = ctx.db.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, 'admin')).all();
+    if (admins.length <= 1 && admins.some((a) => a.userId === userId)) {
+      return { ok: false, error: 'Cannot remove the last admin.' };
+    }
+  }
+  const del = ctx.db.delete(userRoles).where(and(eq(userRoles.userId, userId), eq(userRoles.role, role))).run();
+  if (del.changes > 0) {
+    writeAudit(ctx, { actorId: byId, action: 'role.revoke', target: `user:${userId}`, detail: { role } });
+  }
+  return { ok: true };
 }

@@ -20,8 +20,17 @@ describe('oc-portal-admin', () => {
     expect(runAdmin(ctx, ['promote', 'ADA@example.org'])).toEqual({ code: 0, out: 'ada@example.org is now an admin' });
     expect(rolesOf(ctx, ada)).toEqual(['subscriber', 'admin']);
     expect(listAudit(ctx, 1)[0]).toMatchObject({ actorId: null, action: 'role.grant', target: `user:${ada}` });
+    // A second admin so demoting Ada does not leave the portal with none.
+    ctx.db.insert(users).values({ name: 'Bob', email: 'bob@example.org', emailVerifiedAt: 1, createdAt: 3 }).run();
+    runAdmin(ctx, ['promote', 'bob@example.org']);
     expect(runAdmin(ctx, ['demote', 'ada@example.org'])).toEqual({ code: 0, out: 'ada@example.org is no longer an admin' });
     expect(rolesOf(ctx, ada)).toEqual(['subscriber']);
+  });
+
+  it('refuses to demote the last admin', () => {
+    runAdmin(ctx, ['promote', 'ada@example.org']);
+    expect(runAdmin(ctx, ['demote', 'ada@example.org'])).toEqual({ code: 1, out: 'Cannot remove the last admin.' });
+    expect(rolesOf(ctx, ada)).toEqual(['subscriber', 'admin']);
   });
 
   it('refuses unknown or unverified accounts', () => {

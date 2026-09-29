@@ -1,16 +1,19 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { audit, users } from '@/db/schema';
+import { audit, emailTokens, rateEvents, users } from '@/db/schema';
 import {
   changeEmail,
   consumeEmailToken,
   deleteAccount,
   peekEmailToken,
+  purgeStale,
   requestMagicLink,
   setDirectoryListed,
   signUp,
 } from '@/lib/accounts';
-import { sessionFromToken } from '@/lib/sessions';
+import { rateKey } from '@/lib/ratelimit';
+import { createSession, sessionFromToken } from '@/lib/sessions';
+import { hashToken, newToken } from '@/lib/tokens';
 import { findUserByEmail } from '@/lib/users';
 import { solvedCaptcha } from '../helpers/captcha';
 import { type TestCtx, testCtx } from '../helpers/ctx';
@@ -51,6 +54,17 @@ describe('sign-up and email verification (spec §3)', () => {
     expect(findUserByEmail(ctx, 'ada@example.org')!.emailVerifiedAt).toBe(ctx.clock.t);
     // single use
     expect(await consumeEmailToken(ctx, token, meta)).toEqual({ ok: false, error: 'This link has already been used.' });
+  });
+
+  it('rejects a verify link for an account that is already verified, like a used one, and opens no session', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    const stray = newToken();
+    ctx.db
+      .insert(emailTokens)
+      .values({ id: hashToken(stray), userId, purpose: 'verify', createdAt: ctx.clock.t, expiresAt: ctx.clock.t + 30 * MIN })
+      .run();
+    expect(await consumeEmailToken(ctx, stray, meta)).toEqual({ ok: false, error: 'This link has already been used.' });
+    expect(ctx.db.$client.prepare('SELECT count(*) AS n FROM sessions').get()).toEqual({ n: 1 }); // only the original
   });
 
   it('opens one session when the same link is used twice at once (double click, two tabs)', async () => {
@@ -104,12 +118,31 @@ describe('sign-up and email verification (spec §3)', () => {
     const fourth = await signUp(ctx, { name: 'V', email: 'v@example.org', altcha: await solvedCaptcha(ctx) }, { ip: '198.51.100.9' });
     expect(fourth).toEqual({ ok: false, error: 'Too many sign-ups for this email address today. Please try again tomorrow.' });
   });
+
+  it('does not wait on the mail sender, so an existing address answers no slower than a new one', async () => {
+    await signUpAndVerify('Ada', 'ada@example.org');
+    let release: () => void = () => {};
+    const stuck = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    ctx.mailer.send = async (m) => {
+      await stuck;
+      ctx.mailer.sent.push(m);
+    };
+    const race = await Promise.race([
+      signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta).then(() => 'done' as const),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
+    ]);
+    expect(race).toBe('done'); // resolved without waiting for the stuck send
+    release();
+    await ctx.mailQueue.drain();
+  });
 });
 
 describe('magic links (spec §3)', () => {
   it('signs in a verified account with a 15-minute, single-use link', async () => {
     const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
-    expect(await requestMagicLink(ctx, { email: 'ADA@example.org' })).toEqual({ ok: true });
+    expect(await requestMagicLink(ctx, { email: 'ADA@example.org' }, meta)).toEqual({ ok: true });
     const token = tokenOf(ctx.mailer.lastLink('ada@example.org'));
     ctx.clock.t += 15 * MIN - 1;
     const r = await consumeEmailToken(ctx, token, meta);
@@ -119,30 +152,57 @@ describe('magic links (spec §3)', () => {
 
   it('expires after 15 minutes', async () => {
     await signUpAndVerify('Ada', 'ada@example.org');
-    await requestMagicLink(ctx, { email: 'ada@example.org' });
+    await requestMagicLink(ctx, { email: 'ada@example.org' }, meta);
     const token = tokenOf(ctx.mailer.lastLink('ada@example.org'));
     ctx.clock.t += 15 * MIN;
     expect((await consumeEmailToken(ctx, token, meta)).ok).toBe(false);
   });
 
   it('says the same for an unknown address and sends nothing', async () => {
-    expect(await requestMagicLink(ctx, { email: 'nobody@example.org' })).toEqual({ ok: true });
+    expect(await requestMagicLink(ctx, { email: 'nobody@example.org' }, meta)).toEqual({ ok: true });
     expect(ctx.mailer.sent).toHaveLength(0);
   });
 
   it('re-sends the verification link to an unverified account', async () => {
     await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta);
-    await requestMagicLink(ctx, { email: 'ada@example.org' });
+    await requestMagicLink(ctx, { email: 'ada@example.org' }, meta);
     expect(ctx.mailer.sent.map((m) => m.subject)).toEqual(['Confirm your email for OpenCell', 'Confirm your email for OpenCell']);
   });
 
   it('allows 5 per address per hour', async () => {
     await signUpAndVerify('Ada', 'ada@example.org');
-    for (let i = 0; i < 5; i++) expect((await requestMagicLink(ctx, { email: 'ada@example.org' })).ok).toBe(true);
-    expect(await requestMagicLink(ctx, { email: 'ada@example.org' })).toEqual({
+    for (let i = 0; i < 5; i++) expect((await requestMagicLink(ctx, { email: 'ada@example.org' }, meta)).ok).toBe(true);
+    expect(await requestMagicLink(ctx, { email: 'ada@example.org' }, meta)).toEqual({
       ok: false,
       error: 'Too many sign-in links for this email address. Please try again in about an hour.',
     });
+  });
+
+  it('limits sign-in link requests to 20 per IP per hour, even across many unknown addresses', async () => {
+    for (let i = 0; i < 20; i++) expect((await requestMagicLink(ctx, { email: `nobody${i}@example.org` }, meta)).ok).toBe(true);
+    expect(await requestMagicLink(ctx, { email: 'nobody20@example.org' }, meta)).toEqual({
+      ok: false,
+      error: 'Too many sign-in link requests from your network. Please try again in about an hour.',
+    });
+  });
+
+  it('does not wait on the mail sender, so a known address answers no slower than an unknown one', async () => {
+    await signUpAndVerify('Ada', 'ada@example.org');
+    let release: () => void = () => {};
+    const stuck = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    ctx.mailer.send = async (m) => {
+      await stuck;
+      ctx.mailer.sent.push(m);
+    };
+    const race = await Promise.race([
+      requestMagicLink(ctx, { email: 'ada@example.org' }, meta).then(() => 'done' as const),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 50)),
+    ]);
+    expect(race).toBe('done'); // resolved without waiting for the stuck send
+    release();
+    await ctx.mailQueue.drain();
   });
 });
 
@@ -162,6 +222,30 @@ describe('account page services (spec §3)', () => {
     await signUpAndVerify('Bob', 'bob@example.org');
     expect(await changeEmail(ctx, a.userId, { email: 'bob@example.org' })).toEqual({ ok: true });
     expect(ctx.mailer.sent.filter((m) => m.subject.startsWith('Confirm your new email'))).toHaveLength(0);
+  });
+
+  it('revokes other sessions and unused sign-in links once the email is changed', async () => {
+    const first = await signUpAndVerify('Ada', 'ada@example.org');
+    const other = createSession(ctx, first.userId, 'email', meta);
+    await requestMagicLink(ctx, { email: 'ada@example.org' }, meta); // a stray, still-unused link
+    const staleMagic = tokenOf(ctx.mailer.lastLink('ada@example.org'));
+    await changeEmail(ctx, first.userId, { email: 'ada@new.example' });
+    const r = await consumeEmailToken(ctx, tokenOf(ctx.mailer.lastLink('ada@new.example')), meta);
+    expect(r).toMatchObject({ ok: true });
+    expect(sessionFromToken(ctx, first.sessionToken!)).toBeNull();
+    expect(sessionFromToken(ctx, other.token)).toBeNull();
+    expect((await consumeEmailToken(ctx, staleMagic, meta)).ok).toBe(false);
+  });
+
+  it('limits email changes to 5 per account per day', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    for (let i = 0; i < 5; i++) {
+      expect(await changeEmail(ctx, userId, { email: `new${i}@example.org` })).toEqual({ ok: true });
+    }
+    expect(await changeEmail(ctx, userId, { email: 'new5@example.org' })).toEqual({
+      ok: false,
+      error: 'Too many email address changes for this account. Please try again tomorrow.',
+    });
   });
 
   it('lists in the directory by default, and can opt out', async () => {
@@ -204,5 +288,65 @@ describe('account page services (spec §3)', () => {
       error: 'Choose what happens to +883171746412345.',
     });
     expect(findUserByEmail(ctx, 'ada@example.org')).toBeDefined();
+  });
+
+  it('rejects input that does not match its shape instead of throwing', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    expect(await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: { x: 'delete-everything' } }, meta, [])).toMatchObject({
+      ok: false,
+    });
+    expect(await deleteAccount(ctx, userId, 'not an object', meta, [])).toMatchObject({ ok: false });
+    expect(findUserByEmail(ctx, 'ada@example.org')).toBeDefined();
+  });
+
+  it('stops and reports what changed if the core fails partway through, without throwing', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    const released = '+883171746412345';
+    const missing = '+883171746412346'; // never created in the core: subDisable will throw
+    await ctx.core.subCreate(userId, released);
+    const owned = [
+      { number: released, activated: false },
+      { number: missing, activated: true },
+    ];
+    const r = await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: { [missing]: 'disable' } }, meta, owned);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected failure');
+    expect(r.changed).toEqual({ [released]: 'released' });
+    expect(findUserByEmail(ctx, 'ada@example.org')).toBeDefined(); // account kept; nothing else was deleted
+  });
+
+  it('leaves no trace of the address anywhere, and clears the IP from the account’s audit rows', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    await requestMagicLink(ctx, { email: 'ada@example.org' }, meta); // adds a rate-limit row and a stray token
+    const r = await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: {} }, meta, []);
+    expect(r).toEqual({ ok: true });
+    const tables = ctx.db.$client.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[];
+    const dump = tables.flatMap((t) => ctx.db.$client.prepare(`SELECT * FROM ${t.name}`).all());
+    expect(JSON.stringify(dump)).not.toContain('ada@example.org');
+    const rows = ctx.db.select().from(audit).where(eq(audit.actorId, userId)).all();
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.ip === null)).toBe(true);
+  });
+});
+
+describe('housekeeping (spec §10)', () => {
+  it('purges rate-limit rows once no window could still need them', async () => {
+    await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta);
+    expect(ctx.db.$client.prepare('SELECT count(*) AS n FROM rate_events').get()).not.toEqual({ n: 0 });
+    ctx.clock.t += 90 * 24 * 3600_000; // well past every window
+    purgeStale(ctx);
+    expect(ctx.db.$client.prepare('SELECT count(*) AS n FROM rate_events').get()).toEqual({ n: 0 });
+  });
+
+  it('never stores a raw email or IP in the rate-limit table', async () => {
+    await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta);
+    const rows = ctx.db.select().from(rateEvents).all();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.key).not.toContain('ada@example.org');
+      expect(row.key).not.toContain(meta.ip);
+    }
+    expect(rows.map((r) => r.key)).toContain(rateKey('signup_email', 'ada@example.org'));
+    expect(rows.map((r) => r.key)).toContain(rateKey('signup_ip', meta.ip));
   });
 });
