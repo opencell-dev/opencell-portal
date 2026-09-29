@@ -14,7 +14,7 @@ import {
 import { rateKey } from '@/lib/ratelimit';
 import { createSession, sessionFromToken } from '@/lib/sessions';
 import { hashToken, newToken } from '@/lib/tokens';
-import { findUserByEmail } from '@/lib/users';
+import { findUserByEmail, grantRole } from '@/lib/users';
 import { solvedCaptcha } from '../helpers/captcha';
 import { type TestCtx, testCtx } from '../helpers/ctx';
 
@@ -312,7 +312,28 @@ describe('account page services (spec §3)', () => {
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error('expected failure');
     expect(r.changed).toEqual({ [released]: 'released' });
+    expect(r.error).not.toContain('Nothing else was changed');
+    expect(r.error).toContain(released);
+    expect(r.error).toContain('released');
     expect(findUserByEmail(ctx, 'ada@example.org')).toBeDefined(); // account kept; nothing else was deleted
+  });
+
+  it('refuses to let the last admin delete their own account', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    grantRole(ctx, userId, 'admin', null);
+    const r = await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: {} }, meta, []);
+    expect(r).toEqual({ ok: false, error: 'You are the only admin. Promote another admin first, then delete your account.' });
+    expect(findUserByEmail(ctx, 'ada@example.org')).toBeDefined();
+  });
+
+  it('allows an admin to delete their own account once another admin exists', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    const other = await signUpAndVerify('Bob', 'bob@example.org');
+    grantRole(ctx, userId, 'admin', null);
+    grantRole(ctx, other.userId, 'admin', null);
+    const r = await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: {} }, meta, []);
+    expect(r).toEqual({ ok: true });
+    expect(findUserByEmail(ctx, 'ada@example.org')).toBeUndefined();
   });
 
   it('leaves no trace of the address anywhere, and clears the IP from the account’s audit rows', async () => {
@@ -346,7 +367,7 @@ describe('housekeeping (spec §10)', () => {
       expect(row.key).not.toContain('ada@example.org');
       expect(row.key).not.toContain(meta.ip);
     }
-    expect(rows.map((r) => r.key)).toContain(rateKey('signup_email', 'ada@example.org'));
-    expect(rows.map((r) => r.key)).toContain(rateKey('signup_ip', meta.ip));
+    expect(rows.map((r) => r.key)).toContain(rateKey(ctx, 'signup_email', 'ada@example.org'));
+    expect(rows.map((r) => r.key)).toContain(rateKey(ctx, 'signup_ip', meta.ip));
   });
 });

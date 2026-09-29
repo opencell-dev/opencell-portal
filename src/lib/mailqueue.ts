@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Mail, Mailer } from '@/lib/mail';
 
 export interface MailQueue {
@@ -19,7 +20,10 @@ export function createMailQueue(mailer: Mailer): MailQueue {
           try {
             await mailer.send(mail);
           } catch (e) {
-            console.error(`mail to ${mail.to} failed twice, giving up:`, e);
+            // Never log the address itself (spec §10): a short, non-reversible
+            // tag is enough to correlate repeated failures in the log.
+            const tag = createHash('sha256').update(mail.to).digest('hex').slice(0, 8);
+            console.error(`mail to recipient ${tag} failed twice, giving up:`, e);
           }
         }
       })();

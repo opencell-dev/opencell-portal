@@ -9,7 +9,7 @@ import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
 import { hit, longestWindowMs, rateKey } from '@/lib/ratelimit';
 import { createSession, type RequestMeta } from '@/lib/sessions';
 import { hashToken, newToken } from '@/lib/tokens';
-import { findUserByEmail, getUser } from '@/lib/users';
+import { findUserByEmail, getUser, isLastAdmin } from '@/lib/users';
 import { emailSchema, firstError, nameSchema } from '@/lib/validation';
 
 export type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
@@ -247,6 +247,9 @@ export async function deleteAccount(
   if (confirmEmail.trim().toLowerCase() !== u.email) {
     return { ok: false, error: 'Type your email address exactly to confirm.' };
   }
+  if (isLastAdmin(ctx, userId)) {
+    return { ok: false, error: 'You are the only admin. Promote another admin first, then delete your account.' };
+  }
   for (const n of owned) {
     if (n.activated && choices[n.number] !== 'keep' && choices[n.number] !== 'disable') {
       return { ok: false, error: `Choose what happens to ${n.number}.` };
@@ -265,9 +268,11 @@ export async function deleteAccount(
         changed[n.number] = 'kept';
       }
     } catch (e) {
+      const done = Object.entries(changed).map(([num, outcome]) => `${num} was ${outcome}`);
+      const summary = done.length > 0 ? `${done.join(', ')} before that happened.` : 'Nothing else had changed yet.';
       return {
         ok: false,
-        error: `We could not finish deleting your account: ${n.number} could not be updated. Nothing else was changed; please try again.`,
+        error: `We could not finish deleting your account: ${n.number} could not be updated. ${summary} Please try again.`,
         changed,
       };
     }
@@ -283,7 +288,11 @@ export async function deleteAccount(
   ctx.db
     .delete(rateEvents)
     .where(
-      inArray(rateEvents.key, [rateKey('signup_email', u.email), rateKey('magic_email', u.email), rateKey('email_change_user', String(userId))]),
+      inArray(rateEvents.key, [
+        rateKey(ctx, 'signup_email', u.email),
+        rateKey(ctx, 'magic_email', u.email),
+        rateKey(ctx, 'email_change_user', String(userId)),
+      ]),
     )
     .run();
   ctx.db.update(audit).set({ ip: null }).where(eq(audit.actorId, userId)).run();

@@ -51,13 +51,16 @@ export function grantRole(ctx: Ctx, userId: number, role: GrantedRole, byId: num
 
 export type RoleResult = { ok: true } | { ok: false; error: string };
 
+/** Whether `userId` is the only admin left (used to guard both revoking the role and deleting the account). */
+export function isLastAdmin(ctx: Ctx, userId: number): boolean {
+  const admins = ctx.db.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, 'admin')).all();
+  return admins.length <= 1 && admins.some((a) => a.userId === userId);
+}
+
 /** Revoke a role. Refuses to leave the portal with no admin at all. */
 export function revokeRole(ctx: Ctx, userId: number, role: GrantedRole, byId: number | null): RoleResult {
-  if (role === 'admin') {
-    const admins = ctx.db.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, 'admin')).all();
-    if (admins.length <= 1 && admins.some((a) => a.userId === userId)) {
-      return { ok: false, error: 'Cannot remove the last admin.' };
-    }
+  if (role === 'admin' && isLastAdmin(ctx, userId)) {
+    return { ok: false, error: 'Cannot remove the last admin.' };
   }
   const del = ctx.db.delete(userRoles).where(and(eq(userRoles.userId, userId), eq(userRoles.role, role))).run();
   if (del.changes > 0) {

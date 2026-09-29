@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { and, count, eq, gt, lte } from 'drizzle-orm';
 import { rateEvents, settings } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
@@ -44,13 +44,14 @@ export function setLimit(ctx: Ctx, name: LimitName, max: number, windowS?: numbe
 }
 
 /**
- * The key `hit` stores: a hash of the value, never the value itself. Rate
+ * The key `hit` stores: an HMAC of the value, never the value itself. Rate
  * limits track emails and IPs, but spec §10 (personal data) says none of it
  * should sit in the database in the clear once its window has nothing left
- * to check it against.
+ * to check it against. Keyed with the portal secret (not plain sha256) so a
+ * leaked table of hashes can't be brute-forced back to real addresses or IPs.
  */
-export function rateKey(name: LimitName, value: string): string {
-  return `${name}:${createHash('sha256').update(value.trim().toLowerCase()).digest('hex')}`;
+export function rateKey(ctx: Ctx, name: LimitName, value: string): string {
+  return `${name}:${createHmac('sha256', ctx.config.secret).update(value.trim().toLowerCase()).digest('hex')}`;
 }
 
 /** The longest configured window, so stale rate-limit rows can be purged (spec §10). */
@@ -61,7 +62,7 @@ export function longestWindowMs(ctx: Ctx): number {
 /** Count one attempt against `name` for `key`, unless the limit is already reached. */
 export function hit(ctx: Ctx, name: LimitName, key: string): HitResult {
   const { max, windowS } = limitOf(ctx, name);
-  const k = rateKey(name, key);
+  const k = rateKey(ctx, name, key);
   const now = ctx.now();
   const since = now - windowS * 1000;
   return ctx.db.transaction((tx) => {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { rateEvents } from '@/db/schema';
 import { writeAudit, listAudit } from '@/lib/audit';
@@ -24,7 +25,14 @@ describe('rate limits (portal spec §3)', () => {
     const rows = ctx.db.select().from(rateEvents).all();
     expect(rows).toHaveLength(1);
     expect(rows[0].key).not.toContain('ada@example.org');
-    expect(rows[0].key).toBe(rateKey('signup_email', 'ada@example.org'));
+    expect(rows[0].key).toBe(rateKey(ctx, 'signup_email', 'ada@example.org'));
+  });
+
+  it('keys are HMAC’d with the portal secret, so a leaked table can’t be brute-forced back to emails or IPs', () => {
+    const withoutSecret = createHash('sha256').update('ada@example.org').digest('hex');
+    expect(rateKey(ctx, 'signup_email', 'ada@example.org')).not.toBe(`signup_email:${withoutSecret}`);
+    const otherCtx = { ...ctx, config: { ...ctx.config, secret: `${ctx.config.secret}x` } };
+    expect(rateKey(otherCtx, 'signup_email', 'ada@example.org')).not.toBe(rateKey(ctx, 'signup_email', 'ada@example.org'));
   });
 
   it('allows max hits per window per key, then answers with a plain message', () => {
