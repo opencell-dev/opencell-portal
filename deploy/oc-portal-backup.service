@@ -1,0 +1,9 @@
+[Unit]
+Description=OpenCell portal: nightly database backup (kept 14 days)
+
+[Service]
+Type=oneshot
+User=oc-portal
+Group=oc-portal
+UMask=0077
+ExecStart=/usr/local/sbin/oc-portal-backup

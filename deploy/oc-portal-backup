@@ -1,0 +1,10 @@
+#!/bin/bash
+# Online backup of the portal database (sqlite3 .backup), kept 14 days.
+# The age-encrypted push to oc-core-2 comes with the tailnet join (P4).
+set -euo pipefail
+DB=/var/lib/oc-portal/portal.db
+DIR=/var/lib/oc-portal/backups
+mkdir -p "$DIR"
+[ -f "$DB" ] || { echo "no database yet"; exit 0; }
+sqlite3 "$DB" ".backup '$DIR/portal-$(date -u +%Y%m%dT%H%M%SZ).db'"
+find "$DIR" -name 'portal-*.db' -mtime +14 -delete

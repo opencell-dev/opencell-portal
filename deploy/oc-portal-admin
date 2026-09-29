@@ -1,0 +1,10 @@
+#!/bin/bash
+# The portal's admin CLI on the guest, as the service user with the service's
+# configuration: oc-portal-admin promote you@example.org
+set -euo pipefail
+[ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+set -a
+. /etc/opencell/portal.env
+set +a
+cd /opt/oc-portal/current
+exec runuser -u oc-portal -- env HOME=/var/lib/oc-portal ./node_modules/.bin/tsx scripts/oc-portal-admin.ts "$@"

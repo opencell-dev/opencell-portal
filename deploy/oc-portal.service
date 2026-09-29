@@ -1,0 +1,32 @@
+[Unit]
+Description=OpenCell web portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=oc-portal
+Group=oc-portal
+WorkingDirectory=/opt/oc-portal/current
+EnvironmentFile=/etc/opencell/portal.env
+EnvironmentFile=/etc/opencell/portal-smtp.env
+EnvironmentFile=-/opt/oc-portal/current/.version.env
+ExecStart=/usr/bin/node server.mjs
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/oc-portal -/opt/oc-portal/current/.next/cache
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
