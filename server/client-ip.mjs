@@ -30,3 +30,18 @@ export function clientIp(peer, xff, trustedProxy) {
 export function forwardedHeadersTrusted(peer, trustedProxy) {
   return Boolean(trustedProxy) && normalize(peer) === trustedProxy;
 }
+
+/**
+ * Validate and normalize OC_TRUSTED_PROXY at startup. An unusable value is
+ * refused rather than silently falling back to "no proxy trusted": that
+ * fallback is safe, but a typo'd address should stop the process, not run
+ * with client IPs quietly wrong.
+ * @param {string | undefined} value
+ * @returns {string} the normalized address, or '' if none was configured
+ */
+export function parseTrustedProxy(value) {
+  if (!value) return '';
+  const n = normalize(value);
+  if (!isIP(n)) throw new Error(`OC_TRUSTED_PROXY is not a valid IP address: ${JSON.stringify(value)}`);
+  return n;
+}

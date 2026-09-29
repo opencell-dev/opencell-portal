@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clientIp, forwardedHeadersTrusted } from '../../server/client-ip.mjs';
+import { clientIp, forwardedHeadersTrusted, parseTrustedProxy } from '../../server/client-ip.mjs';
 
 const PROXY = '10.0.0.2';
 
@@ -30,5 +30,24 @@ describe('clientIp (X-Forwarded-For only from nginx-proxy, spec §9)', () => {
     expect(forwardedHeadersTrusted('::ffff:10.0.0.2', PROXY)).toBe(true);
     expect(forwardedHeadersTrusted('192.0.2.7', PROXY)).toBe(false);
     expect(forwardedHeadersTrusted('10.0.0.2', '')).toBe(false);
+  });
+});
+
+describe('parseTrustedProxy (startup validation of OC_TRUSTED_PROXY)', () => {
+  it('accepts no proxy configured', () => {
+    expect(parseTrustedProxy(undefined)).toBe('');
+    expect(parseTrustedProxy('')).toBe('');
+  });
+
+  it('accepts a valid address, normalizing an IPv4-mapped ::ffff: form', () => {
+    expect(parseTrustedProxy('10.0.0.2')).toBe('10.0.0.2');
+    expect(parseTrustedProxy('::ffff:10.0.0.2')).toBe('10.0.0.2');
+    expect(parseTrustedProxy('2001:db8::1')).toBe('2001:db8::1');
+  });
+
+  it('refuses to start with an unusable value instead of silently trusting nothing', () => {
+    expect(() => parseTrustedProxy('not-an-ip')).toThrow(/OC_TRUSTED_PROXY/);
+    expect(() => parseTrustedProxy('10.0.0.2, 10.0.0.3')).toThrow(/OC_TRUSTED_PROXY/);
+    expect(() => parseTrustedProxy('10.0.0.2/24')).toThrow(/OC_TRUSTED_PROXY/);
   });
 });

@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { audit, users } from '@/db/schema';
-import { createSession, endSession, isFresh, markReauth, sessionFromToken } from '@/lib/sessions';
+import { canUseAdmin, createSession, endSession, isFresh, markReauth, sessionFromToken } from '@/lib/sessions';
 import { grantRole, revokeRole, rolesOf } from '@/lib/users';
 import { type TestCtx, testCtx } from '../helpers/ctx';
 
@@ -54,6 +54,23 @@ describe('sessions (spec §3)', () => {
     createSession(ctx, uid, 'email', { ip: '192.0.2.1' });
     expect(sessionFromToken(ctx, 'x'.repeat(43))).toBeNull();
     expect(sessionFromToken(ctx, '')).toBeNull();
+  });
+
+  it('does not let a session already older than 12h become admin-capable merely by promotion', () => {
+    const { token } = createSession(ctx, uid, 'passkey', { ip: '192.0.2.1' }, { uv: true });
+    ctx.clock.t += 20 * H; // older than the admin window before promotion even happens
+    grantRole(ctx, uid, 'admin', null); // shortens expiresAt to now+12h, but the session itself is already old
+    const s = sessionFromToken(ctx, token)!.session;
+    expect(canUseAdmin(ctx, s)).toBe(false);
+  });
+
+  it('lets a session created after promotion be admin-capable for up to 12h', () => {
+    grantRole(ctx, uid, 'admin', null);
+    const { token } = createSession(ctx, uid, 'passkey', { ip: '192.0.2.1' }, { uv: true });
+    const s = sessionFromToken(ctx, token)!.session;
+    expect(canUseAdmin(ctx, s)).toBe(true);
+    ctx.clock.t += 12 * H - 1;
+    expect(canUseAdmin(ctx, sessionFromToken(ctx, token)!.session)).toBe(true);
   });
 });
 

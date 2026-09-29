@@ -14,7 +14,7 @@ import {
 import { rateKey } from '@/lib/ratelimit';
 import { createSession, sessionFromToken } from '@/lib/sessions';
 import { hashToken, newToken } from '@/lib/tokens';
-import { findUserByEmail, grantRole } from '@/lib/users';
+import { findUserByEmail, grantRole, revokeRole } from '@/lib/users';
 import { solvedCaptcha } from '../helpers/captcha';
 import { type TestCtx, testCtx } from '../helpers/ctx';
 
@@ -334,6 +334,52 @@ describe('account page services (spec §3)', () => {
     const r = await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: {} }, meta, []);
     expect(r).toEqual({ ok: true });
     expect(findUserByEmail(ctx, 'ada@example.org')).toBeUndefined();
+  });
+
+  it('does not list a merely-kept number as something that changed, if a later number fails', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    const kept = '+883171746412345';
+    const missing = '+883171746412346'; // never created in the core: subDisable will throw
+    const owned = [
+      { number: kept, activated: true },
+      { number: missing, activated: true },
+    ];
+    const r = await deleteAccount(
+      ctx,
+      userId,
+      { confirmEmail: 'ada@example.org', choices: { [kept]: 'keep', [missing]: 'disable' } },
+      meta,
+      owned,
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected failure');
+    expect(r.changed).toEqual({});
+    expect(r.error).not.toContain(kept);
+    expect(r.error).not.toContain('kept');
+  });
+
+  it('re-checks the last-admin guard right before the delete, so a role change racing the core calls cannot slip past it', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    const other = await signUpAndVerify('Bob', 'bob@example.org');
+    grantRole(ctx, userId, 'admin', null);
+    grantRole(ctx, other.userId, 'admin', null); // two admins: the early guard passes
+    const unact = '+883171746412345';
+    await ctx.core.subCreate(userId, unact);
+    const owned = [{ number: unact, activated: false }];
+    const originalRelease = ctx.core.subRelease.bind(ctx.core);
+    ctx.core.subRelease = async (uid: number, number: string) => {
+      // A concurrent request demotes the other admin while this deletion's
+      // core call is in flight, making userId the last admin after all.
+      revokeRole(ctx, other.userId, 'admin', null);
+      return originalRelease(uid, number);
+    };
+    try {
+      const r = await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: {} }, meta, owned);
+      expect(r).toEqual({ ok: false, error: 'You are the only admin. Promote another admin first, then delete your account.' });
+      expect(findUserByEmail(ctx, 'ada@example.org')).toBeDefined();
+    } finally {
+      ctx.core.subRelease = originalRelease;
+    }
   });
 
   it('leaves no trace of the address anywhere, and clears the IP from the account’s audit rows', async () => {

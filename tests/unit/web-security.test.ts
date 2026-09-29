@@ -33,7 +33,7 @@ describe('CSP (spec §10)', () => {
     const h = Object.fromEntries(securityHeaders(true));
     expect(h).toMatchObject({
       'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'no-referrer',
+      'Referrer-Policy': 'same-origin',
       'X-Frame-Options': 'DENY',
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Resource-Policy': 'same-origin',

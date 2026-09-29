@@ -43,15 +43,21 @@ export function setLimit(ctx: Ctx, name: LimitName, max: number, windowS?: numbe
     .run();
 }
 
+/** A sub-key derived from the portal secret for one purpose, the same pattern captcha.ts and passkeys.ts use: never the raw secret itself as an HMAC key. */
+function sub(ctx: Ctx, label: string): string {
+  return createHmac('sha256', ctx.config.secret).update(label).digest('hex');
+}
+
 /**
  * The key `hit` stores: an HMAC of the value, never the value itself. Rate
  * limits track emails and IPs, but spec §10 (personal data) says none of it
  * should sit in the database in the clear once its window has nothing left
- * to check it against. Keyed with the portal secret (not plain sha256) so a
- * leaked table of hashes can't be brute-forced back to real addresses or IPs.
+ * to check it against. Keyed with a label-derived sub-key (not the raw portal
+ * secret, and not plain sha256) so a leaked table of hashes can't be
+ * brute-forced back to real addresses or IPs.
  */
 export function rateKey(ctx: Ctx, name: LimitName, value: string): string {
-  return `${name}:${createHmac('sha256', ctx.config.secret).update(value.trim().toLowerCase()).digest('hex')}`;
+  return `${name}:${createHmac('sha256', sub(ctx, 'rate-key')).update(value.trim().toLowerCase()).digest('hex')}`;
 }
 
 /** The longest configured window, so stale rate-limit rows can be purged (spec §10). */

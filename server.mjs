@@ -3,12 +3,20 @@
 // audit can use it. Anything a client sends in that header is overwritten.
 import { createServer } from 'node:http';
 import next from 'next';
-import { clientIp, forwardedHeadersTrusted } from './server/client-ip.mjs';
+import { clientIp, forwardedHeadersTrusted, parseTrustedProxy } from './server/client-ip.mjs';
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.OC_LISTEN ?? '127.0.0.1';
-const trusted = process.env.OC_TRUSTED_PROXY ?? '';
+
+let trusted;
+try {
+  trusted = parseTrustedProxy(process.env.OC_TRUSTED_PROXY);
+} catch (e) {
+  console.error(e.message);
+  process.exit(1);
+}
+console.log(`oc-portal: trusted proxy is ${trusted || '(none configured — every X-Forwarded-* header is dropped)'}`);
 
 const app = next({ dev, hostname: host, port });
 const handle = app.getRequestHandler();

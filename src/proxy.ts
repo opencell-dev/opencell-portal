@@ -5,6 +5,17 @@ import { buildCsp, originAllowed, securityHeaders } from '@/lib/web-security';
 
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+// Anchored so only the exact reserved paths are skipped: without the trailing
+// `/` and `$`, a path like /favicon.icox or /_next/staticEvil would also
+// match the old, unanchored alternation and bypass the CSP/origin check below.
+export const PROXY_SKIP_SOURCE = '(?:_next/static|_next/image)/|favicon\\.ico$';
+const PROXY_SKIP = new RegExp(`^(?:${PROXY_SKIP_SOURCE})`);
+
+/** Whether the exported matcher would skip this path (kept in sync with it: same source string). */
+export function proxySkipsPath(pathname: string): boolean {
+  return PROXY_SKIP.test(pathname.replace(/^\//, ''));
+}
+
 export function proxy(req: NextRequest) {
   const c = portalConfig();
   const https = c.origin.startsWith('https:');
@@ -22,6 +33,9 @@ export function proxy(req: NextRequest) {
   return res;
 }
 
+// Next statically parses this matcher at build time, so it must be a literal
+// array of literal strings — it can't be built from PROXY_SKIP_SOURCE above.
+// Keep the two in sync; proxy.test.ts checks the literal against the source.
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/((?!(?:_next/static|_next/image)/|favicon\\.ico$).*)'],
 };

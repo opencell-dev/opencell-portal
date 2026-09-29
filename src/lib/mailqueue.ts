@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { Mail, Mailer } from '@/lib/mail';
 
 export interface MailQueue {
@@ -13,6 +13,11 @@ export function createMailQueue(mailer: Mailer): MailQueue {
   const pending = new Set<Promise<void>>();
   return {
     send(mail) {
+      // Never log the address itself (spec §10), and not even an unkeyed
+      // hash of it: an email's low entropy makes that dictionary-able back
+      // to the address. A random per-send tag correlates the two log lines
+      // of one failure without saying anything about who it was to.
+      const tag = randomBytes(4).toString('hex');
       const task = (async () => {
         try {
           await mailer.send(mail);
@@ -20,9 +25,6 @@ export function createMailQueue(mailer: Mailer): MailQueue {
           try {
             await mailer.send(mail);
           } catch (e) {
-            // Never log the address itself (spec §10): a short, non-reversible
-            // tag is enough to correlate repeated failures in the log.
-            const tag = createHash('sha256').update(mail.to).digest('hex').slice(0, 8);
             console.error(`mail to recipient ${tag} failed twice, giving up:`, e);
           }
         }

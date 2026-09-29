@@ -69,7 +69,13 @@ export function isFresh(ctx: Ctx, s: Session): boolean {
   return s.method === 'passkey' && s.reauthAt !== null && ctx.now() - s.reauthAt < REAUTH_MS;
 }
 
-/** Admin pages need an admin whose session was opened with a UV-verified passkey. */
+/**
+ * Admin pages need an admin whose session was opened with a UV-verified
+ * passkey, no older than the 12h admin window. That bound is enforced here,
+ * not just by shortening expiresAt at grant time: a long-lived session that
+ * predates the promotion by more than 12h must not become admin-capable just
+ * because it's still otherwise valid.
+ */
 export function canUseAdmin(ctx: Ctx, s: Session): boolean {
-  return s.method === 'passkey' && s.uv && isAdmin(ctx, s.userId);
+  return s.method === 'passkey' && s.uv && isAdmin(ctx, s.userId) && ctx.now() - s.createdAt < ADMIN_SESSION_MS;
 }

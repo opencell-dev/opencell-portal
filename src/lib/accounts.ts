@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import { z } from 'zod';
-import { audit, challenges, emailTokens, rateEvents, sessions, users } from '@/db/schema';
+import { audit, challenges, emailTokens, rateEvents, sessions, userRoles, users } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import { checkCaptcha } from '@/lib/captcha';
 import type { Ctx } from '@/lib/ctx';
@@ -247,14 +247,16 @@ export async function deleteAccount(
   if (confirmEmail.trim().toLowerCase() !== u.email) {
     return { ok: false, error: 'Type your email address exactly to confirm.' };
   }
-  if (isLastAdmin(ctx, userId)) {
-    return { ok: false, error: 'You are the only admin. Promote another admin first, then delete your account.' };
-  }
+  const lastAdminError = { ok: false as const, error: 'You are the only admin. Promote another admin first, then delete your account.' };
+  if (isLastAdmin(ctx, userId)) return lastAdminError;
   for (const n of owned) {
     if (n.activated && choices[n.number] !== 'keep' && choices[n.number] !== 'disable') {
       return { ok: false, error: `Choose what happens to ${n.number}.` };
     }
   }
+  // Only numbers that actually change land in `changed`: a 'keep' choice
+  // makes no core call, so there's nothing to report for it, on success or
+  // on a later number's failure.
   const changed: Record<string, string> = {};
   for (const n of owned) {
     try {
@@ -264,12 +266,10 @@ export async function deleteAccount(
       } else if (choices[n.number] === 'disable') {
         await ctx.core.subDisable(userId, n.number);
         changed[n.number] = 'disabled';
-      } else {
-        changed[n.number] = 'kept';
       }
     } catch (e) {
       const done = Object.entries(changed).map(([num, outcome]) => `${num} was ${outcome}`);
-      const summary = done.length > 0 ? `${done.join(', ')} before that happened.` : 'Nothing else had changed yet.';
+      const summary = done.length > 0 ? `${done.join(', ')} before that happened.` : 'Nothing had changed yet.';
       return {
         ok: false,
         error: `We could not finish deleting your account: ${n.number} could not be updated. ${summary} Please try again.`,
@@ -278,25 +278,35 @@ export async function deleteAccount(
     }
   }
   const counts = { released: 0, disabled: 0, kept: 0 };
-  for (const outcome of Object.values(changed)) {
-    if (outcome === 'released') counts.released++;
-    else if (outcome === 'disabled') counts.disabled++;
+  for (const n of owned) {
+    if (!n.activated) counts.released++;
+    else if (choices[n.number] === 'disable') counts.disabled++;
     else counts.kept++;
   }
-  // No trace of the address should survive: rate-limit rows are keyed by a
-  // hash of it, and past audit rows carry the IP the account acted from.
-  ctx.db
-    .delete(rateEvents)
-    .where(
-      inArray(rateEvents.key, [
-        rateKey(ctx, 'signup_email', u.email),
-        rateKey(ctx, 'magic_email', u.email),
-        rateKey(ctx, 'email_change_user', String(userId)),
-      ]),
-    )
-    .run();
-  ctx.db.update(audit).set({ ip: null }).where(eq(audit.actorId, userId)).run();
-  ctx.db.delete(users).where(eq(users.id, userId)).run();
+  // The last-admin guard is re-checked here, right after the last `await`
+  // above, and the actual delete runs in the same transaction as that check:
+  // nothing async happens between them, so a role change racing the core
+  // calls (another admin demoted while this request was in flight) can't
+  // slip past the guard.
+  const result = ctx.db.transaction((tx) => {
+    const admins = tx.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, 'admin')).all();
+    if (admins.length <= 1 && admins.some((a) => a.userId === userId)) return lastAdminError;
+    // No trace of the address should survive: rate-limit rows are keyed by a
+    // hash of it, and past audit rows carry the IP the account acted from.
+    tx.delete(rateEvents)
+      .where(
+        inArray(rateEvents.key, [
+          rateKey(ctx, 'signup_email', u.email),
+          rateKey(ctx, 'magic_email', u.email),
+          rateKey(ctx, 'email_change_user', String(userId)),
+        ]),
+      )
+      .run();
+    tx.update(audit).set({ ip: null }).where(eq(audit.actorId, userId)).run();
+    tx.delete(users).where(eq(users.id, userId)).run();
+    return { ok: true as const };
+  });
+  if (!result.ok) return result;
   writeAudit(ctx, { actorId: userId, action: 'account.delete', target: `user:${userId}`, detail: { numbers: counts } });
   return { ok: true };
 }

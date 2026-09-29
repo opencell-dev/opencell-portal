@@ -22,7 +22,11 @@ export function buildCsp(nonce: string, o: { dev: boolean; https: boolean }): st
 export function securityHeaders(https: boolean): [string, string][] {
   const h: [string, string][] = [
     ['X-Content-Type-Options', 'nosniff'],
-    ['Referrer-Policy', 'no-referrer'],
+    // 'no-referrer' makes Chromium send Origin: null on a same-origin HTML
+    // form POST, which our own origin check would then reject — breaking the
+    // portal's own no-JS forms. same-origin keeps the referrer off the wire
+    // to any other site while still telling the browser this is same-origin.
+    ['Referrer-Policy', 'same-origin'],
     ['X-Frame-Options', 'DENY'],
     ['Cross-Origin-Opener-Policy', 'same-origin'],
     ['Cross-Origin-Resource-Policy', 'same-origin'],
