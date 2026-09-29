@@ -60,9 +60,9 @@ export function endSession(ctx: Ctx, token: string): void {
   ctx.db.delete(sessions).where(eq(sessions.id, hashToken(token))).run();
 }
 
-/** Record a fresh passkey assertion on this session (admin re-auth, spec §3). */
+/** Record a fresh passkey assertion on this session (admin re-auth, spec §3). Always UV-verified (finishReauth requires it), so the session becomes UV-consistent too. */
 export function markReauth(ctx: Ctx, sessionId: string): void {
-  ctx.db.update(sessions).set({ reauthAt: ctx.now() }).where(eq(sessions.id, sessionId)).run();
+  ctx.db.update(sessions).set({ reauthAt: ctx.now(), uv: true }).where(eq(sessions.id, sessionId)).run();
 }
 
 export function isFresh(ctx: Ctx, s: Session): boolean {

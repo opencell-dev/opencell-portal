@@ -192,6 +192,22 @@ describe('passkeys (spec §3)', () => {
     expect(ctx.db.select().from(audit).where(eq(audit.action, 'passkey.counter_regression')).all()).toHaveLength(1);
   });
 
+  it('does not audit a forged assertion (junk signature, counter reset to 0) as a genuine regression', async () => {
+    const uid = addUser('ada@example.org');
+    await register(uid);
+    expect((await signIn()).ok).toBe(true); // establishes a real counter (1) on file
+    const { challengeId, options } = await signInOptions(ctx);
+    // An attacker who only knows the credential id, not its private key: the
+    // counter check runs before the signature check, so a naive audit would
+    // fire on this alone.
+    const forged = auth.forge(options);
+    expect(await finishSignIn(ctx, challengeId, forged, meta)).toEqual({
+      ok: false,
+      error: 'The passkey could not be checked. Please try again.',
+    });
+    expect(ctx.db.select().from(audit).where(eq(audit.action, 'passkey.counter_regression')).all()).toHaveLength(0);
+  });
+
   it('binds a challenge to the session that requested it, not just the user', async () => {
     const a = addUser('ada@example.org');
     const b = addUser('bob@example.org');
@@ -246,6 +262,20 @@ describe('admins (spec §3)', () => {
     const withUV = await signIn();
     if (!withUV.ok) throw new Error(withUV.error);
     expect(canUseAdmin(ctx, sessionFromToken(ctx, withUV.sessionToken)!.session)).toBe(true);
+  });
+
+  it('becomes admin-capable after a UV re-auth, even if the sign-in itself lacked UV', async () => {
+    const uid = addUser('root@example.org');
+    await register(uid);
+    grantRole(ctx, uid, 'admin', null);
+    const { challengeId, options } = await signInOptions(ctx);
+    const r = await finishSignIn(ctx, challengeId, auth.get(options, undefined, false), meta);
+    if (!r.ok) throw new Error(r.error);
+    const s = sessionFromToken(ctx, r.sessionToken)!.session;
+    expect(canUseAdmin(ctx, s)).toBe(false);
+    const eo = await reauthOptions(ctx, s);
+    expect(await finishReauth(ctx, s, eo.challengeId, auth.get(eo.options), meta)).toEqual({ ok: true });
+    expect(canUseAdmin(ctx, sessionFromToken(ctx, r.sessionToken)!.session)).toBe(true);
   });
 
   it('re-authenticates with a fresh assertion from the session’s own user', async () => {

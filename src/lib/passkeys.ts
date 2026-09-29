@@ -186,16 +186,33 @@ async function checkAssertion(
       requireUserVerification: requireUV,
     });
   } catch (e) {
-    // SimpleWebAuthn itself rejects a counter that didn't advance past what's on
-    // file (a signal of a possibly cloned authenticator); audit it distinctly.
+    // SimpleWebAuthn checks the counter before the signature, so a forged
+    // assertion (correct credential id, junk signature, counter reset to 0 —
+    // no private key needed) hits this same error. Re-verify with the
+    // counter check disabled, so only the signature is tested; audit a
+    // regression only once that passes. Either way, this sign-in still fails.
     if (e instanceof Error && /counter value/i.test(e.message)) {
-      writeAudit(ctx, {
-        actorId: p.userId,
-        action: 'passkey.counter_regression',
-        target: `user:${p.userId}`,
-        detail: { credentialId: shortId(p.id) },
-        ip: meta.ip,
-      });
+      try {
+        const v2 = await verifyAuthenticationResponse({
+          response,
+          expectedChallenge,
+          expectedOrigin: ctx.config.origin,
+          expectedRPID: ctx.config.rpId,
+          credential: { id: p.id, publicKey: new Uint8Array(p.publicKey), counter: 0, transports: transportsOf(p) },
+          requireUserVerification: requireUV,
+        });
+        if (v2.verified) {
+          writeAudit(ctx, {
+            actorId: p.userId,
+            action: 'passkey.counter_regression',
+            target: `user:${p.userId}`,
+            detail: { credentialId: shortId(p.id) },
+            ip: meta.ip,
+          });
+        }
+      } catch {
+        // Signature also failed to verify: a forged assertion, not a genuine regression.
+      }
     }
     return null;
   }

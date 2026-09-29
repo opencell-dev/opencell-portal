@@ -104,4 +104,31 @@ export class SoftAuthenticator {
       authenticatorAttachment: 'platform',
     };
   }
+
+  /**
+   * A forged assertion: the real credential id and a well-formed envelope,
+   * but a junk signature and the counter reset to 0 — everything an
+   * attacker who only knows the credential id (not its private key) could
+   * produce. Doesn't touch the credential's own counter.
+   */
+  forge(options: PublicKeyCredentialRequestOptionsJSON, which = this.creds.length - 1): AuthenticationResponseJSON {
+    const c = this.creds[which];
+    const authData = this.authData(options.rpId!, 0x01 | 0x04, 0);
+    const clientDataJSON = Buffer.from(
+      JSON.stringify({ type: 'webauthn.get', challenge: options.challenge, origin: this.origin, crossOrigin: false }),
+    );
+    return {
+      id: b64u(c.id),
+      rawId: b64u(c.id),
+      type: 'public-key',
+      response: {
+        clientDataJSON: b64u(clientDataJSON),
+        authenticatorData: b64u(authData),
+        signature: b64u(randomBytes(64)),
+        userHandle: c.userHandle,
+      },
+      clientExtensionResults: {},
+      authenticatorAttachment: 'platform',
+    };
+  }
 }
