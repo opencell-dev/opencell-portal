@@ -10,6 +10,25 @@
 # absolute path below at a scratch tree instead of the real guest; it is
 # unset in production, so the paths below are the real absolute ones.
 #
+# A dropped SSH session must not leave a broken release live: over a non-pty
+# `ssh ... bash -s`, sshd simply closes the pipes on disconnect (it does not
+# send SIGHUP), so the first write to the now-closed stdout/stderr would
+# kill the remote bash with SIGPIPE mid health-check, before its own
+# rollback can run. So the remote script redirects its own stdout/stderr to
+# a local log on the guest (var/log/oc-portal-deploy.log, 0600) before doing
+# anything else, and ignores HUP and PIPE besides -- it no longer depends on
+# the SSH pipe at all once past that line, so it runs to completion
+# (including any rollback) regardless of what happens to the connection.
+# Each run is tagged with a run id; it records its own log lines between
+# "=== run <id> start" / "=== run <id> end" markers and its final exit
+# status in var/lib/oc-portal/deploy-status/<id>. After the ssh call
+# returns, the local side always fetches this run's slice of the log
+# (a second, short-lived ssh call, independent of whether the first one
+# dropped) and, if ssh's own exit code doesn't look like a real remote exit
+# status (i.e. anything other than 0 or 1 -- ssh's own connection-error
+# codes, conventionally 255), polls the status file briefly for the
+# authoritative result instead of just giving up.
+#
 # Restoring across a schema migration: `rollback` only swaps `current` back
 # to the previous release's code and takes a DB backup first — it does not
 # reverse a schema migration the release being rolled back from may have
@@ -29,6 +48,40 @@ usage() {
 
 remote() { $SSH "bash -s" -- "$@"; }
 
+# Polls the guest's recorded status for a run, briefly (up to ~5s): the
+# remote script may still be finishing up when ssh itself already returned.
+wait_for_status() { # run_id
+  local run_id="$1" tries=25 s
+  while [ "$tries" -gt 0 ]; do
+    s="$($SSH "ROOT=\"\${OC_PORTAL_ROOT:-}\"; cat \"\$ROOT/var/lib/oc-portal/deploy-status/$run_id\" 2>/dev/null" 2>/dev/null || true)"
+    if [ -n "$s" ]; then printf '%s' "$s"; return 0; fi
+    sleep 0.2
+    tries=$((tries - 1))
+  done
+  return 1
+}
+
+# Always shows this run's guest-side log (a fresh, short ssh call -- the
+# original one may have dropped and this is how the operator sees what
+# happened), then resolves the real exit status: ssh's own is trusted if it
+# looks like one of ours (0 or 1); anything else (typically 255, ssh's own
+# "the connection failed") falls back to the guest's recorded status, since
+# the remote script keeps running independently of the dropped connection.
+finish_run() { # run_id ssh_rc
+  local run_id="$1" rc="$2" status
+  $SSH "ROOT=\"\${OC_PORTAL_ROOT:-}\"; sed -n \"/^=== run $run_id start/,/^=== run $run_id end/p\" \"\$ROOT/var/log/oc-portal-deploy.log\" 2>/dev/null" || true
+  case "$rc" in
+    0|1) return "$rc" ;;
+  esac
+  echo "ssh exited $rc (the connection may have dropped); the run keeps going on the guest independently -- checking its recorded status for $run_id" >&2
+  if status="$(wait_for_status "$run_id")"; then
+    echo "guest recorded exit $status for run $run_id" >&2
+    return "$status"
+  fi
+  echo "no status recorded yet for run $run_id -- it may still be running; check again with 'oc-portal-deploy status' or re-run this command shortly" >&2
+  return 1
+}
+
 # Runs on the guest: switch `current` to a release, restart, wait for health.
 # `previous` is only written once the new release is confirmed healthy, so a
 # failed switch (which restores the old `current`) never leaves `previous`
@@ -46,11 +99,11 @@ switch_to() {
     fi
     sleep 1
   done
-  echo "not healthy after 30 s: $want" >&2
+  echo "not healthy after 30 s: $want"
   if [ -n "$prev" ] && [ "$prev" != "$target" ]; then
     ln -sfn "$prev" "$ROOT/opt/oc-portal/current.new" && mv -T "$ROOT/opt/oc-portal/current.new" "$ROOT/opt/oc-portal/current"
     systemctl restart oc-portal || true
-    echo "rolled back to $prev" >&2
+    echo "rolled back to $prev"
   fi
   return 1
 }
@@ -64,21 +117,46 @@ case "$cmd" in
     git -C "$REPO" rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "no tag $tag in this repository" >&2; exit 2; }
     echo "sending $tag"
     git -C "$REPO" archive --format=tar --prefix="$tag/" "refs/tags/$tag" | $SSH "ROOT=\"\${OC_PORTAL_ROOT:-}\"; rm -rf \"\$ROOT/opt/oc-portal/releases/$tag.tmp\" && mkdir -p \"\$ROOT/opt/oc-portal/releases/$tag.tmp\" && tar -x -C \"\$ROOT/opt/oc-portal/releases/$tag.tmp\""
-    remote "$tag" "$KEEP" <<REMOTE
+    run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    set +e
+    remote "$run_id" "$tag" "$KEEP" <<REMOTE
 set -euo pipefail
-trap '' HUP
+trap '' HUP PIPE
 ROOT="\${OC_PORTAL_ROOT:-}"
+runid="\$1"; tag="\$2"; keep="\$3"
+rel="\$ROOT/opt/oc-portal/releases/\$tag"
+LOG="\$ROOT/var/log/oc-portal-deploy.log"
+mkdir -p "\$(dirname "\$LOG")"
+: >> "\$LOG"; chmod 0600 "\$LOG"
+STATUS_DIR="\$ROOT/var/lib/oc-portal/deploy-status"
+mkdir -p "\$STATUS_DIR"; chmod 0700 "\$STATUS_DIR" 2>/dev/null || true
+exec >>"\$LOG" 2>&1
+echo "=== run \$runid start \$(date -u +%Y-%m-%dT%H:%M:%SZ) deploy \$tag ==="
+record_status() {
+  local rc="\$?"
+  rm -rf "\${build:-}" 2>/dev/null
+  echo "\$rc" > "\$STATUS_DIR/\$runid" 2>/dev/null || true
+  echo "=== run \$runid end \$(date -u +%Y-%m-%dT%H:%M:%SZ) rc=\$rc ==="
+}
+trap record_status EXIT
 mkdir -p "\$ROOT/run"
 exec 9>"\$ROOT/run/oc-portal-deploy.lock"
-flock -n 9 || { echo "another deploy/rollback is in progress" >&2; exit 1; }
+if ! flock -n 9; then
+  echo "another deploy/rollback is in progress"
+  rm -rf "\$rel.tmp"
+  exit 1
+fi
 $SWITCH
-tag="\$1"; keep="\$2"
-rel="\$ROOT/opt/oc-portal/releases/\$tag"
 build="\$ROOT/opt/oc-portal/releases/.build-\$tag-\$\$"
-trap 'rm -rf "\$build" 2>/dev/null' EXIT
 cur="\$(basename "\$(readlink "\$ROOT/opt/oc-portal/current" 2>/dev/null || true)")"
+prev_tag="\$(basename "\$(cat "\$ROOT/opt/oc-portal/previous" 2>/dev/null || true)")"
 if [ "\$tag" = "\$cur" ]; then
-  echo "refusing: \$tag is already the running release (current)" >&2
+  echo "refusing: \$tag is already the running release (current)"
+  rm -rf "\$rel.tmp"
+  exit 1
+fi
+if [ "\$tag" = "\$prev_tag" ]; then
+  echo "refusing: \$tag is the previous (rollback) release; use 'oc-portal-deploy rollback' instead of redeploying it"
   rm -rf "\$rel.tmp"
   exit 1
 fi
@@ -91,12 +169,13 @@ chown -R oc-portal:oc-portal "\$build"
   runuser -u oc-portal -- env HOME=/var/lib/oc-portal NODE_ENV=production npx next build
 )
 # Only now, with a built release in hand, touch the live path: a failed
-# build above (set -e) leaves the current/previous trees completely alone.
+# build above (set -e) leaves current and previous completely alone, and
+# redeploying either of those two tags was already refused above.
 rm -rf "\$rel"
-mv "\$build" "\$rel"
+mv -T "\$build" "\$rel"
 if [ -f "\$ROOT/var/lib/oc-portal/portal.db" ]; then
   runuser -u oc-portal -- sqlite3 "\$ROOT/var/lib/oc-portal/portal.db" ".backup '\$ROOT/var/lib/oc-portal/backups/pre-\$tag-\$(date -u +%Y%m%dT%H%M%SZ).db'"
-  find "\$ROOT/var/lib/oc-portal/backups" -maxdepth 1 -name 'pre-*.db' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f
+  find "\$ROOT/var/lib/oc-portal/backups" -maxdepth 1 -type f -name 'pre-*.db' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f
 fi
 switch_to "\$rel" "\$tag"
 cd "\$ROOT/opt/oc-portal/releases" || exit 1
@@ -113,26 +192,59 @@ done
 if [ "\${#old[@]}" -gt \$((keep - 2)) ]; then
   printf '%s\n' "\${old[@]:\$((keep - 2))}" | xargs -r rm -rf
 fi
+# A run killed before its own EXIT trap could clean up leaves a stale build
+# scratch dir behind; sweep anything older than an hour.
+find "\$ROOT/opt/oc-portal/releases" -maxdepth 1 -name '.build-*' -mmin +60 -exec rm -rf {} +
 REMOTE
+    rc=$?
+    set -e
+    set +e
+    finish_run "$run_id" "$rc"
+    frc=$?
+    set -e
+    exit "$frc"
     ;;
   rollback)
     [ $# -eq 1 ] || usage
-    remote <<REMOTE
+    run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    set +e
+    remote "$run_id" <<REMOTE
 set -euo pipefail
-trap '' HUP
+trap '' HUP PIPE
 ROOT="\${OC_PORTAL_ROOT:-}"
+runid="\$1"
+LOG="\$ROOT/var/log/oc-portal-deploy.log"
+mkdir -p "\$(dirname "\$LOG")"
+: >> "\$LOG"; chmod 0600 "\$LOG"
+STATUS_DIR="\$ROOT/var/lib/oc-portal/deploy-status"
+mkdir -p "\$STATUS_DIR"; chmod 0700 "\$STATUS_DIR" 2>/dev/null || true
+exec >>"\$LOG" 2>&1
+echo "=== run \$runid start \$(date -u +%Y-%m-%dT%H:%M:%SZ) rollback ==="
+record_status() {
+  local rc="\$?"
+  echo "\$rc" > "\$STATUS_DIR/\$runid" 2>/dev/null || true
+  echo "=== run \$runid end \$(date -u +%Y-%m-%dT%H:%M:%SZ) rc=\$rc ==="
+}
+trap record_status EXIT
 mkdir -p "\$ROOT/run"
 exec 9>"\$ROOT/run/oc-portal-deploy.lock"
-flock -n 9 || { echo "another deploy/rollback is in progress" >&2; exit 1; }
+flock -n 9 || { echo "another deploy/rollback is in progress"; exit 1; }
 $SWITCH
 prev="\$(cat "\$ROOT/opt/oc-portal/previous" 2>/dev/null || true)"
-[ -n "\$prev" ] && [ -d "\$prev" ] || { echo "no previous build to roll back to" >&2; exit 1; }
+[ -n "\$prev" ] && [ -d "\$prev" ] || { echo "no previous build to roll back to"; exit 1; }
 target_tag="\$(basename "\$prev")"
 if [ -f "\$ROOT/var/lib/oc-portal/portal.db" ]; then
   runuser -u oc-portal -- sqlite3 "\$ROOT/var/lib/oc-portal/portal.db" ".backup '\$ROOT/var/lib/oc-portal/backups/pre-rollback-\$target_tag-\$(date -u +%Y%m%dT%H%M%SZ).db'"
 fi
 switch_to "\$prev" "\$target_tag"
 REMOTE
+    rc=$?
+    set -e
+    set +e
+    finish_run "$run_id" "$rc"
+    frc=$?
+    set -e
+    exit "$frc"
     ;;
   status)
     [ $# -eq 1 ] || usage

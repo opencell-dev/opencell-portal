@@ -17,6 +17,7 @@ set -euo pipefail
 exec systemd-run --quiet --wait --pipe --collect \
   -p User=oc-portal \
   -p Group=oc-portal \
+  -p UMask=0077 \
   -p WorkingDirectory=/opt/oc-portal/current \
   -p EnvironmentFile=/etc/opencell/portal.env \
   -p EnvironmentFile=/etc/opencell/portal-smtp.env \
