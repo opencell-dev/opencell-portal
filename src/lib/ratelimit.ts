@@ -5,22 +5,58 @@ import { rateEvents, settings } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 
 // Portal spec §3 "Rate limits". Admins can change max and window; the
-// messages stay plain.
+// messages stay plain. `perIp` marks a limit counted per client address:
+// those take the address through hitIp, which buckets IPv6 by /64.
 export const LIMITS = {
-  signup_ip: { max: 5, windowS: 3600, message: 'Too many sign-ups from your network. Please try again in about an hour.' },
-  signup_email: { max: 3, windowS: 86400, message: 'Too many sign-ups for this email address today. Please try again tomorrow.' },
-  magic_email: { max: 5, windowS: 3600, message: 'Too many sign-in links for this email address. Please try again in about an hour.' },
-  magic_ip: { max: 20, windowS: 3600, message: 'Too many sign-in link requests from your network. Please try again in about an hour.' },
-  signin_ip: { max: 30, windowS: 600, message: 'Too many passkey sign-in attempts from your network. Please try again in a few minutes.' },
+  signup_ip: {
+    perIp: true,
+    max: 5,
+    windowS: 3600,
+    message: 'Too many sign-ups from your network. Please try again in about an hour.',
+  },
+  signup_email: {
+    perIp: false,
+    max: 3,
+    windowS: 86400,
+    message: 'Too many sign-ups for this email address today. Please try again tomorrow.',
+  },
+  magic_email: {
+    perIp: false,
+    max: 5,
+    windowS: 3600,
+    message: 'Too many sign-in links for this email address. Please try again in about an hour.',
+  },
+  magic_ip: {
+    perIp: true,
+    max: 20,
+    windowS: 3600,
+    message: 'Too many sign-in link requests from your network. Please try again in about an hour.',
+  },
+  signin_ip: {
+    perIp: true,
+    max: 30,
+    windowS: 600,
+    message: 'Too many passkey sign-in attempts from your network. Please try again in a few minutes.',
+  },
   email_change_user: {
+    perIp: false,
     max: 5,
     windowS: 86400,
     message: 'Too many email address changes for this account. Please try again tomorrow.',
   },
-  number_account: { max: 10, windowS: 86400, message: 'You have asked for numbers too often today. Please try again tomorrow.' },
+  number_account: {
+    perIp: false,
+    max: 10,
+    windowS: 86400,
+    message: 'You have asked for numbers too often today. Please try again tomorrow.',
+  },
 } as const;
 
 export type LimitName = keyof typeof LIMITS;
+/** Limits counted per client address (declared with `perIp: true`). */
+export type IpLimitName = { [K in LimitName]: (typeof LIMITS)[K]['perIp'] extends true ? K : never }[LimitName];
+/** Limits counted per some other key: an email address, an account id. */
+export type KeyLimitName = Exclude<LimitName, IpLimitName>;
 export type HitResult = { ok: true } | { ok: false; message: string; retryAfterS: number };
 
 export function isLimitName(s: string): s is LimitName {
@@ -59,13 +95,8 @@ function sub(ctx: Ctx, label: string): string {
  * brute-forced back to real addresses or IPs.
  */
 export function rateKey(ctx: Ctx, name: LimitName, value: string): string {
-  const v = perIp(name) ? ipBucket(value) : value;
+  const v = LIMITS[name].perIp ? ipBucket(value) : value;
   return `${name}:${createHmac('sha256', sub(ctx, 'rate-key')).update(v.trim().toLowerCase()).digest('hex')}`;
-}
-
-/** A limit named `*_ip` is keyed by the client's address (signup_ip, magic_ip, signin_ip). */
-function perIp(name: LimitName): boolean {
-  return name.endsWith('_ip');
 }
 
 /** An IPv6 address as its 8 hextets (it must already pass isIPv6, zone id removed). */
@@ -106,8 +137,19 @@ export function longestWindowMs(ctx: Ctx): number {
   return Math.max(...(Object.keys(LIMITS) as LimitName[]).map((n) => limitOf(ctx, n).windowS)) * 1000;
 }
 
-/** Count one attempt against `name` for `key`, unless the limit is already reached. */
-export function hit(ctx: Ctx, name: LimitName, key: string): HitResult {
+/** Count one attempt against a keyed limit (email, account id), unless it is already reached. */
+export function hit(ctx: Ctx, name: KeyLimitName, key: string): HitResult {
+  if (LIMITS[name].perIp) throw new Error(`${name} is a per-IP limit: count it with hitIp`);
+  return count1(ctx, name, key);
+}
+
+/** Count one attempt from client address `ip` against a per-IP limit (IPv6 bucketed by /64). */
+export function hitIp(ctx: Ctx, name: IpLimitName, ip: string): HitResult {
+  if (!LIMITS[name].perIp) throw new Error(`${name} is not a per-IP limit: count it with hit`);
+  return count1(ctx, name, ip);
+}
+
+function count1(ctx: Ctx, name: LimitName, key: string): HitResult {
   const { max, windowS } = limitOf(ctx, name);
   const k = rateKey(ctx, name, key);
   const now = ctx.now();

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { rateEvents } from '@/db/schema';
 import { writeAudit, listAudit } from '@/lib/audit';
-import { hit, limitOf, rateKey, setLimit } from '@/lib/ratelimit';
+import { hit, hitIp, LIMITS, limitOf, rateKey, setLimit } from '@/lib/ratelimit';
 import { type TestCtx, testCtx } from '../helpers/ctx';
 
 let ctx: TestCtx;
@@ -21,6 +21,24 @@ describe('rate limits (portal spec §3)', () => {
     expect(limitOf(ctx, 'number_account')).toEqual({ max: 10, windowS: 86400 });
   });
 
+  it('declares which limits are per-IP, and takes their address only through hitIp', () => {
+    const perIp = Object.entries(LIMITS)
+      .filter(([, l]) => l.perIp)
+      .map(([n]) => n)
+      .sort();
+    expect(perIp).toEqual(['magic_ip', 'signin_ip', 'signup_ip']);
+    expect(() => hit(ctx, 'signup_ip' as never, '192.0.2.1')).toThrow(/hitIp/);
+    expect(() => hitIp(ctx, 'magic_email' as never, '192.0.2.1')).toThrow(/not a per-IP limit/);
+    // Compile-time: `hit` does not accept a per-IP limit, nor `hitIp` a keyed one.
+    const typeOnly = () => {
+      // @ts-expect-error a per-IP limit takes its address through hitIp
+      hit(ctx, 'signup_ip', '192.0.2.1');
+      // @ts-expect-error magic_email is not a per-IP limit
+      hitIp(ctx, 'magic_email', 'a@example.org');
+    };
+    expect(typeOnly).toBeTypeOf('function');
+  });
+
   it('buckets IPv6 clients by /64 for every per-IP limit (IPv4 whole; mapped IPv4 as IPv4)', () => {
     for (const name of ['signup_ip', 'magic_ip', 'signin_ip'] as const) {
       expect(rateKey(ctx, name, '2001:db8:1:2::1')).toBe(rateKey(ctx, name, '2001:db8:1:2:aaaa:bbbb:cccc:dddd'));
@@ -28,9 +46,9 @@ describe('rate limits (portal spec §3)', () => {
       expect(rateKey(ctx, name, '::ffff:1.2.3.4')).toBe(rateKey(ctx, name, '1.2.3.4'));
       expect(rateKey(ctx, name, '1.2.3.4')).not.toBe(rateKey(ctx, name, '1.2.3.5'));
     }
-    for (let i = 1; i <= 5; i++) expect(hit(ctx, 'signup_ip', `2001:db8:1:2::${i}`).ok).toBe(true);
-    expect(hit(ctx, 'signup_ip', '2001:db8:1:2::99').ok).toBe(false); // same /64, sixth sign-up
-    expect(hit(ctx, 'signup_ip', '2001:db8:1:3::1').ok).toBe(true); // another /64
+    for (let i = 1; i <= 5; i++) expect(hitIp(ctx, 'signup_ip', `2001:db8:1:2::${i}`).ok).toBe(true);
+    expect(hitIp(ctx, 'signup_ip', '2001:db8:1:2::99').ok).toBe(false); // same /64, sixth sign-up
+    expect(hitIp(ctx, 'signup_ip', '2001:db8:1:3::1').ok).toBe(true); // another /64
   });
 
   it('does not bucket keys of limits that are not per-IP', () => {
@@ -53,16 +71,16 @@ describe('rate limits (portal spec §3)', () => {
   });
 
   it('allows max hits per window per key, then answers with a plain message', () => {
-    for (let i = 0; i < 5; i++) expect(hit(ctx, 'signup_ip', '192.0.2.1').ok).toBe(true);
-    const sixth = hit(ctx, 'signup_ip', '192.0.2.1');
+    for (let i = 0; i < 5; i++) expect(hitIp(ctx, 'signup_ip', '192.0.2.1').ok).toBe(true);
+    const sixth = hitIp(ctx, 'signup_ip', '192.0.2.1');
     expect(sixth).toEqual({
       ok: false,
       message: 'Too many sign-ups from your network. Please try again in about an hour.',
       retryAfterS: 3600,
     });
-    expect(hit(ctx, 'signup_ip', '192.0.2.2').ok).toBe(true); // another key
+    expect(hitIp(ctx, 'signup_ip', '192.0.2.2').ok).toBe(true); // another key
     ctx.clock.t += 3600_000;
-    expect(hit(ctx, 'signup_ip', '192.0.2.1').ok).toBe(true); // the window slid past
+    expect(hitIp(ctx, 'signup_ip', '192.0.2.1').ok).toBe(true); // the window slid past
   });
 
   it('does not count refused attempts', () => {

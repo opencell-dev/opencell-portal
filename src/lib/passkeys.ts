@@ -14,7 +14,7 @@ import type { Result } from '@/lib/accounts';
 import { writeAudit } from '@/lib/audit';
 import { UserError } from '@/lib/errors';
 import type { Ctx } from '@/lib/ctx';
-import { hit } from '@/lib/ratelimit';
+import { hitIp } from '@/lib/ratelimit';
 import { createSession, isFresh, markReauth, type RequestMeta, type Session } from '@/lib/sessions';
 import { newToken } from '@/lib/tokens';
 import { getUser, isAdmin } from '@/lib/users';
@@ -169,7 +169,7 @@ export async function finishRegistration(
  * sign-in and sign-up entry points (spec §3).
  */
 export async function signInOptions(ctx: Ctx, meta: RequestMeta) {
-  const lim = hit(ctx, 'signin_ip', meta.ip);
+  const lim = hitIp(ctx, 'signin_ip', meta.ip);
   if (!lim.ok) return { ok: false as const, error: lim.message };
   const options = await generateAuthenticationOptions({ rpID: ctx.config.rpId, userVerification: 'preferred' });
   return { ok: true as const, challengeId: saveChallenge(ctx, 'signin', options.challenge, null, null), options };

@@ -6,7 +6,7 @@ import { checkCaptcha } from '@/lib/captcha';
 import type { Ctx } from '@/lib/ctx';
 import { emailChangedNotice, emailChangeMail, magicLinkMail, type Template, verifyMail } from '@/lib/mail-templates';
 import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
-import { hit, longestWindowMs, rateKey } from '@/lib/ratelimit';
+import { hit, hitIp, longestWindowMs, rateKey } from '@/lib/ratelimit';
 import { createSession, type RequestMeta } from '@/lib/sessions';
 import { hashToken, newToken } from '@/lib/tokens';
 import { findUserByEmail, getUser, isLastAdmin } from '@/lib/users';
@@ -79,7 +79,7 @@ export async function signUp(
   const p = signUpSchema.safeParse(input);
   if (!p.success) return { ok: false, error: firstError(p.error) };
   const { name, email, altcha } = p.data;
-  const byIp = hit(ctx, 'signup_ip', meta.ip);
+  const byIp = hitIp(ctx, 'signup_ip', meta.ip);
   if (!byIp.ok) return { ok: false, error: byIp.message };
   if (!(await checkCaptcha(ctx, altcha))) return { ok: false, error: 'Please complete the “I’m not a robot” check.' };
   const byEmail = hit(ctx, 'signup_email', email);
@@ -108,7 +108,7 @@ export async function requestMagicLink(ctx: Ctx, input: { email: unknown }, meta
   const p = emailOnlySchema.safeParse(input);
   if (!p.success) return { ok: false, error: firstError(p.error) };
   const { email } = p.data;
-  const byIp = hit(ctx, 'magic_ip', meta.ip);
+  const byIp = hitIp(ctx, 'magic_ip', meta.ip);
   if (!byIp.ok) return { ok: false, error: byIp.message };
   const lim = hit(ctx, 'magic_email', email);
   if (!lim.ok) return { ok: false, error: lim.message };

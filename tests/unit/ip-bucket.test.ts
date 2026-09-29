@@ -31,6 +31,12 @@ describe('ipBucket', () => {
     expect(ipBucket('::1')).toBe('0:0:0:0::/64');
   });
 
+  it('treats a NAT64 address (64:ff9b::/96) as ordinary IPv6, bucketed by /64, not as its IPv4 tail', () => {
+    expect(ipBucket('64:ff9b::1.2.3.4')).toBe('64:ff9b:0:0::/64');
+    expect(ipBucket('64:ff9b::1.2.3.4')).not.toBe(ipBucket('1.2.3.4'));
+    expect(ipBucket('64:ff9b::5.6.7.8')).toBe(ipBucket('64:ff9b::1.2.3.4'));
+  });
+
   it('leaves anything that is not an address as it is (e.g. "unknown")', () => {
     expect(ipBucket('unknown')).toBe('unknown');
     expect(ipBucket('not:an:ip:::')).toBe('not:an:ip:::');
