@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { audit, emailTokens, rateEvents, users } from '@/db/schema';
+import { audit, emailTokens, rateEvents, sessions, users } from '@/db/schema';
 import {
   changeEmail,
   consumeEmailToken,
@@ -235,6 +235,22 @@ describe('account page services (spec §3)', () => {
     expect(sessionFromToken(ctx, first.sessionToken!)).toBeNull();
     expect(sessionFromToken(ctx, other.token)).toBeNull();
     expect((await consumeEmailToken(ctx, staleMagic, meta)).ok).toBe(false);
+  });
+
+  it('signs the clicking browser in with a fresh session once an email change is confirmed', async () => {
+    const first = await signUpAndVerify('Ada', 'ada@example.org');
+    const other = createSession(ctx, first.userId, 'email', meta);
+    await changeEmail(ctx, first.userId, { email: 'ada@new.example' });
+    const r = await consumeEmailToken(ctx, tokenOf(ctx.mailer.lastLink('ada@new.example')), meta);
+    expect(r).toMatchObject({ ok: true, purpose: 'email_change', userId: first.userId });
+    if (!r.ok) throw new Error('expected ok');
+    expect(sessionFromToken(ctx, first.sessionToken!)).toBeNull();
+    expect(sessionFromToken(ctx, other.token)).toBeNull();
+    expect(r.sessionToken).toBeTruthy();
+    const live = ctx.db.select().from(sessions).where(eq(sessions.userId, first.userId)).all();
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({ method: 'email', uv: false, credentialId: null });
+    expect(sessionFromToken(ctx, r.sessionToken!)?.session.id).toBe(live[0].id);
   });
 
   it('limits email changes to 5 per account per day', async () => {

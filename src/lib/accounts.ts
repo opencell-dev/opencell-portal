@@ -140,9 +140,9 @@ const TOKEN_ERRORS: Record<Exclude<TokenState, 'ok'>, string> = {
 };
 
 /**
- * Use an emailed link once. Verification and magic links open a session
- * (`sessionToken`); an email-change link moves the account to the new
- * address and revokes every other session and unused magic/verify link, since
+ * Use an emailed link once. Every purpose opens a session (`sessionToken`):
+ * an email-change link additionally moves the account to the new address
+ * first, and revokes every other session and unused magic/verify link, since
  * whoever had the old address could still be holding one.
  */
 export async function consumeEmailToken(
@@ -169,14 +169,17 @@ export async function consumeEmailToken(
     const holder = findUserByEmail(ctx, newEmail);
     if (holder && holder.id !== u.id) return { ok: false, error: 'That address now belongs to another account.' };
     ctx.db.update(users).set({ email: newEmail }).where(eq(users.id, u.id)).run();
-    // Nothing this action opens needs revoking (it opens no session of its
-    // own), but the old address may still be holding other live sessions or
-    // unused sign-in links; kill those so a compromised old inbox can't ride along.
+    // The old address may still be holding other live sessions or unused
+    // sign-in links; kill those so a compromised old inbox can't ride along.
     ctx.db.delete(sessions).where(eq(sessions.userId, u.id)).run();
     ctx.db.delete(emailTokens).where(and(eq(emailTokens.userId, u.id), inArray(emailTokens.purpose, ['verify', 'magic']), isNull(emailTokens.usedAt))).run();
     writeAudit(ctx, { actorId: u.id, action: 'account.email_change', target: `user:${u.id}`, ip: meta.ip });
     mail(ctx, u.email, emailChangedNotice(u.name, newEmail));
-    return { ok: true, purpose: row.purpose, userId: u.id };
+    // Clicking a link mailed to the new address proves control of it, same as
+    // a magic link, so this action opens a fresh session of its own too.
+    const { token: sessionToken } = createSession(ctx, u.id, 'email', meta);
+    writeAudit(ctx, { actorId: u.id, action: 'session.email', target: `user:${u.id}`, ip: meta.ip });
+    return { ok: true, purpose: row.purpose, userId: u.id, sessionToken };
   }
   if (row.purpose === 'verify') {
     // A verify link for an account that got verified some other way is as
