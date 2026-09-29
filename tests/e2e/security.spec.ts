@@ -3,22 +3,8 @@ import { addPasskey, addPasskeyDevice, altchaReady, e2eDb, liftLimits, mailedLin
 
 test.beforeEach(() => liftLimits());
 
-// Next's client-side route announcer (an aria-live region it uses to tell
-// screen readers a navigation happened) sets its off-screen position via the
-// `style` attribute from JS, not via a hashed/nonced <style> tag. Depending on
-// the Chromium build, mutating that attribute can itself trip our style-src
-// CSP (we allow no 'unsafe-inline'). This is a known Next issue, not
-// something OpenCell's own pages do, so we don't fail the suite over it — but
-// we don't want it silently masking a real violation either: strip only a
-// style-src violation reporting `inline` as its blocked URI, and print
-// whatever we stripped so a human sees whether it fired.
-function withoutRouteAnnouncerNoise(violations: string[]): string[] {
-  const known = violations.filter((v) => /^style-src(-attr|-elem)? inline$/.test(v));
-  if (known.length > 0) {
-    console.log(`[security.spec] ignored ${known.length} known-framework CSP violation(s) (Next's route announcer inline style): ${known[0]}`);
-  }
-  return violations.filter((v) => !/^style-src(-attr|-elem)? inline$/.test(v));
-}
+// Every CSP violation fails these tests, including any from Next's own
+// code: watchCsp reports the directive, source and sample so one is easy to trace.
 
 test('pages carry a nonce CSP and the hardening headers', async ({ request }) => {
   for (const path of ['/', '/sign-up', '/sign-in', '/coverage', '/operator-agreement']) {
@@ -48,7 +34,7 @@ test('no CSP violation and no third-party request through sign-up, passkey and a
   await expect(page.getByRole('status')).toContainText('Your passkey is ready');
   await page.goto('/account');
   await page.goto('/operator-agreement');
-  expect(withoutRouteAnnouncerNoise(violations)).toEqual([]);
+  expect(violations).toEqual([]);
   expect(foreign).toEqual([]);
 });
 
@@ -61,7 +47,7 @@ test('the ALTCHA widget on /sign-up raises no CSP violation while it mounts and 
   // auto="onfocus": focusing the form starts the self-hosted proof-of-work;
   // once it solves, the widget fills its own hidden input.
   await expect(page.locator('input[name="altcha"]')).toHaveValue(/.{20,}/);
-  expect(withoutRouteAnnouncerNoise(violations)).toEqual([]);
+  expect(violations).toEqual([]);
 });
 
 test('state-changing requests from another origin, or with none, are refused', async ({ request }) => {

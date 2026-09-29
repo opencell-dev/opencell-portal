@@ -121,7 +121,7 @@ export async function watchCsp(page: Page): Promise<string[]> {
   await page.exposeFunction('__ocCspViolation', (s: string) => seen.push(s));
   await page.addInitScript(() => {
     document.addEventListener('securitypolicyviolation', (e) => {
-      (window as unknown as { __ocCspViolation: (s: string) => void }).__ocCspViolation(`${e.violatedDirective} ${e.blockedURI}`);
+      (window as unknown as { __ocCspViolation: (s: string) => void }).__ocCspViolation(`${e.violatedDirective} ${e.blockedURI} at ${e.sourceFile}:${e.lineNumber} ${e.sample}`.trim());
     });
   });
   return seen;
