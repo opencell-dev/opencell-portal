@@ -13,9 +13,11 @@ import { challenges, passkeys, sessions } from '@/db/schema';
 import type { Result } from '@/lib/accounts';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
+import { hit } from '@/lib/ratelimit';
 import { createSession, isFresh, markReauth, type RequestMeta, type Session } from '@/lib/sessions';
 import { newToken } from '@/lib/tokens';
 import { getUser, isAdmin } from '@/lib/users';
+import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
 
 // Passkeys (spec §3) with SimpleWebAuthn: discoverable credentials, so sign-in
 // needs no email; "none" attestation; user verification preferred, except
@@ -107,6 +109,13 @@ export async function finishRegistration(
   name: string | undefined,
   meta: RequestMeta,
 ): Promise<Result<{ credentialId: string }>> {
+  // Client-supplied, so checked before anything else (and before the
+  // challenge is used, so a bad name can be corrected and sent again).
+  const label = optionalPasskeyNameSchema.safeParse(name);
+  if (!label.success) return { ok: false, error: firstError(label.error) };
+  const transports = passkeyTransportsSchema.optional().safeParse(response.response?.transports);
+  if (!transports.success) return { ok: false, error: 'The passkey could not be checked. Please try again.' };
+  response = { ...response, response: { ...response.response, transports: transports.data } };
   const expectedChallenge = takeChallenge(ctx, challengeId, 'register', s.userId, s.id);
   if (!expectedChallenge) return { ok: false, error: 'The passkey request expired. Please try again.' };
   // Re-check: time may have passed between requesting and finishing the options,
@@ -141,7 +150,7 @@ export async function finishRegistration(
         transports: credential.transports ? JSON.stringify(credential.transports) : null,
         deviceType: credentialDeviceType,
         backedUp: credentialBackedUp,
-        name: name?.trim().slice(0, 40) || 'Passkey',
+        name: label.data ?? 'Passkey',
         createdAt: ctx.now(),
       })
       .run();
@@ -153,9 +162,16 @@ export async function finishRegistration(
   return { ok: true, credentialId: credential.id };
 }
 
-export async function signInOptions(ctx: Ctx) {
+/**
+ * Options for a discoverable sign-in. Anyone may ask, and each answer is a
+ * stored challenge, so starts are limited per client address like the other
+ * sign-in and sign-up entry points (spec §3).
+ */
+export async function signInOptions(ctx: Ctx, meta: RequestMeta) {
+  const lim = hit(ctx, 'signin_ip', meta.ip);
+  if (!lim.ok) return { ok: false as const, error: lim.message };
   const options = await generateAuthenticationOptions({ rpID: ctx.config.rpId, userVerification: 'preferred' });
-  return { challengeId: saveChallenge(ctx, 'signin', options.challenge, null, null), options };
+  return { ok: true as const, challengeId: saveChallenge(ctx, 'signin', options.challenge, null, null), options };
 }
 
 interface AssertionResult {

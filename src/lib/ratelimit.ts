@@ -10,6 +10,7 @@ export const LIMITS = {
   signup_email: { max: 3, windowS: 86400, message: 'Too many sign-ups for this email address today. Please try again tomorrow.' },
   magic_email: { max: 5, windowS: 3600, message: 'Too many sign-in links for this email address. Please try again in about an hour.' },
   magic_ip: { max: 20, windowS: 3600, message: 'Too many sign-in link requests from your network. Please try again in about an hour.' },
+  signin_ip: { max: 30, windowS: 600, message: 'Too many passkey sign-in attempts from your network. Please try again in a few minutes.' },
   email_change_user: {
     max: 5,
     windowS: 86400,

@@ -11,6 +11,7 @@ import {
   removePasskey,
   signInOptions,
 } from '@/lib/passkeys';
+import { LIMITS, limitOf } from '@/lib/ratelimit';
 import { canUseAdmin, createSession, isFresh, sessionFromToken } from '@/lib/sessions';
 import { grantRole } from '@/lib/users';
 import { TEST_ORIGIN, type TestCtx, testCtx } from '../helpers/ctx';
@@ -41,8 +42,15 @@ async function register(userId: number, a = auth, name?: string) {
   return r;
 }
 
+/** Sign-in options for `meta`'s address; throws if the per-address limit refuses them. */
+async function signinOpts(from = meta) {
+  const r = await signInOptions(ctx, from);
+  if (!r.ok) throw new Error(r.error);
+  return r;
+}
+
 async function signIn(a = auth) {
-  const { challengeId, options } = await signInOptions(ctx);
+  const { challengeId, options } = await signinOpts();
   return finishSignIn(ctx, challengeId, a.get(options), meta);
 }
 
@@ -87,11 +95,11 @@ describe('passkeys (spec §3)', () => {
   it('uses each challenge once, and only within 5 minutes', async () => {
     const uid = addUser('ada@example.org');
     await register(uid);
-    const { challengeId, options } = await signInOptions(ctx);
+    const { challengeId, options } = await signinOpts();
     const answer = auth.get(options);
     expect((await finishSignIn(ctx, challengeId, answer, meta)).ok).toBe(true);
     expect(await finishSignIn(ctx, challengeId, answer, meta)).toEqual({ ok: false, error: 'The passkey request expired. Please try again.' });
-    const late = await signInOptions(ctx);
+    const late = await signinOpts();
     ctx.clock.t += 5 * 60_000;
     expect(await finishSignIn(ctx, late.challengeId, auth.get(late.options), meta)).toEqual({
       ok: false,
@@ -106,10 +114,10 @@ describe('passkeys (spec §3)', () => {
     const s = emailSession(uid);
     const reg = await registrationOptions(ctx, s);
     stranger.create(reg.options); // never finished: the portal doesn't know it
-    const a = await signInOptions(ctx);
+    const a = await signinOpts();
     expect(await finishSignIn(ctx, a.challengeId, stranger.get(a.options), meta)).toEqual({ ok: false, error: 'This passkey is not registered here.' });
-    const b = await signInOptions(ctx);
-    const c = await signInOptions(ctx);
+    const b = await signinOpts();
+    const c = await signinOpts();
     expect(await finishSignIn(ctx, b.challengeId, auth.get(c.options), meta)).toEqual({
       ok: false,
       error: 'The passkey could not be checked. Please try again.',
@@ -121,7 +129,7 @@ describe('passkeys (spec §3)', () => {
     await register(uid);
     const phish = new SoftAuthenticator('https://opencell.example.net');
     phish.creds.push(...auth.creds);
-    const { challengeId, options } = await signInOptions(ctx);
+    const { challengeId, options } = await signinOpts();
     expect(await finishSignIn(ctx, challengeId, phish.get(options), meta)).toEqual({
       ok: false,
       error: 'The passkey could not be checked. Please try again.',
@@ -196,7 +204,7 @@ describe('passkeys (spec §3)', () => {
     const uid = addUser('ada@example.org');
     await register(uid);
     expect((await signIn()).ok).toBe(true); // establishes a real counter (1) on file
-    const { challengeId, options } = await signInOptions(ctx);
+    const { challengeId, options } = await signinOpts();
     // An attacker who only knows the credential id, not its private key: the
     // counter check runs before the signature check, so a naive audit would
     // fire on this alone.
@@ -224,6 +232,53 @@ describe('passkeys (spec §3)', () => {
       ok: false,
       error: 'The passkey request expired. Please try again.',
     });
+  });
+
+  it('limits passkey sign-in starts per client address, with a plain message', async () => {
+    const { max } = limitOf(ctx, 'signin_ip');
+    for (let i = 0; i < max; i++) expect((await signInOptions(ctx, meta)).ok).toBe(true);
+    expect(await signInOptions(ctx, meta)).toEqual({ ok: false, error: LIMITS.signin_ip.message });
+    expect((await signInOptions(ctx, { ip: '198.51.100.7' })).ok).toBe(true); // another address is unaffected
+    ctx.clock.t += limitOf(ctx, 'signin_ip').windowS * 1000;
+    expect((await signInOptions(ctx, meta)).ok).toBe(true);
+  });
+
+  it('stores a trimmed passkey name, "Passkey" for a blank one, and refuses a bad one before using the challenge', async () => {
+    const uid = addUser('ada@example.org');
+    await register(uid, auth, '  Phone  ');
+    await register(uid, new SoftAuthenticator(TEST_ORIGIN), '   ');
+    expect(listPasskeys(ctx, uid).map((p) => p.name)).toEqual(['Phone', 'Passkey']);
+    const s = emailSession(uid);
+    const { challengeId, options } = await registrationOptions(ctx, s);
+    const response = new SoftAuthenticator(TEST_ORIGIN).create(options);
+    for (const bad of ['x'.repeat(65), 'Pho\u0000ne', 42 as unknown as string]) {
+      const r = await finishRegistration(ctx, s, challengeId, response, bad, meta);
+      expect(r).toMatchObject({ ok: false });
+    }
+    expect(listPasskeys(ctx, uid)).toHaveLength(2);
+    expect((await finishRegistration(ctx, s, challengeId, response, 'Laptop', meta)).ok).toBe(true); // challenge still good
+    expect(listPasskeys(ctx, uid).map((p) => p.name)).toEqual(['Phone', 'Passkey', 'Laptop']);
+  });
+
+  it('stores only known transports, and refuses a malformed transports list', async () => {
+    const uid = addUser('ada@example.org');
+    const s = emailSession(uid);
+    const first = await registrationOptions(ctx, s);
+    const good = auth.create(first.options);
+    good.response.transports = ['internal', 'hybrid', 'telepathy', 'internal'];
+    expect((await finishRegistration(ctx, s, first.challengeId, good, 'Phone', meta)).ok).toBe(true);
+    expect(JSON.parse(listPasskeys(ctx, uid)[0].transports!)).toEqual(['internal', 'hybrid']);
+
+    const second = await registrationOptions(ctx, s);
+    const bad = new SoftAuthenticator(TEST_ORIGIN).create(second.options);
+    bad.response.transports = Array(500).fill('usb');
+    expect(await finishRegistration(ctx, s, second.challengeId, bad, 'Key', meta)).toEqual({
+      ok: false,
+      error: 'The passkey could not be checked. Please try again.',
+    });
+    (bad.response as { transports: unknown }).transports = 'usb';
+    expect((await finishRegistration(ctx, s, second.challengeId, bad, 'Key', meta)).ok).toBe(false);
+    expect(listPasskeys(ctx, uid)).toHaveLength(1);
   });
 
   it('re-checks verification and freshness at finish time', async () => {
@@ -254,7 +309,7 @@ describe('admins (spec §3)', () => {
     const uid = addUser('root@example.org');
     await register(uid);
     grantRole(ctx, uid, 'admin', null);
-    const { challengeId, options } = await signInOptions(ctx);
+    const { challengeId, options } = await signinOpts();
     const r = await finishSignIn(ctx, challengeId, auth.get(options, undefined, false), meta);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -268,7 +323,7 @@ describe('admins (spec §3)', () => {
     const uid = addUser('root@example.org');
     await register(uid);
     grantRole(ctx, uid, 'admin', null);
-    const { challengeId, options } = await signInOptions(ctx);
+    const { challengeId, options } = await signinOpts();
     const r = await finishSignIn(ctx, challengeId, auth.get(options, undefined, false), meta);
     if (!r.ok) throw new Error(r.error);
     const s = sessionFromToken(ctx, r.sessionToken)!.session;
@@ -334,7 +389,7 @@ describe('admins (spec §3)', () => {
     const r = await signIn();
     if (!r.ok) throw new Error(r.error);
     const s = sessionFromToken(ctx, r.sessionToken)!.session;
-    const signin = await signInOptions(ctx);
+    const signin = await signinOpts();
     expect(await finishReauth(ctx, s, signin.challengeId, auth.get(signin.options), meta)).toEqual({
       ok: false,
       error: 'The passkey request expired. Please try again.',

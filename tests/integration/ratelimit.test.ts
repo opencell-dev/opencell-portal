@@ -16,6 +16,7 @@ describe('rate limits (portal spec §3)', () => {
     expect(limitOf(ctx, 'signup_email')).toEqual({ max: 3, windowS: 86400 });
     expect(limitOf(ctx, 'magic_email')).toEqual({ max: 5, windowS: 3600 });
     expect(limitOf(ctx, 'magic_ip')).toEqual({ max: 20, windowS: 3600 });
+    expect(limitOf(ctx, 'signin_ip')).toEqual({ max: 30, windowS: 600 });
     expect(limitOf(ctx, 'email_change_user')).toEqual({ max: 5, windowS: 86400 });
     expect(limitOf(ctx, 'number_account')).toEqual({ max: 10, windowS: 86400 });
   });
