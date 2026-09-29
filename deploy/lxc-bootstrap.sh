@@ -24,6 +24,12 @@ id oc-portal >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/li
 install -d -o oc-portal -g oc-portal -m 0700 /var/lib/oc-portal /var/lib/oc-portal/backups
 install -d -o root -g root -m 0755 /opt/oc-portal /opt/oc-portal/releases
 install -d -o root -g root -m 0700 /etc/opencell
+# Root-owned, never writable by the oc-portal service user: unlike
+# /var/lib/oc-portal (which that user owns), this tree cannot be
+# symlink-swapped by a compromised service process before a later
+# deploy/rollback (running as root) writes into it. oc-portal-deploy
+# refuses to proceed if it ever finds this a symlink or not root-owned.
+install -d -o root -g root -m 0700 /var/lib/oc-portal-deploy /var/lib/oc-portal-deploy/status
 
 sed "s/NGINX_PROXY_IP/$PROXY_IP/" "$HERE/nftables.conf" > /etc/nftables.conf
 nft -c -f /etc/nftables.conf
@@ -32,6 +38,7 @@ nft -f /etc/nftables.conf
 
 install -m 0755 "$HERE/oc-portal-admin" /usr/local/bin/oc-portal-admin
 install -m 0755 "$HERE/oc-portal-backup" /usr/local/sbin/oc-portal-backup
+install -m 0644 "$HERE/oc-portal-deploy.logrotate" /etc/logrotate.d/oc-portal-deploy
 
 # Re-running this script (e.g. after editing a unit) should pick up the
 # change: restart the affected units instead of leaving the old ones running.
