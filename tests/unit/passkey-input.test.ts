@@ -13,6 +13,17 @@ describe('passkey name (client-supplied)', () => {
   it('refuses control characters and non-strings', () => {
     expect(passkeyNameSchema.safeParse('Phone\u0000').success).toBe(false);
     expect(passkeyNameSchema.safeParse('Pho\nne').success).toBe(false);
+  });
+
+  it('refuses invisible format characters: bidi overrides and isolates, zero-width', () => {
+    expect(passkeyNameSchema.safeParse('\u202Eenohp').success).toBe(false); // RIGHT-TO-LEFT OVERRIDE
+    expect(passkeyNameSchema.safeParse('Phone\u2066x\u2069').success).toBe(false); // LEFT-TO-RIGHT ISOLATE … POP
+    expect(passkeyNameSchema.safeParse('Pho\u200Bne').success).toBe(false); // ZERO WIDTH SPACE
+    expect(passkeyNameSchema.safeParse('Pho\uFEFFne').success).toBe(false); // ZERO WIDTH NO-BREAK SPACE (BOM)
+    expect(passkeyNameSchema.parse('\uFEFFPhone')).toBe('Phone'); // at the edge, trim() already removes it
+    expect(passkeyNameSchema.safeParse('Pho\u00ADne').success).toBe(false); // SOFT HYPHEN
+    expect(optionalPasskeyNameSchema.safeParse('\u200B').success).toBe(false);
+    expect(passkeyNameSchema.parse('Téléphone de Zoë 📱')).toBe('Téléphone de Zoë 📱');
     expect(passkeyNameSchema.safeParse(42).success).toBe(false);
     expect(passkeyNameSchema.safeParse({ toString: () => 'x' }).success).toBe(false);
   });

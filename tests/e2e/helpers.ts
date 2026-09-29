@@ -26,27 +26,43 @@ export function uniqueEmail(info: TestInfo, tag: string) {
   return `${tag}-${info.project.name}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.org`;
 }
 
-/** The newest link mailed to `to` (the outbox transport writes one JSON file per message). */
-export async function mailedLink(to: string): Promise<string> {
+/** The links mailed to `to`, oldest first (the outbox transport writes one `<ms>-<rand>.json` file per message). */
+function linksTo(to: string): string[] {
+  const dir = join(DIR, 'outbox');
+  if (!existsSync(dir)) return [];
+  const links: string[] = [];
+  for (const f of readdirSync(dir).sort()) {
+    const m = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+    if (m.to?.[0]?.address === to) links.push(String(m.text).match(/https?:\/\/\S+/)?.[0] ?? '');
+  }
+  return links;
+}
+
+/**
+ * The newest link mailed to `to`. With `after` (a link already read), wait
+ * for a message that arrived after that one, so a slow mail queue can't hand
+ * back the previous link.
+ */
+export async function mailedLink(to: string, after?: string): Promise<string> {
   let link = '';
   await expect
     .poll(
       () => {
-        const dir = join(DIR, 'outbox');
-        if (!existsSync(dir)) return '';
-        for (const f of readdirSync(dir).sort().reverse()) {
-          const m = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-          if (m.to?.[0]?.address === to) {
-            link = String(m.text).match(/https?:\/\/\S+/)?.[0] ?? '';
-            return link;
-          }
-        }
-        return '';
+        const links = linksTo(to);
+        const fresh = after === undefined ? links : links.slice(links.lastIndexOf(after) + 1);
+        link = fresh.at(-1) ?? '';
+        return link;
       },
       { timeout: 15_000 },
     )
     .not.toBe('');
   return link;
+}
+
+/** Wait until the ALTCHA widget is defined and rendered, so focusing the form starts its proof of work. */
+export async function altchaReady(page: Page) {
+  await page.waitForFunction(() => Boolean(customElements.get('altcha-widget')));
+  await expect(page.locator('input[name="altcha"]')).toBeAttached();
 }
 
 /** A Chromium virtual authenticator: a platform passkey with user verification. */
@@ -66,17 +82,20 @@ export async function addPasskeyDevice(page: Page): Promise<{ cdp: CDPSession; a
   return { cdp, authenticatorId };
 }
 
-/** Sign up through the form (CAPTCHA included) and open the verification link. */
-export async function signUpAndVerify(page: Page, name: string, email: string) {
+/** Sign up through the form (CAPTCHA included) and open the verification link; returns that link. */
+export async function signUpAndVerify(page: Page, name: string, email: string): Promise<string> {
   await page.goto('/sign-up');
+  await altchaReady(page);
   await page.getByLabel('Name').fill(name);
   await page.getByLabel('Email').fill(email);
   await expect(page.locator('input[name="altcha"]')).toHaveValue(/.{20,}/);
   await page.getByRole('button', { name: 'Sign up' }).click();
   await expect(page.getByRole('status')).toContainText('Check your inbox');
-  await page.goto(await mailedLink(email));
+  const link = await mailedLink(email);
+  await page.goto(link);
   await page.getByRole('button', { name: 'Confirm my email' }).click();
   await expect(page).toHaveURL(/\/welcome$/);
+  return link;
 }
 
 /** Add a passkey on /welcome or /account with the page's virtual authenticator. */

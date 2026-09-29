@@ -11,6 +11,7 @@ import {
   removePasskey,
   signInOptions,
 } from '@/lib/passkeys';
+import { UserError } from '@/lib/errors';
 import { LIMITS, limitOf } from '@/lib/ratelimit';
 import { canUseAdmin, createSession, isFresh, sessionFromToken } from '@/lib/sessions';
 import { grantRole } from '@/lib/users';
@@ -90,6 +91,7 @@ describe('passkeys (spec §3)', () => {
   it('refuses registration for an unverified account', async () => {
     const uid = addUser('new@example.org', false);
     await expect(registrationOptions(ctx, emailSession(uid))).rejects.toThrow(/verified/);
+    await expect(registrationOptions(ctx, emailSession(uid))).rejects.toBeInstanceOf(UserError);
   });
 
   it('uses each challenge once, and only within 5 minutes', async () => {
@@ -446,6 +448,7 @@ describe('admins (spec §3)', () => {
     grantRole(ctx, uid, 'admin', null);
     const s = emailSession(uid);
     await expect(registrationOptions(ctx, s)).rejects.toThrow(/fresh passkey/);
+    await expect(registrationOptions(ctx, s)).rejects.toBeInstanceOf(UserError);
     expect(removePasskey(ctx, s, listPasskeys(ctx, uid)[0].id, meta)).toEqual({
       ok: false,
       error: 'Admins confirm with a passkey before changing passkeys.',

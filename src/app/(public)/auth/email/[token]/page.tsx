@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { confirmEmailLinkAction } from '@/app/actions/auth';
+import { ConfirmButton } from '@/components/confirm-button';
 import { peekEmailToken } from '@/lib/accounts';
 import { appCtx } from '@/lib/ctx';
 
@@ -39,9 +40,7 @@ export default async function EmailLink({ params }: { params: Promise<{ token: s
     <div className="max-w-md space-y-4">
       <h1 className="text-2xl font-semibold">{title}</h1>
       <form action={confirmEmailLinkAction.bind(null, token)}>
-        <button type="submit" className="rounded bg-brand px-4 py-2 font-medium text-white hover:bg-brand-dark">
-          {button}
-        </button>
+        <ConfirmButton label={button} />
       </form>
     </div>
   );

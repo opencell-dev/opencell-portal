@@ -18,8 +18,10 @@ export function firstError(e: z.ZodError): string {
   return e.issues[0]?.message ?? 'Please check the form.';
 }
 
-// Plain text: no control characters (tabs, newlines, NULs) in a label.
-const noControl = (s: string) => !/\p{Cc}/u.test(s);
+// Plain text: no control characters (tabs, newlines, NULs) and no invisible
+// format characters (bidi overrides and isolates, zero-width spaces and
+// joiners, soft hyphens) that could make a label read as something else.
+const noControl = (s: string) => !/[\p{Cc}\p{Cf}]/u.test(s);
 
 /** A passkey's label, as the user typed it (spec §3 account page lists them by name). */
 export const passkeyNameSchema = z

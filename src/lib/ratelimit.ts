@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { isIPv4, isIPv6 } from 'node:net';
 import { and, count, eq, gt, lte } from 'drizzle-orm';
 import { rateEvents, settings } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
@@ -58,7 +59,46 @@ function sub(ctx: Ctx, label: string): string {
  * brute-forced back to real addresses or IPs.
  */
 export function rateKey(ctx: Ctx, name: LimitName, value: string): string {
-  return `${name}:${createHmac('sha256', sub(ctx, 'rate-key')).update(value.trim().toLowerCase()).digest('hex')}`;
+  const v = perIp(name) ? ipBucket(value) : value;
+  return `${name}:${createHmac('sha256', sub(ctx, 'rate-key')).update(v.trim().toLowerCase()).digest('hex')}`;
+}
+
+/** A limit named `*_ip` is keyed by the client's address (signup_ip, magic_ip, signin_ip). */
+function perIp(name: LimitName): boolean {
+  return name.endsWith('_ip');
+}
+
+/** An IPv6 address as its 8 hextets (it must already pass isIPv6, zone id removed). */
+function hextets(a: string): number[] {
+  let s = a.toLowerCase();
+  const v4 = s.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const [b0, b1, b2, b3] = v4.slice(1).map(Number);
+    s = `${s.slice(0, v4.index)}${((b0 << 8) | b1).toString(16)}:${((b2 << 8) | b3).toString(16)}`;
+  }
+  const [head, tail] = s.includes('::') ? s.split('::') : [s, undefined];
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const zeros = tail === undefined ? [] : Array(8 - h.length - t.length).fill('0');
+  return [...h, ...zeros, ...t].map((x) => Number.parseInt(x, 16));
+}
+
+/**
+ * The bucket a per-IP limit counts a client in. An IPv4 address counts on
+ * its own; an IPv6 client counts by its /64, since one line or host usually
+ * holds a whole /64 and could otherwise rotate through it; an IPv4-mapped
+ * IPv6 address (::ffff:a.b.c.d) is its IPv4 address. Anything else (such as
+ * "unknown") is left as it is. The audit and logs keep the full address.
+ */
+export function ipBucket(ip: string): string {
+  const a = ip.trim().replace(/%.*$/, '');
+  if (isIPv4(a)) return a;
+  if (!isIPv6(a)) return ip;
+  const h = hextets(a);
+  if (h.slice(0, 5).every((x) => x === 0) && h[5] === 0xffff) {
+    return [h[6] >> 8, h[6] & 255, h[7] >> 8, h[7] & 255].join('.');
+  }
+  return `${h.slice(0, 4).map((x) => x.toString(16)).join(':')}::/64`;
 }
 
 /** The longest configured window, so stale rate-limit rows can be purged (spec §10). */

@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { consumeEmailToken, requestMagicLink, signUp } from '@/lib/accounts';
 import { appCtx } from '@/lib/ctx';
+import { publicMessage } from '@/lib/errors';
 import {
   finishReauth,
   finishRegistration,
@@ -16,7 +17,7 @@ import {
 import { SESSION_MS } from '@/lib/sessions';
 import { ADMIN_SESSION_MS, isAdmin } from '@/lib/users';
 import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
-import { requestMeta, requireUser, setSessionCookie } from '@/server/request';
+import { currentSession, requestMeta, requireUser, setSessionCookie } from '@/server/request';
 
 export type FormState = { ok: boolean; message: string } | null;
 
@@ -63,7 +64,12 @@ export async function magicLinkAction(_prev: FormState, form: FormData): Promise
 /** The confirm button on /auth/email/[token]: the link is used only when a person clicks. */
 export async function confirmEmailLinkAction(token: string): Promise<void> {
   const r = await consumeEmailToken(appCtx(), z.string().max(64).parse(token), await requestMeta());
-  if (!r.ok) redirect(`/auth/email/${encodeURIComponent(token)}`);
+  if (!r.ok) {
+    // A second press (double click, or a retry after the first went through)
+    // finds the link used; if this browser is already signed in, carry on.
+    if (await currentSession()) redirect('/numbers');
+    redirect(`/auth/email/${encodeURIComponent(token)}`);
+  }
   if (r.sessionToken) await setSessionCookie(r.sessionToken, cookieExpiry(r.userId));
   if (r.purpose === 'verify') redirect('/welcome');
   if (r.purpose === 'email_change') redirect('/account?email=changed');
@@ -86,7 +92,7 @@ export async function passkeyRegisterStart() {
   try {
     return { ok: true as const, ...(await registrationOptions(appCtx(), session)) };
   } catch (e) {
-    return { ok: false as const, error: (e as Error).message };
+    return { ok: false as const, error: publicMessage(e, 'Adding a passkey did not work. Please try again.') };
   }
 }
 

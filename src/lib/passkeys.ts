@@ -12,6 +12,7 @@ import { and, eq } from 'drizzle-orm';
 import { challenges, passkeys, sessions } from '@/db/schema';
 import type { Result } from '@/lib/accounts';
 import { writeAudit } from '@/lib/audit';
+import { UserError } from '@/lib/errors';
 import type { Ctx } from '@/lib/ctx';
 import { hit } from '@/lib/ratelimit';
 import { createSession, isFresh, markReauth, type RequestMeta, type Session } from '@/lib/sessions';
@@ -85,8 +86,8 @@ function mayChangePasskeys(ctx: Ctx, s: Session): boolean {
 
 export async function registrationOptions(ctx: Ctx, s: Session) {
   const u = getUser(ctx, s.userId);
-  if (!u?.emailVerifiedAt) throw new Error('Only a verified account can add a passkey.');
-  if (!mayChangePasskeys(ctx, s)) throw new Error('Admins confirm with a fresh passkey before adding one.');
+  if (!u?.emailVerifiedAt) throw new UserError('Only a verified account can add a passkey.');
+  if (!mayChangePasskeys(ctx, s)) throw new UserError('Admins confirm with a fresh passkey before adding one.');
   const admin = isAdmin(ctx, u.id);
   const options = await generateRegistrationOptions({
     rpName: 'OpenCell',

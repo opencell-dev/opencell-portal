@@ -21,6 +21,22 @@ describe('rate limits (portal spec §3)', () => {
     expect(limitOf(ctx, 'number_account')).toEqual({ max: 10, windowS: 86400 });
   });
 
+  it('buckets IPv6 clients by /64 for every per-IP limit (IPv4 whole; mapped IPv4 as IPv4)', () => {
+    for (const name of ['signup_ip', 'magic_ip', 'signin_ip'] as const) {
+      expect(rateKey(ctx, name, '2001:db8:1:2::1')).toBe(rateKey(ctx, name, '2001:db8:1:2:aaaa:bbbb:cccc:dddd'));
+      expect(rateKey(ctx, name, '2001:db8:1:2::1')).not.toBe(rateKey(ctx, name, '2001:db8:1:3::1'));
+      expect(rateKey(ctx, name, '::ffff:1.2.3.4')).toBe(rateKey(ctx, name, '1.2.3.4'));
+      expect(rateKey(ctx, name, '1.2.3.4')).not.toBe(rateKey(ctx, name, '1.2.3.5'));
+    }
+    for (let i = 1; i <= 5; i++) expect(hit(ctx, 'signup_ip', `2001:db8:1:2::${i}`).ok).toBe(true);
+    expect(hit(ctx, 'signup_ip', '2001:db8:1:2::99').ok).toBe(false); // same /64, sixth sign-up
+    expect(hit(ctx, 'signup_ip', '2001:db8:1:3::1').ok).toBe(true); // another /64
+  });
+
+  it('does not bucket keys of limits that are not per-IP', () => {
+    expect(rateKey(ctx, 'magic_email', 'a::1')).not.toBe(rateKey(ctx, 'magic_email', 'a::2'));
+  });
+
   it('stores only a hash of the key, never the value itself', () => {
     hit(ctx, 'signup_email', 'ada@example.org');
     const rows = ctx.db.select().from(rateEvents).all();
