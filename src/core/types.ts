@@ -89,7 +89,11 @@ export interface CoreAdmin {
   subCreate(actor: number, number: string): Promise<IssuedToken>;
   subReissue(actor: number, number: string): Promise<IssuedToken>;
   subStatus(actor: number, number: string): Promise<SubStatus>;
-  /** Only an unactivated number can be released (CoreError not_unactivated). */
+  /**
+   * Only an unactivated number can be released (CoreError not_unactivated).
+   * Idempotent: a number that is free already (released by the 72 h job or
+   * an earlier call, or never taken) resolves too.
+   */
   subRelease(actor: number, number: string): Promise<void>;
   subDisable(actor: number, number: string): Promise<void>;
   subEnable(actor: number, number: string): Promise<void>;

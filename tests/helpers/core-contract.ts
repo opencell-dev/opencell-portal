@@ -79,7 +79,7 @@ export function coreContract(name: string, make: () => Promise<ContractCore>) {
       await c.core.subRelease(7, n);
       await expect(c.core.subStatus(7, n)).rejects.toMatchObject({ code: 'not_found' });
       expect(await c.core.numCheck(7, n)).toBe('free');
-      await expect(c.core.subRelease(7, n)).rejects.toMatchObject({ code: 'not_found' });
+      await c.core.subRelease(7, n); // free already: ok, a release is idempotent
       await expect(c.core.subReissue(7, n)).rejects.toMatchObject({ code: 'not_found' });
     });
 

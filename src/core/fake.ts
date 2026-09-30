@@ -170,7 +170,9 @@ export class FakeCore implements CoreAdmin {
 
   async subRelease(actor: number, number: string): Promise<void> {
     this.log(actor, 'sub.release', number);
-    const s = this.sub(number);
+    this.releaseExpired();
+    const s = this.subs.get(number);
+    if (!s) return; // free already (the 72 h job, an earlier call): a release is idempotent
     if (s.state !== 'unactivated') throw new CoreError('not_unactivated', `${number} is activated`);
     this.subs.delete(number);
   }

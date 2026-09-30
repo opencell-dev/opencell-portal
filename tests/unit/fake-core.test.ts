@@ -123,6 +123,14 @@ describe('FakeCore subscribers', () => {
     expect(await core.numCheck(7, '+883171746412345')).toBe('free');
   });
 
+  it('releases a number its code expiry freed already: ok, a release is idempotent', async () => {
+    await core.subCreate(7, '+883171746412345');
+    t += 72 * H;
+    await core.subRelease(7, '+883171746412345');
+    await core.subRelease(7, '+883171746412345');
+    expect(await core.numCheck(7, '+883171746412345')).toBe('free');
+  });
+
   it('releases an unactivated number on request', async () => {
     await core.subCreate(7, '+883171746412345');
     await core.subRelease(7, '+883171746412345');
