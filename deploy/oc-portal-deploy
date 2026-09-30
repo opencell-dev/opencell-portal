@@ -272,13 +272,21 @@ assert_safe_dir() {
 # failed switch (which restores the old `current`) never leaves `previous`
 # collapsed onto the same release as `current`.
 SWITCH='
+# The portal itself, on the PORT its portal.env sets (3001 behind Anubis;
+# 3000 on a guest from before Anubis, or with no portal.env): never through
+# Anubis on 3000, which checks for the client headers nginx-proxy sends.
+portal_health_url() {
+  local port
+  port="$(sed -n "s/^PORT=\"\{0,1\}\([0-9]\{1,5\}\)\"\{0,1\}[[:space:]]*\$/\1/p" "$ROOT/etc/opencell/portal.env" 2>/dev/null | tail -n 1)"
+  echo "http://127.0.0.1:${port:-3000}/healthz"
+}
 switch_to() {
   local target="$1" want="$2"
   local prev; prev="$(readlink "$ROOT/opt/oc-portal/current" || true)"
   ln -sfn "$target" "$ROOT/opt/oc-portal/current.new" && mv -T "$ROOT/opt/oc-portal/current.new" "$ROOT/opt/oc-portal/current"
   systemctl restart oc-portal || true
   for _ in $(seq 1 30); do
-    if curl -fsS --max-time 5 http://127.0.0.1:3000/healthz 2>/dev/null | grep -q "\"version\":\"$want\""; then
+    if curl -fsS --max-time 5 "$(portal_health_url)" 2>/dev/null | grep -q "\"version\":\"$want\""; then
       [ -n "$prev" ] && [ "$prev" != "$target" ] && echo "$prev" > "$ROOT/opt/oc-portal/previous"
       echo "healthy: $want"; return 0
     fi
@@ -478,7 +486,9 @@ assert_safe_dir "$ROOT/run"
 echo "current:  $(readlink "$ROOT/opt/oc-portal/current" || echo none)"
 echo "previous: $(cat "$ROOT/opt/oc-portal/previous" 2>/dev/null || echo none)"
 echo "service:  $(systemctl is-active oc-portal)"
-echo "health:   $(curl -fsS --max-time 5 http://127.0.0.1:3000/healthz 2>/dev/null || echo down)"
+port="$(sed -n 's/^PORT="\{0,1\}\([0-9]\{1,5\}\)"\{0,1\}[[:space:]]*$/\1/p' "$ROOT/etc/opencell/portal.env" 2>/dev/null | tail -n 1)"
+echo "health:   $(curl -fsS --max-time 5 "http://127.0.0.1:${port:-3000}/healthz" 2>/dev/null || echo down)"
+echo "anubis:   $(systemctl is-active anubis@oc-portal 2>/dev/null || true)"
 latest_id="$(cat "$DEPLOY_STATE_DIR/latest-run-id" 2>/dev/null || true)"
 if [ -z "$latest_id" ]; then
   echo "latest run: none"

@@ -1,0 +1,96 @@
+# /etc/anubis/oc-portal.botPolicies.yaml on the portal guest: which requests
+# Anubis lets through to the portal, and which it challenges first.
+# Syntax: docs/docs/admin/policies.mdx and configuration/expressions.mdx in
+# the Anubis repository. Rules are tried in order; the first match decides.
+#
+# Two things about Anubis shape this file:
+# - A pass is bound to the rule that issued it (the pass cookie carries a hash
+#   of the rule's name and matchers). A pass from one CHALLENGE rule is no
+#   pass under another: the other rule clears it and challenges again. So
+#   everything behind the proof of work is ONE rule (the last), and the only
+#   other challenge is the email links' no-JavaScript one.
+# - Next.js lets a server action be POSTed to any page (it forwards the call
+#   to the page that has it), so a POST is never let through as "public":
+#   the ALLOW rules below take only GET and HEAD.
+bots:
+  # 1. The deploy's and any monitor's health check. First, so that no rule
+  #    added later can ever challenge it.
+  - name: health-check
+    action: ALLOW
+    expression:
+      all:
+        - method == "GET" || method == "HEAD"
+        - path == "/healthz"
+
+  # 2. Next's build output (content-hashed JS and CSS), which every page
+  #    needs, the public ones included.
+  - name: next-static
+    action: ALLOW
+    expression:
+      all:
+        - method == "GET" || method == "HEAD"
+        - path.startsWith("/_next/static/")
+
+  # 3. Files a browser or a crawler fetches on its own, without cookies: the
+  #    favicon and app icons, the web manifest, /.well-known/, and the
+  #    ALTCHA worker the sign-up form loads. (robots.txt never gets here:
+  #    Anubis answers it itself, SERVE_ROBOTS_TXT=true.)
+  - name: site-files
+    action: ALLOW
+    expression:
+      all:
+        - method == "GET" || method == "HEAD"
+        - path.matches("^/(favicon\\.ico|(apple-)?icon[0-9a-z._-]*|manifest\\.webmanifest|altcha/[0-9A-Za-z._-]+\\.js)$") || path.startsWith("/.well-known/")
+
+  # 4. The public pages: anyone, any client, no challenge. Only these paths
+  #    (tests/unit/site-header.test.ts reads this list: the site header
+  #    prefetches these and nothing else).
+  - name: public-pages
+    action: ALLOW
+    expression:
+      all:
+        - method == "GET" || method == "HEAD"
+        - path in ["/", "/coverage", "/operator-agreement"]
+
+  # 5. The links the portal emails (/auth/email/<token>): the page and its
+  #    Confirm button's POST. The no-JavaScript challenge, so a link opened
+  #    in a mail client's browser or with scripts off still works: the page
+  #    refreshes itself after 2 s. (The page only shows a button; the token
+  #    is used when a person presses it.)
+  - name: email-links
+    path_regex: ^/auth/email/[^/]+$
+    action: CHALLENGE
+    challenge:
+      algorithm: metarefresh
+      difficulty: 1 # seconds to wait (the page refreshes after difficulty + 1)
+
+  # 6. Everything else, every method: /sign-in, /sign-up, /welcome, the
+  #    signed-in pages (/numbers, /calls, /directory, /nodes, /account,
+  #    /admin/...), their server-action POSTs, /api/altcha, POSTs to the
+  #    public pages, and any path not listed above (scanners' /wp-login.php
+  #    and the like get the challenge, not a server-rendered 404). The
+  #    JavaScript proof of work at Anubis's default difficulty: 4 leading hex
+  #    zeros, about 65 000 SHA-256 hashes, a second or two on a phone.
+  - name: portal
+    path_regex: .*
+    action: CHALLENGE
+    challenge:
+      algorithm: fast
+      difficulty: 4
+
+# Challenges in flight, on disk: the in-memory store is unbounded and the
+# Anubis docs keep it for testing. (The pass cookies themselves are checked by
+# signature, with the key in /etc/anubis/oc-portal.key.env, so they survive a
+# restart either way.)
+store:
+  backend: bbolt
+  parameters:
+    path: /var/lib/anubis/oc-portal/anubis.bdb
+
+# Warnings and errors only: at INFO Anubis logs every challenge with the
+# client's address, and the portal keeps personal data to what it needs
+# (portal spec §10). For a look at what it is doing, set INFO or DEBUG here
+# for a while and restart anubis@oc-portal.
+logging:
+  sink: stdio
+  level: WARN

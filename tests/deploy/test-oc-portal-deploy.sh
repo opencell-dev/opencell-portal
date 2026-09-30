@@ -21,7 +21,7 @@ check 2 "a tag without v is not deployed" $D deploy 1.2.3
 check 2 "a missing tag is refused" $D deploy v99.99.99
 check 2 "rollback takes no argument" $D rollback v1.0.0
 check 1 "the network step runs through OC_PORTAL_SSH" $D status
-bash -n $D deploy/lxc-bootstrap.sh deploy/oc-portal-admin deploy/oc-portal-backup && echo "ok   bash -n" || fail=1
+bash -n $D deploy/lxc-bootstrap.sh deploy/oc-portal-admin deploy/oc-portal-backup deploy/anubis/install-anubis.sh && echo "ok   bash -n" || fail=1
 
 # --- fake-root simulation of the remote script ------------------------------
 # The checks above never reach the network. This section runs the deploy
@@ -82,7 +82,7 @@ rsync -a --exclude='.git' --exclude='node_modules' --exclude='.next' ./ "$sim_re
 git -C "$sim_repo" init -q
 git -C "$sim_repo" -c user.email=t@t -c user.name=t add -A
 git -C "$sim_repo" -c user.email=t@t -c user.name=t commit -q -m base
-for t in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4 v1.0.5 v1.0.6 v1.0.7 v1.0.8 v1.0.9; do git -C "$sim_repo" tag "$t"; done
+for t in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4 v1.0.5 v1.0.6 v1.0.7 v1.0.8 v1.0.9 v1.0.10 v1.0.11; do git -C "$sim_repo" tag "$t"; done
 
 cat > "$sim_bin/systemctl" <<'SH'
 #!/bin/bash
@@ -108,6 +108,7 @@ SH
 cat > "$sim_bin/curl" <<'SH'
 #!/bin/bash
 state="${OC_PORTAL_ROOT:-}/fake-systemd"
+echo "${@: -1}" >> "$state/curl-urls.log" 2>/dev/null || true
 [ -f "$state/unhealthy" ] && exit 7
 ver="$(cat "$state/serving-version" 2>/dev/null)"
 [ -n "$ver" ] || exit 7
@@ -514,6 +515,22 @@ check_single_run_output "sim: after a drop, log lines once each, result line onc
 simassert "sim: current is v1.0.9 after the dropped deploy finished" [ "$(current_tag)" = v1.0.9 ]
 rm -f "$sim_root/fake-systemd/build-seconds" "$calls"
 
+# The health check talks to the portal itself, on the PORT its portal.env
+# sets: 3000 before Anubis fronted it, 3001 since (Anubis now answers on 3000
+# and needs the client-address headers only nginx-proxy sends).
+last_health_url() { tail -n 1 "$sim_root/fake-systemd/curl-urls.log" 2>/dev/null; }
+simcheck 0 "sim: deploy without a portal.env" "$D_SIM" deploy v1.0.10
+simassert "sim: ...health-checks the portal on 127.0.0.1:3000 (got $(last_health_url))" [ "$(last_health_url)" = http://127.0.0.1:3000/healthz ]
+mkdir -p "$sim_root/etc/opencell"
+printf 'NODE_ENV=production\nPORT=3001\nOC_LISTEN=127.0.0.1\nOC_TRUSTED_PROXY=127.0.0.1\n' > "$sim_root/etc/opencell/portal.env"
+simcheck 0 "sim: deploy with the portal on 3001 behind Anubis" "$D_SIM" deploy v1.0.11
+simassert "sim: ...health-checks the portal on 127.0.0.1:3001 (got $(last_health_url))" [ "$(last_health_url)" = http://127.0.0.1:3001/healthz ]
+sim_env "$D_SIM" status >/dev/null 2>&1
+simassert "sim: status asks the portal on 3001 too (got $(last_health_url))" [ "$(last_health_url)" = http://127.0.0.1:3001/healthz ]
+simcheck 0 "sim: rollback with the portal on 3001" "$D_SIM" rollback
+simassert "sim: ...health-checks 127.0.0.1:3001 (got $(last_health_url))" [ "$(last_health_url)" = http://127.0.0.1:3001/healthz ]
+rm -f "$sim_root/etc/opencell/portal.env"
+
 # The default SSH command (no OC_PORTAL_SSH): multiplexed over one master
 # connection through the jump host, socket in a private 0700 directory. A
 # fake `ssh` first on PATH records its arguments and fails like an
@@ -556,6 +573,153 @@ else
   simassert "default ssh: a control socket path too long for ssh is refused before any ssh call" \
     bash -c "[ '$long_rc' -eq 2 ] && [ ! -f '$args_file' ] && printf '%s' \"\$1\" | grep -q 'too long'" _ "$long_out"
 fi
+
+# --- install-anubis.sh: Anubis in front of the portal (lxc-bootstrap) -------
+# Runs the real script against a scratch root (OC_PORTAL_ROOT) with fakes for
+# the package tools, systemctl, ss and the download, but the real sha256sum,
+# gpg/gpgv, openssl and install: a small file stands in for the pinned .deb,
+# signed by a throwaway key that a copy of deploy/anubis/ pins.
+a_root="$(mktemp -d)" || exit 1
+a_bin="$(mktemp -d)" || exit 1
+a_src="$(mktemp -d)" || exit 1
+a_gpg="$(mktemp -d)" || exit 1
+for d in "$a_root" "$a_bin" "$a_src" "$a_gpg"; do assert_scratch_dir "$d" "install-anubis scratch dir"; done
+cleanup_anubis_sim() { rm -rf "$a_root" "$a_bin" "$a_src" "$a_gpg"; }
+trap 'cleanup_sim; cleanup_anubis_sim' EXIT
+chmod 0700 "$a_gpg"
+
+# The real pins, first: well-formed, and the committed key is the pinned one.
+real_pins="$(cat deploy/anubis/release.env)"
+a_ver="$(sed -n 's/^ANUBIS_VERSION=//p' <<<"$real_pins")"
+simassert "anubis: release.env pins a version, the .deb and tarball SHA-256s and a key fingerprint" bash -c '
+  grep -qE "^ANUBIS_VERSION=[0-9]+\.[0-9]+\.[0-9]+$" <<<"$1" &&
+  grep -qE "^ANUBIS_DEB_SHA256_AMD64=[0-9a-f]{64}$" <<<"$1" &&
+  grep -qE "^ANUBIS_TARBALL_SHA256_LINUX_AMD64=[0-9a-f]{64}$" <<<"$1" &&
+  grep -qE "^ANUBIS_SIGNING_KEY_FPR=[0-9A-F]{40}$" <<<"$1"' _ "$real_pins"
+real_fpr="$(gpg --homedir "$a_gpg" --batch --with-colons --show-keys deploy/anubis/techaro-packages.asc 2>/dev/null | awk -F: '/^fpr/{print $10; exit}')"
+simassert "anubis: the committed signing key is the pinned one ($real_fpr)" [ -n "$real_fpr" -a "ANUBIS_SIGNING_KEY_FPR=$real_fpr" = "$(grep '^ANUBIS_SIGNING_KEY_FPR=' <<<"$real_pins")" ]
+simassert "anubis: lxc-bootstrap runs install-anubis.sh" grep -q 'anubis/install-anubis.sh' deploy/lxc-bootstrap.sh
+
+mkdir -p "$a_src/anubis" "$a_src/dl" "$a_root/fake-state"
+cp -a deploy/anubis/. "$a_src/anubis/"
+deb="anubis_${a_ver}_amd64.deb"
+printf 'fake anubis %s package\n' "$a_ver" > "$a_src/dl/$deb"
+gen_key() { gpg --homedir "$a_gpg" --batch --quiet --passphrase '' --quick-gen-key "$1" ed25519 sign never 2>/dev/null
+  gpg --homedir "$a_gpg" --batch --with-colons --list-keys "$1" 2>/dev/null | awk -F: '/^fpr/{print $10; exit}'; }
+fpr_ok="$(gen_key 'OC test signer <signer@example.invalid>')"
+fpr_other="$(gen_key 'OC other signer <other@example.invalid>')"
+sign_with() { rm -f "$a_src/dl/$deb.asc"; gpg --homedir "$a_gpg" --batch --quiet --local-user "$1" --armor --detach-sign -o "$a_src/dl/$deb.asc" "$a_src/dl/$deb"; }
+use_key_file() { gpg --homedir "$a_gpg" --batch --armor --export "$1" > "$a_src/anubis/techaro-packages.asc"; }
+sign_with "$fpr_ok"
+use_key_file "$fpr_ok"
+sed -i -e "s/^ANUBIS_DEB_SHA256_AMD64=.*/ANUBIS_DEB_SHA256_AMD64=$(sha256sum "$a_src/dl/$deb" | cut -d' ' -f1)/" \
+  -e "s/^ANUBIS_SIGNING_KEY_FPR=.*/ANUBIS_SIGNING_KEY_FPR=$fpr_ok/" "$a_src/anubis/release.env"
+
+cat > "$a_bin/curl" <<'SH'
+#!/bin/bash
+# fake download: `curl ... -o OUT URL` copies OUT from $A_DL/<basename URL>.
+out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done
+echo "$url" >> "$OC_PORTAL_ROOT/fake-state/curl.log"
+[ -f "$A_DL/$(basename "$url")" ] || exit 22
+cp "$A_DL/$(basename "$url")" "$out"
+SH
+cat > "$a_bin/dpkg" <<'SH'
+#!/bin/bash
+[ "$1" = --print-architecture ] || exit 2
+cat "$OC_PORTAL_ROOT/fake-state/arch" 2>/dev/null || echo amd64
+SH
+cat > "$a_bin/dpkg-query" <<'SH'
+#!/bin/bash
+cat "$OC_PORTAL_ROOT/fake-state/anubis-version" 2>/dev/null
+SH
+cat > "$a_bin/apt-get" <<'SH'
+#!/bin/bash
+# fake apt-get install -y ... ./anubis_V_amd64.deb: records the call and "installs" V.
+state="$OC_PORTAL_ROOT/fake-state"
+echo "$*" >> "$state/apt.log"
+deb="${@: -1}"
+[ -f "$deb" ] || { echo "fake apt-get: no such file $deb" >&2; exit 100; }
+cmp -s "$deb" "$A_DL/$(basename "$deb")" || { echo "fake apt-get: not the downloaded package" >&2; exit 100; }
+basename "$deb" | sed -n 's/^anubis_\(.*\)_amd64\.deb$/\1/p' > "$state/anubis-version"
+SH
+cat > "$a_bin/systemctl" <<'SH'
+#!/bin/bash
+state="$OC_PORTAL_ROOT/fake-state"
+echo "$*" >> "$state/systemctl.log"
+case "$1" in
+  is-active) [ -f "$state/active" ] ;;
+  start|restart) touch "$state/active" ;;
+  *) : ;;
+esac
+SH
+cat > "$a_bin/ss" <<'SH'
+#!/bin/bash
+[ -f "$OC_PORTAL_ROOT/fake-state/port-busy" ] && echo 'LISTEN 0 511 *:3000 *:*'
+exit 0
+SH
+chmod +x "$a_bin"/*
+
+A="$a_src/anubis/install-anubis.sh"
+st="$a_root/fake-state"
+a_run() { env PATH="$a_bin:$PATH" OC_PORTAL_ROOT="$a_root" A_DL="$a_src/dl" GNUPGHOME=/nonexistent bash "$A" 2>&1; }
+a_check() { # expected-exit description
+  local want="$1" what="$2" out got
+  out="$(a_run)"; got=$?
+  a_out="$out"
+  if [ "$got" -eq "$want" ]; then echo "ok   $what"; else echo "FAIL $what (exit $got, wanted $want): $out"; fail=1; fi
+}
+calls() { { wc -l < "$1"; } 2>/dev/null || echo 0; }
+nothing_placed() { [ ! -e "$a_root/etc/anubis" ] && [ ! -e "$st/apt.log" ]; }
+
+echo arm64 > "$st/arch"
+a_check 1 "anubis: refuses a guest that is not amd64 (only amd64 is pinned)"
+simassert "anubis: ...and installs nothing" nothing_placed
+rm -f "$st/arch"
+
+cp "$a_src/dl/$deb" "$a_src/deb.orig"
+echo tampered >> "$a_src/dl/$deb"
+a_check 1 "anubis: refuses a download that is not the pinned .deb (SHA-256)"
+simassert "anubis: ...names the checksum" grep -q checksum <<<"$a_out"
+simassert "anubis: ...and installs nothing" nothing_placed
+cp "$a_src/deb.orig" "$a_src/dl/$deb"
+
+sign_with "$fpr_other"
+a_check 1 "anubis: refuses a .deb signed by a key it does not have"
+simassert "anubis: ...and installs nothing" nothing_placed
+use_key_file "$fpr_other"
+a_check 1 "anubis: refuses a swapped key file (the signature must be by the pinned fingerprint)"
+simassert "anubis: ...names the pinned key" grep -q "pinned key" <<<"$a_out"
+simassert "anubis: ...and installs nothing" nothing_placed
+use_key_file "$fpr_ok"
+sign_with "$fpr_ok"
+
+a_check 0 "anubis: first install"
+simassert "anubis: ...installs the verified .deb once" [ "$(calls "$st/apt.log")" = 1 ]
+simassert "anubis: ...places the instance environment (0644, as committed)" bash -c "cmp -s '$a_src/anubis/oc-portal.env' '$a_root/etc/anubis/oc-portal.env' && [ \"\$(stat -c %a '$a_root/etc/anubis/oc-portal.env')\" = 644 ]"
+simassert "anubis: ...places the policy (0644, as committed)" bash -c "cmp -s '$a_src/anubis/oc-portal.botPolicies.yaml' '$a_root/etc/anubis/oc-portal.botPolicies.yaml' && [ \"\$(stat -c %a '$a_root/etc/anubis/oc-portal.botPolicies.yaml')\" = 644 ]"
+simassert "anubis: ...places the systemd drop-in" cmp -s "$a_src/anubis/opencell.conf" "$a_root/etc/systemd/system/anubis@oc-portal.service.d/opencell.conf"
+simassert "anubis: ...generates the signing key, root-only (0600)" bash -c "grep -qxE 'ED25519_PRIVATE_KEY_HEX=[0-9a-f]{64}' '$a_root/etc/anubis/oc-portal.key.env' && [ \"\$(stat -c %a '$a_root/etc/anubis/oc-portal.key.env')\" = 600 ]"
+simassert "anubis: ...reloads systemd, enables and starts anubis@oc-portal" bash -c "grep -qx daemon-reload '$st/systemctl.log' && grep -qx 'enable anubis@oc-portal.service' '$st/systemctl.log' && grep -qx 'start anubis@oc-portal.service' '$st/systemctl.log'"
+key_before="$(cat "$a_root/etc/anubis/oc-portal.key.env")"
+
+: > "$st/systemctl.log"; curl_before="$(calls "$st/curl.log")"
+a_check 0 "anubis: a second run"
+simassert "anubis: ...downloads and installs nothing (the pinned version is there)" [ "$(calls "$st/curl.log")" = "$curl_before" -a "$(calls "$st/apt.log")" = 1 ]
+simassert "anubis: ...keeps the signing key (passes stay valid)" [ "$(cat "$a_root/etc/anubis/oc-portal.key.env")" = "$key_before" ]
+simassert "anubis: ...restarts nothing when nothing changed" bash -c "! grep -qE '^(re)?start ' '$st/systemctl.log'"
+
+echo "# a policy edit" >> "$a_src/anubis/oc-portal.botPolicies.yaml"
+: > "$st/systemctl.log"
+a_check 0 "anubis: a run after a policy change"
+simassert "anubis: ...installs the new policy" cmp -s "$a_src/anubis/oc-portal.botPolicies.yaml" "$a_root/etc/anubis/oc-portal.botPolicies.yaml"
+simassert "anubis: ...and restarts the running instance" grep -qx 'restart anubis@oc-portal.service' "$st/systemctl.log"
+
+rm -f "$st/active"; touch "$st/port-busy"; : > "$st/systemctl.log"
+echo "# another edit" >> "$a_src/anubis/oc-portal.botPolicies.yaml"
+a_check 0 "anubis: with port 3000 still taken (the portal not yet moved to 3001)"
+simassert "anubis: ...enables but does not start it, and says why" bash -c "grep -qx 'enable anubis@oc-portal.service' '$st/systemctl.log' && ! grep -qE '^(re)?start ' '$st/systemctl.log' && grep -q 'port 3000' <<<\"\$1\"" _ "$a_out"
+rm -f "$st/port-busy"
 
 fi
 
