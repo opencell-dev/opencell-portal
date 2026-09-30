@@ -1,6 +1,11 @@
 import Link from 'next/link';
 import { signOut } from '@/app/actions/session';
 
+// The links to pages behind Anubis's proof of work (deploy/anubis/) never
+// prefetch: this header is also on the emailed-link page, whose own Anubis
+// pass a background request to one of them would replace, and the Confirm
+// button's POST would then meet a challenge instead of the portal. (The
+// public pages Anubis lets through prefetch as usual.)
 export function SiteHeader({ signedIn }: { signedIn: boolean }) {
   return (
     <header className="border-b border-slate-200 dark:border-slate-800">
@@ -19,7 +24,7 @@ export function SiteHeader({ signedIn }: { signedIn: boolean }) {
         <div className="flex items-center gap-3 text-sm">
           {signedIn ? (
             <>
-              <Link href="/numbers" className="hover:underline">
+              <Link href="/numbers" prefetch={false} className="hover:underline">
                 My numbers
               </Link>
               <form action={signOut}>
@@ -30,10 +35,10 @@ export function SiteHeader({ signedIn }: { signedIn: boolean }) {
             </>
           ) : (
             <>
-              <Link href="/sign-in" className="hover:underline">
+              <Link href="/sign-in" prefetch={false} className="hover:underline">
                 Sign in
               </Link>
-              <Link href="/sign-up" className="rounded bg-brand px-3 py-1 font-medium text-white hover:bg-brand-dark">
+              <Link href="/sign-up" prefetch={false} className="rounded bg-brand px-3 py-1 font-medium text-white hover:bg-brand-dark">
                 Sign up
               </Link>
             </>
