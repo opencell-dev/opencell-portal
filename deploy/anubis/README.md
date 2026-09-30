@@ -35,11 +35,12 @@ guest, and you can run it on its own. It checks the pinned version with
 its `.asc`, checks the SHA-256 against `release.env`, and checks the
 signature with `gpgv` against `techaro-packages.asc`. The `VALIDSIG`
 fingerprint must be the pinned one. Only then does it run `apt-get install`.
-It places the three files, makes the signing key once, then reloads systemd
-and enables `anubis@oc-portal`. It restarts the instance only when something
-changed. It never starts Anubis while port 3000 is taken, for example by the
-portal before its move to 3001. In that case it says so and leaves the unit
-enabled but stopped.
+It places the three files, makes the signing key once, then reloads systemd.
+It restarts a running instance only when something changed. While port 3000
+is taken, for example by the portal before its move to 3001, it neither
+enables nor starts `anubis@oc-portal` (a reboot would race the two for the
+port); it says so, and the switch does `systemctl enable --now`. With the
+port free it enables and starts it.
 
 The portal side (`deploy/portal.env.example`) has `PORT=3001`,
 `OC_LISTEN=127.0.0.1` and `OC_TRUSTED_PROXY=127.0.0.1`.
@@ -65,6 +66,13 @@ Why it is laid out this way:
   Scanners probing `/wp-login.php` and the like get the challenge page, not
   a server-rendered 404, and a page added to the portal later starts out
   protected. Adding it to rule 4 is a deliberate step.
+- **No dot segments through an open door.** Anubis matches the path as
+  sent (percent-decoded, never cleaned). nginx-proxy passes it on raw and
+  Next resolves `.` and `..`, so `/_next/static/../../sign-in` would be a
+  static file to Anubis and the sign-in page to the portal. Every ALLOW rule
+  therefore also requires `!path.matches("/\\.\\.?(/|$)")`: a path with a
+  `.` or `..` segment (`%2e%2e` and `.%2E` included, being decoded) falls
+  through to the proof of work. test:anubis sends these paths as-is.
 - **POSTs are never public.** Next.js accepts any server action at any page
   path and forwards the call to the page that owns it. If POSTs to `/` were
   allowed, every action (sign-up, sign-in link, passkey sign-in) would be
@@ -98,7 +106,10 @@ Why it is laid out this way:
     - as a fetch action, the `Next-Action` id must be the confirm action's;
     - as a no-JavaScript form, every action key React reads
       (`$ACTION_ID_<id>`, or `$ACTION_REF_<n>` with a literal id in
-      `$ACTION_<n>:0`) must name it.
+      `$ACTION_<n>:0`) must name it. The guard parses only a form with a
+      `Content-Length` of at most 64 KiB (Next's own action limit; a
+      Confirm form is a few hundred bytes), since Next hands the proxy up
+      to 10 MB of body.
 
     Next.js has no API for an action's id. The id comes from the manifest
     the build writes (`.next/server/server-reference-manifest.json`), found
@@ -120,8 +131,31 @@ Why it is laid out this way:
 
 ## Client addresses
 
-nginx-proxy's `proxy.conf` sets `X-Forwarded-For $remote_addr` and
-`X-Real-IP $remote_addr`, overwriting what the client sent.
+nginx-proxy (NPM) always sets `X-Real-IP $remote_addr`. For
+X-Forwarded-For, NPM's stock `conf.d/include/proxy.conf`, which the proxy
+host's default `location /` includes, sets `$proxy_add_x_forwarded_for`:
+the client's own X-Forwarded-For with `$remote_addr` appended. (A custom
+location, such as the portal host's `/auth/email/`, sets `$remote_addr`
+from NPM's `_location.conf`.) The runbook makes the default location send
+just `$remote_addr` too, by clearing the client's header at the server
+level of the proxy host (id 3) with one advanced-config line:
+
+```nginx
+more_clear_input_headers X-Forwarded-For;
+```
+
+This comes from the headers-more module, which OpenResty (NPM's nginx)
+bundles. It runs before the proxy module builds the header and applies to
+every location, so `$proxy_add_x_forwarded_for` becomes exactly
+`$remote_addr`, with no second header. The obvious
+`proxy_set_header X-Forwarded-For $remote_addr;` does not work there. At
+server level, nginx ignores it in any location that sets its own
+`proxy_set_header` lines, and both of NPM's locations do. Inside a location
+it would add a second X-Forwarded-For. This was checked with nginx 1.26
+and headers-more 0.38 against a replica of NPM's generated
+`proxy_host/3.conf`: without the line a forged header arrives as
+`198.51.100.99, …, <client>`; with it, as `<client>` only, on both
+locations.
 
 - **Anubis uses X-Real-IP** for its rules and for binding a pass to an
   address (`JWT_RESTRICTION_HEADER=X-Real-IP`). If a request has no
@@ -143,7 +177,10 @@ nginx-proxy's `proxy.conf` sets `X-Forwarded-For $remote_addr` and
   portal then sees 127.0.0.1, so such clients share one rate-limit bucket
   and the audit shows 127.0.0.1. Anubis itself still has their X-Real-IP.
   `XFF_STRIP_PRIVATE=false` is not the fix: then 10.0.0.100 would be the
-  address kept.
+  address kept. Without the `more_clear_input_headers` line, a
+  private-address client could also put a public address of its choosing in
+  its own X-Forwarded-For. Anubis would keep it, because everything to its
+  right is stripped, and the portal would record that address.
 
 ## Cookies and sessions
 
@@ -189,7 +226,10 @@ nginx-proxy's `proxy.conf` sets `X-Forwarded-For $remote_addr` and
   without JavaScript, and the client addresses are all exercised for real.
   So is the email-link guard: another action posted to `/auth/email/x`
   after the metarefresh wait, as a fetch action or as the sign-in page's
-  no-JavaScript form, gets a 403 and never runs.
+  no-JavaScript form, gets a 403 and never runs, and so does a form over
+  64 KiB. Dot-segment paths out of the open prefixes
+  (`/_next/static/../../sign-in`, `%2e%2e`, `.%2E`, `/.well-known/../…`)
+  are sent as-is and must meet the proof of work.
 - `tests/unit/email-link-guard.test.ts` and `tests/unit/proxy.test.ts`
   cover the guard's matching rules and its failing closed.
 - `npm run test:deploy` runs `install-anubis.sh` in the fake-root
@@ -208,80 +248,145 @@ nginx-proxy's `proxy.conf` sets `X-Forwarded-For $remote_addr` and
    handling.
 4. Run `npm run test:anubis`. On the guest, run `install-anubis.sh`.
 
+
 ## Runbook: putting Anubis in front of the live portal (LXC 116)
 
 **Before you start:**
 
-- This branch must be merged into the branch the portal deploys from.
-- Every later `oc-portal-deploy` must be run from a checkout that has this
-  change. An older `oc-portal-deploy` health-checks `127.0.0.1:3000`, which
-  is now Anubis. Its answer there is a 500 (no X-Real-IP), so the older
+- The release is the tag `v0.2.1` (on `anubis`). It carries the email-link
+  guard, the policy and the new `oc-portal-deploy`.
+- From step 2 on, every `oc-portal-deploy` must run from a checkout of
+  v0.2.1 or later. An older one health-checks `127.0.0.1:3000`, which after
+  step 6 is Anubis. Anubis answers it with a 500 (no X-Real-IP), so the old
   script would roll back a good release.
+- Never run v0.2.0 behind Anubis. It has no email-link guard, so waiting out
+  the light challenge on `/auth/email/*` would open every sign-in and
+  sign-up action.
 - No other deploy may be running (`oc-portal-deploy status`).
+- You need a shell on the guest and on nginx-proxy, and an NPM API token.
 
-The switch is a few seconds of downtime. Every step names how to undo it.
+The switch in step 6 is a few seconds of downtime. Every step says how to
+undo it.
 
 ```sh
-# From the laptop. G is the guest, through the Proxmox host.
-G='ssh -J root@147.135.11.61:222 root@10.0.0.61'
+# From the laptop.
+TAG=v0.2.1
+G='ssh -J root@147.135.11.61:222 root@10.0.0.61'    # the portal guest (LXC 116)
+N='ssh -J root@147.135.11.61:222 root@10.0.0.100'   # nginx-proxy (LXC 100), or `pct exec 100 --` on the host
+NPM_API=http://10.0.0.100:81/api                     # NPM's admin API, however you reach it
+NPM_TOKEN=...                                        # your NPM API token
+H="Authorization: Bearer $NPM_TOKEN"
 ```
 
 **0. Inspect (read-only).**
 
 ```sh
-# nginx-proxy (LXC 100): the portal's proxy host forwards to 10.0.0.61:3000
-# and sets both headers from $remote_addr. NPM keeps its generated config in
-# /data/nginx/proxy_host/*.conf and includes conf.d/include/proxy.conf.
-grep -rn -e '10.0.0.61' -e 'X-Real-IP' -e 'X-Forwarded-For' /data/nginx/proxy_host/ /etc/nginx/conf.d/include/proxy.conf
-#   expect: proxy_set_header X-Forwarded-For $remote_addr;
-#           proxy_set_header X-Real-IP $remote_addr;
-#   If X-Real-IP is not set from $remote_addr, STOP: add
-#   `proxy_set_header X-Real-IP $remote_addr;` to the proxy host's custom
-#   config first. Without it, clients could choose their own X-Real-IP, and
-#   private-address clients would get a 500.
+# nginx-proxy: the portal's proxy host (id 3) as NPM generated it, and its tools.
+$N 'grep -n -e "set \$server" -e "set \$port" -e "location" -e "include conf.d/include/proxy.conf" \
+            -e X-Forwarded-For -e X-Real-IP -e more_ /data/nginx/proxy_host/3.conf
+    grep -n -e X-Forwarded-For -e X-Real-IP /etc/nginx/conf.d/include/proxy.conf
+    (openresty -V 2>&1; nginx -V 2>&1) | grep -o "headers-more-nginx-module[^ /]*" | sort -u'
+#   expect: $server "10.0.0.61", $port 3000; `location /auth/email/` setting
+#   X-Forwarded-For and X-Real-IP to $remote_addr; `location /` including
+#   proxy.conf; proxy.conf with X-Forwarded-For $proxy_add_x_forwarded_for
+#   and X-Real-IP $remote_addr; headers-more-nginx-module present.
+#   STOP if X-Real-IP is not $remote_addr in both locations.
+#   STOP if headers-more is missing. Step 3 needs it. The fallback is a full
+#   `location /` in the advanced config (NPM then drops its own), copying
+#   the current one from 3.conf with X-Forwarded-For $remote_addr instead of
+#   the proxy.conf include. Review that by hand before applying it.
+curl -fsS -H "$H" "$NPM_API/nginx/proxy-hosts/3" |
+  jq '{id, domain_names, forward_host, forward_port, enabled, advanced_config,
+       locations: [.locations[]? | {path, forward_host, forward_port, advanced_config}], meta}'
 
-# The guest:
+# The guest: service, settings, listeners, health, and what the installer needs.
 $G 'systemctl is-active oc-portal; readlink /opt/oc-portal/current
     grep -E "^(PORT|OC_LISTEN|OC_TRUSTED_PROXY)=" /etc/opencell/portal.env
     ss -Hltnp "( sport = :3000 or sport = :3001 or sport = :9090 )"
     curl -fsS http://127.0.0.1:3000/healthz; echo
     dpkg-query -W anubis 2>&1; dpkg --print-architecture; systemd --version | head -1
+    for t in gpg gpgv ss openssl curl sha256sum apt-get; do command -v $t >/dev/null || echo "MISSING $t"; done
+    curl -fsSL --max-time 30 -o /dev/null -w "github: %{http_code}\n" \
+      https://github.com/TecharoHQ/anubis/releases/download/v1.27.0/anubis_1.27.0_amd64.deb.asc
     nft list ruleset | grep -n 3000; df -h / | tail -1'
-#   expect: active; PORT=3000, OC_LISTEN=0.0.0.0, OC_TRUSTED_PROXY=10.0.0.100
-#   (nginx-proxy); only node on :3000; nothing on 3001 or 9090; health ok;
-#   anubis not installed; amd64.
+#   expect: active; PORT=3000, OC_LISTEN=0.0.0.0, OC_TRUSTED_PROXY=10.0.0.100;
+#   only node on :3000; nothing on 3001 or 9090; health ok; anubis not
+#   installed; amd64; no MISSING line; "github: 200".
 ```
 
-**1. Back up.** Nothing here touches the database, but a backup is cheap.
+**1. Back up.** This covers the guest's settings, the database, and the
+NPM proxy host.
 
 ```sh
 $G 'B=/root/pre-anubis-$(date -u +%Y%m%dT%H%M%SZ) && install -d -m 0700 $B &&
     cp -a /etc/opencell/portal.env /etc/nftables.conf /etc/systemd/system/oc-portal.service $B/ &&
     systemctl start oc-portal-backup.service && ls -l $B && ls -lt /var/lib/oc-portal/backups | head -3 && echo $B'
 #   Note the $B it prints; the rollback uses it.
+(umask 077; curl -fsS -H "$H" "$NPM_API/nginx/proxy-hosts/3" > ~/pre-anubis-npm-proxy-host-3.json)
 ```
 
-**2. Copy `deploy/anubis/` to the guest** from the merged commit.
+**2. Deploy v0.2.1 while the portal is still on 3000**, with v0.2.1's own
+`oc-portal-deploy`. Then check the guard.
 
 ```sh
-git -C ~/Documents/opencell/portal archive HEAD deploy/anubis |
+cd ~/Documents/opencell/portal && git fetch --tags origin &&
+  git worktree add ../portal-$TAG $TAG && ../portal-$TAG/deploy/oc-portal-deploy deploy $TAG
+$G 'readlink /opt/oc-portal/current
+    grep -c confirmEmailLinkAction /opt/oc-portal/current/.next/server/server-reference-manifest.json
+    curl -s -w " %{http_code}\n" -X POST -H "Origin: https://opencell.k4ozi.com" -H "Next-Action: 00" \
+         -H "Content-Type: text/plain" --data x http://127.0.0.1:3000/auth/email/x'
+#   expect: .../releases/v0.2.1; a count >= 1;
+#   "Forbidden: this page only confirms its link. 403".
+#   Undo: ../portal-$TAG/deploy/oc-portal-deploy rollback (back to v0.2.0,
+#   which is fine while Anubis is not in front).
+```
+
+**3. nginx-proxy: X-Forwarded-For from `$remote_addr` only.** This is
+one advanced-config line at the server level of proxy host 3. It is
+appended to whatever is already there (see "Client addresses" above).
+
+```sh
+cur="$(jq -r '.advanced_config // ""' ~/pre-anubis-npm-proxy-host-3.json)"
+if grep -q more_clear_input_headers <<<"$cur"; then echo "already there"; else
+  new="$(printf '%s\n%s\n%s\n' "$cur" \
+    '# OpenCell: drop any client-sent X-Forwarded-For (portal deploy/anubis/README.md)' \
+    'more_clear_input_headers X-Forwarded-For;')"
+  jq -n --arg a "$new" '{advanced_config: $a}' |
+    curl -fsS -X PUT -H "$H" -H 'Content-Type: application/json' --data @- "$NPM_API/nginx/proxy-hosts/3" |
+    jq '{id, advanced_config, meta}'
+fi
+$N 'grep -n -e more_clear -e X-Forwarded-For /data/nginx/proxy_host/3.conf; nginx -t'
+curl -fsS https://opencell.k4ozi.com/healthz; echo
+#   expect: meta.nginx_online true and no nginx_err; the line in 3.conf
+#   above the locations; "syntax is ok"; the site answers.
+#   Undo: jq '{advanced_config}' ~/pre-anubis-npm-proxy-host-3.json |
+#     curl -fsS -X PUT -H "$H" -H 'Content-Type: application/json' --data @- "$NPM_API/nginx/proxy-hosts/3"
+```
+
+**4. Copy v0.2.1's `deploy/anubis/` to the guest.** Copy it from the tag
+you deployed, not HEAD.
+
+```sh
+git -C ~/Documents/opencell/portal archive "$TAG" deploy/anubis |
   $G 'rm -rf /root/oc-anubis && mkdir -m 0700 /root/oc-anubis && tar -x -C /root/oc-anubis'
 ```
 
-**3. Install Anubis, not yet started.** Port 3000 is still the portal's.
+**5. Install Anubis, neither enabled nor started.** Port 3000 is still the
+portal's. Go straight on to step 6.
 
 ```sh
 $G 'bash /root/oc-anubis/deploy/anubis/install-anubis.sh'
-#   expect: installing Anubis 1.27.0 ... and "port 3000 is still taken ...
-#   enabled but not started". It refuses (and installs nothing) on a checksum
-#   or signature mismatch.
+#   expect: "installing Anubis 1.27.0 ...", then "port 3000 is still taken
+#   ... neither enabled nor started". It refuses, and installs nothing, on a
+#   checksum or signature mismatch.
 $G 'dpkg-query -W anubis; anubis --version; ls -l /etc/anubis/;
     systemctl cat anubis@oc-portal | head -40; systemctl is-enabled anubis@oc-portal'
-#   Undo: systemctl disable anubis@oc-portal; apt-get remove anubis;
-#         rm -r /etc/anubis /etc/systemd/system/anubis@oc-portal.service.d
+#   expect: 1.27.0; the three files and oc-portal.key.env (0600); "disabled".
+#   Undo: apt-get remove anubis; rm -r /etc/anubis /etc/systemd/system/anubis@oc-portal.service.d
 ```
 
-**4. Switch** (the downtime is between the two restarts).
+**6. Switch.** The downtime runs from the portal's restart until Anubis
+starts. Anubis starts only if the portal is healthy on 3001.
 
 ```sh
 $G 'set -e
@@ -290,16 +395,17 @@ $G 'set -e
     grep -E "^(PORT|OC_LISTEN|OC_TRUSTED_PROXY)=" /etc/opencell/portal.env
     [ "$(grep -cxE "PORT=3001|OC_LISTEN=127.0.0.1|OC_TRUSTED_PROXY=127.0.0.1" /etc/opencell/portal.env)" = 3 ]
     systemctl restart oc-portal
-    for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3001/healthz && break; sleep 1; done; echo
-    systemctl start anubis@oc-portal
+    ok=; for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:3001/healthz; then ok=1; break; fi; sleep 1; done; echo
+    [ -n "$ok" ] || { echo "portal NOT healthy on 3001: Anubis not started; roll back"; journalctl -u oc-portal -n 30 --no-pager; exit 1; }
+    systemctl enable --now anubis@oc-portal
     sleep 1; systemctl is-active anubis@oc-portal
     ss -Hltnp "( sport = :3000 or sport = :3001 or sport = :9090 )"'
-#   expect: the portal healthy on 3001; anubis active; anubis on *:3000 and
-#   127.0.0.1:9090, node on 127.0.0.1:3001. The portal logs
+#   expect: the portal healthy on 3001 (version v0.2.1); anubis active; anubis
+#   on *:3000 and 127.0.0.1:9090, node on 127.0.0.1:3001. The portal logs
 #   "trusted proxy is 127.0.0.1".
 ```
 
-**5. Verify.**
+**7. Verify.**
 
 ```sh
 # On the guest, through Anubis as nginx-proxy would call it:
@@ -307,12 +413,13 @@ $G 'curl -fsS -H "X-Forwarded-For: 192.0.2.1" -H "X-Real-IP: 192.0.2.1" http://1
     curl -fsS http://127.0.0.1:9090/metrics | grep -c ^anubis_
     journalctl -u anubis@oc-portal -u oc-portal --since -5min --no-pager | tail -30'
 # From outside, through nginx-proxy:
-curl -fsS https://opencell.k4ozi.com/healthz; echo                          # {"ok":true,"version":...}
+curl -fsS https://opencell.k4ozi.com/healthz; echo                          # {"ok":true,"version":"v0.2.1"}
 curl -fsS https://opencell.k4ozi.com/ | grep -c anubis_challenge            # 0: public
 curl -fsS https://opencell.k4ozi.com/sign-in | grep -c anubis_challenge     # 1: proof of work
+curl -s --path-as-is https://opencell.k4ozi.com/_next/static/../../sign-in | grep -c anubis_challenge   # 1: no dot-segment way round
 curl -fsS https://opencell.k4ozi.com/auth/email/x | grep -o 'http-equiv="refresh"\|"algorithm":"metarefresh"' | head -1
 curl -fsS https://opencell.k4ozi.com/robots.txt | head -3
-oc-portal-deploy status                                     # health via 3001, anubis: active
+../portal-$TAG/deploy/oc-portal-deploy status              # health via 3001, anubis: active
 ```
 
 Then, in a browser:
@@ -331,21 +438,34 @@ $G "sqlite3 /var/lib/oc-portal/portal.db \"select action, ip, datetime(at/1000,'
 #   expect your public address, not 127.0.0.1 or 10.0.0.100.
 ```
 
-**Rollback** (at any point after step 4). Free 3000 first, then put the
-portal back on it:
+**Rollback of the switch** (at any point after step 6). Free 3000 first,
+then put the portal back on it:
 
 ```sh
 $G 'set -e; B=<the directory from step 1>
     systemctl disable --now anubis@oc-portal
     cp -a $B/portal.env /etc/opencell/portal.env
     systemctl restart oc-portal
-    for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3000/healthz && break; sleep 1; done; echo'
+    ok=; for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:3000/healthz; then ok=1; break; fi; sleep 1; done; echo
+    [ -n "$ok" ] || { echo "portal NOT healthy on 3000"; journalctl -u oc-portal -n 30 --no-pager; exit 1; }'
 ```
 
-nginx-proxy needs no change either way. The package, `/etc/anubis` and the
-key can stay (undo step 3 removes them). The new `oc-portal-deploy` reads
-`PORT=3000` again from the restored `portal.env`.
+- nginx-proxy's forwarding needs no change. The step 3 line can stay: it
+  is right with or without Anubis. Undo it only if it is itself the
+  problem.
+- The package, `/etc/anubis` and the key can stay (undo step 5 removes
+  them).
+- `oc-portal-deploy` reads `PORT=3000` again from the restored
+  `portal.env`.
+- To go back to v0.2.0 as well, do it only after this rollback, never with
+  Anubis in front: `../portal-$TAG/deploy/oc-portal-deploy rollback`.
 
-**Later changes to the policy or environment:** edit them here, merge, then
-repeat steps 2 and 3. The installer restarts Anubis only if a file changed.
-The restart takes about a second, and passes survive it.
+**Later changes to the policy or environment:**
+
+1. Edit them here and merge.
+2. Tag and deploy the release (step 2).
+3. Copy that tag's `deploy/anubis/` (step 4).
+4. Run the installer (step 5).
+
+The installer restarts Anubis only if a file changed. The restart takes
+about a second, and passes survive it.
