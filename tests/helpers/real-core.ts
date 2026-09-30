@@ -1,0 +1,103 @@
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { TlsCore } from '@/core/tls-client';
+import type { ContractCore } from './core-contract';
+
+/**
+ * A built opencell-core checkout (build/oc/oc-core, tools/ca/oc-ca), or
+ * undefined: then the tests against a real core are skipped. Set it to run
+ * them: OC_CORE_DIR=~/Documents/opencell/core npm test
+ */
+export const CORE_DIR = process.env.OC_CORE_DIR ? resolve(process.env.OC_CORE_DIR) : undefined;
+
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      const port = (s.address() as { port: number }).port;
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * oc-core on 127.0.0.1 with its admin API on, in a temp directory: a test
+ * CA (the core's own oc-ca), the core's certificate, a portal certificate
+ * pinned in its config, block 8831717 at home; and a TlsCore to it.
+ */
+export async function startRealCore(dir: string = CORE_DIR!): Promise<ContractCore & { adminSocket: string; log: () => string }> {
+  const t = mkdtempSync(join(tmpdir(), 'oc-real-core-'));
+  const ocCore = join(dir, 'build/oc/oc-core');
+  const ocCa = join(dir, 'tools/ca/oc-ca');
+  const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: t, stdio: 'pipe' }).toString();
+  run(ocCa, ['init', join(t, 'ca')]);
+  for (const n of ['core', 'portal']) {
+    run('openssl', ['req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout',
+      `${n}.key`, '-subj', `/CN=${n}`, '-out', `${n}.csr`]);
+  }
+  run(ocCa, ['sign', join(t, 'ca'), 'core', 'core.csr', 'core.crt', 'localhost', '--dns', 'localhost', '--ip', '127.0.0.1']);
+  const fpr = run(ocCa, ['sign', join(t, 'ca'), 'portal', 'portal.csr', 'portal.crt', 'oc-portal']).trim().split(' ')[1];
+  writeFileSync(join(t, 'master.key'), randomBytes(32));
+  chmodSync(join(t, 'master.key'), 0o400);
+  const port = await freePort();
+  writeFileSync(
+    join(t, 'oc-core.conf'),
+    [
+      'core_id = 1',
+      'key_id = 1',
+      'name = oc-core-test',
+      'block = 8831717 1',
+      `cell_socket = ${t}/core.sock`,
+      `admin_socket = ${t}/admin.sock`,
+      `api_listen = 127.0.0.1:${port}`,
+      `api_cert = ${t}/core.crt`,
+      `api_key = ${t}/core.key`,
+      `api_ca = ${t}/ca/ca.crt`,
+      `api_portal_fpr = ${fpr}`,
+      '',
+    ].join('\n'),
+  );
+  const base = ['--config', join(t, 'oc-core.conf'), '--key-file', join(t, 'master.key'), '--db', join(t, 'core.db')];
+  run(ocCore, ['admin', '--offline', ...base.slice(0, 4), '--db', join(t, 'core.db'), 'net', 'init']);
+  const logFd = openSync(join(t, 'log'), 'a');
+  const proc: ChildProcess = spawn(ocCore, base, { stdio: ['ignore', logFd, logFd] });
+  const core = new TlsCore({
+    host: '127.0.0.1',
+    port,
+    servername: 'localhost',
+    ca: join(t, 'ca/ca.crt'),
+    cert: join(t, 'portal.crt'),
+    key: join(t, 'portal.key'),
+    timeoutMs: 3000,
+  });
+  const log = () => readFileSync(join(t, 'log'), 'utf8');
+  const done = async () => {
+    core.close();
+    if (proc.exitCode === null) {
+      await new Promise<void>((r) => {
+        proc.once('exit', () => r());
+        proc.kill('SIGTERM');
+      });
+    }
+    rmSync(t, { recursive: true, force: true });
+  };
+  for (let i = 0; ; i++) {
+    try {
+      await core.coreStatus(0);
+      break;
+    } catch (e) {
+      if (i >= 50 || proc.exitCode !== null) {
+        const text = log();
+        await done();
+        throw new Error(`oc-core did not come up: ${(e as Error).message}\n${text}`);
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  return { core, done, log, adminSocket: join(t, 'admin.sock') };
+}
