@@ -25,40 +25,81 @@ async function freePort(): Promise<number> {
   });
 }
 
+const newKey = (n: string) =>
+  ['req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout', `${n}.key`, '-subj', `/CN=${n}`, '-out', `${n}.csr`];
+
 /**
- * oc-core on 127.0.0.1 with its admin API on, in a temp directory: a test
- * CA (the core's own oc-ca), the core's certificate, a portal certificate
- * pinned in its config, block 8831717 at home; and a TlsCore to it.
+ * A test OpenCell CA (the core's own oc-ca) and one portal certificate:
+ * what every test core trusts and pins. Two cores given the same one are
+ * set up as production is (plan P4b: the same portal certificate on both).
  */
-export async function startRealCore(dir: string = CORE_DIR!): Promise<ContractCore & { adminSocket: string; log: () => string }> {
+export interface TestPki {
+  caDir: string;
+  caCrt: string;
+  portalCrt: string;
+  portalKey: string;
+  portalFpr: string;
+}
+
+export function makeTestPki(dir: string = CORE_DIR!): TestPki & { done: () => void } {
+  const t = mkdtempSync(join(tmpdir(), 'oc-test-pki-'));
+  const ocCa = join(dir, 'tools/ca/oc-ca');
+  const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: t, stdio: 'pipe' }).toString();
+  run(ocCa, ['init', join(t, 'ca')]);
+  run('openssl', newKey('portal'));
+  const fpr = run(ocCa, ['sign', join(t, 'ca'), 'portal', 'portal.csr', 'portal.crt', 'oc-portal']).trim().split(' ')[1];
+  return {
+    caDir: join(t, 'ca'),
+    caCrt: join(t, 'ca/ca.crt'),
+    portalCrt: join(t, 'portal.crt'),
+    portalKey: join(t, 'portal.key'),
+    portalFpr: fpr,
+    done: () => rmSync(t, { recursive: true, force: true }),
+  };
+}
+
+export interface RealCoreOptions {
+  /** Shared with other cores; by default the core makes its own. */
+  pki?: TestPki;
+  coreId?: number;
+  name?: string;
+  /** PREFIX INDEX: the block the core is home for. */
+  block?: string;
+}
+
+export type RealCore = ContractCore & { adminSocket: string; port: number; log: () => string };
+
+/**
+ * oc-core on 127.0.0.1 with its admin API on, in a temp directory: the
+ * core's certificate from a test CA, the portal certificate pinned in its
+ * config, one block at home (8831717 by default); and a TlsCore to it.
+ */
+export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptions = {}): Promise<RealCore> {
   const t = mkdtempSync(join(tmpdir(), 'oc-real-core-'));
   const ocCore = join(dir, 'build/oc/oc-core');
   const ocCa = join(dir, 'tools/ca/oc-ca');
   const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: t, stdio: 'pipe' }).toString();
-  run(ocCa, ['init', join(t, 'ca')]);
-  for (const n of ['core', 'portal']) {
-    run('openssl', ['req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-keyout',
-      `${n}.key`, '-subj', `/CN=${n}`, '-out', `${n}.csr`]);
-  }
-  run(ocCa, ['sign', join(t, 'ca'), 'core', 'core.csr', 'core.crt', 'localhost', '--dns', 'localhost', '--ip', '127.0.0.1']);
-  const fpr = run(ocCa, ['sign', join(t, 'ca'), 'portal', 'portal.csr', 'portal.crt', 'oc-portal']).trim().split(' ')[1];
+  const own = opts.pki ? undefined : makeTestPki(dir);
+  const pki = opts.pki ?? own!;
+  run('openssl', newKey('core'));
+  run(ocCa, ['sign', pki.caDir, 'core', 'core.csr', 'core.crt', 'localhost', '--dns', 'localhost', '--ip', '127.0.0.1']);
   writeFileSync(join(t, 'master.key'), randomBytes(32));
   chmodSync(join(t, 'master.key'), 0o400);
   const port = await freePort();
   writeFileSync(
     join(t, 'oc-core.conf'),
     [
-      'core_id = 1',
+      `core_id = ${opts.coreId ?? 1}`,
       'key_id = 1',
-      'name = oc-core-test',
-      'block = 8831717 1',
+      `name = ${opts.name ?? 'oc-core-test'}`,
+      `block = ${opts.block ?? '8831717 1'}`,
       `cell_socket = ${t}/core.sock`,
       `admin_socket = ${t}/admin.sock`,
       `api_listen = 127.0.0.1:${port}`,
       `api_cert = ${t}/core.crt`,
       `api_key = ${t}/core.key`,
-      `api_ca = ${t}/ca/ca.crt`,
-      `api_portal_fpr = ${fpr}`,
+      `api_ca = ${pki.caCrt}`,
+      `api_portal_fpr = ${pki.portalFpr}`,
       '',
     ].join('\n'),
   );
@@ -70,9 +111,9 @@ export async function startRealCore(dir: string = CORE_DIR!): Promise<ContractCo
     host: '127.0.0.1',
     port,
     servername: 'localhost',
-    ca: join(t, 'ca/ca.crt'),
-    cert: join(t, 'portal.crt'),
-    key: join(t, 'portal.key'),
+    ca: pki.caCrt,
+    cert: pki.portalCrt,
+    key: pki.portalKey,
     timeoutMs: 3000,
   });
   const log = () => readFileSync(join(t, 'log'), 'utf8');
@@ -85,6 +126,7 @@ export async function startRealCore(dir: string = CORE_DIR!): Promise<ContractCo
       });
     }
     rmSync(t, { recursive: true, force: true });
+    own?.done();
   };
   for (let i = 0; ; i++) {
     try {
@@ -99,5 +141,5 @@ export async function startRealCore(dir: string = CORE_DIR!): Promise<ContractCo
       await new Promise((r) => setTimeout(r, 100));
     }
   }
-  return { core, done, log, adminSocket: join(t, 'admin.sock') };
+  return { core, done, log, port, adminSocket: join(t, 'admin.sock') };
 }
