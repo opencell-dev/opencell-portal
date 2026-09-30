@@ -76,7 +76,7 @@ Why it is laid out this way:
   pages and unknown paths would re-challenge people as they moved between
   them, and would turn a server-action POST into a challenge page. So all of
   them are the one catch-all rule.
-- **The email-link rule is the one exception, with two consequences.**
+- **The email-link rule is the one exception, with three consequences.**
   - A person who opens an emailed link does the 2 s wait, presses Confirm,
     and then gets one proof-of-work interstitial on the way to
     `/numbers`, `/welcome` or `/account`. The signed-in pages need
@@ -87,6 +87,26 @@ Why it is laid out this way:
     get a challenge instead of the portal. `src/components/site-header.tsx`
     sets `prefetch={false}` on those links, and
     `tests/unit/site-header.test.ts` checks it against rule 4's list.
+  - **The portal accepts only the Confirm action on that page.** Next.js
+    serves every action of a module a page imports on that page, and the
+    email-link page imports `src/app/actions/auth.ts`. Without a guard,
+    waiting out the light challenge would open sign-up, sign-in links and
+    passkey sign-in to any client. So the portal's proxy
+    (`src/lib/email-link-guard.ts`, called from `src/proxy.ts`) 403s every
+    unsafe request to `/auth/email/*` that is not plainly the Confirm
+    action:
+    - as a fetch action, the `Next-Action` id must be the confirm action's;
+    - as a no-JavaScript form, every action key React reads
+      (`$ACTION_ID_<id>`, or `$ACTION_REF_<n>` with a literal id in
+      `$ACTION_<n>:0`) must name it.
+
+    Next.js has no API for an action's id. The id comes from the manifest
+    the build writes (`.next/server/server-reference-manifest.json`), found
+    there by file and export name (`src/app/actions/auth.ts`,
+    `confirmEmailLinkAction`), and reread when the file changes. If the
+    manifest is missing or lacks the action, every POST there is refused
+    and the portal logs why. So renaming or moving that action needs the
+    guard updated; `npm run test:anubis` and the e2e tests would catch it.
 - **Difficulty 4** is Anubis's default: 4 leading hex zeros, about 65 000
   SHA-256 hashes. That is well under a second on a laptop and a second or
   two on a phone.
@@ -167,6 +187,11 @@ nginx-proxy's `proxy.conf` sets `X-Forwarded-For $remote_addr` and
   runs Anubis with this policy and environment in front of the portal on
   loopback. The rules, both challenges, the passes, the email-link flow
   without JavaScript, and the client addresses are all exercised for real.
+  So is the email-link guard: another action posted to `/auth/email/x`
+  after the metarefresh wait, as a fetch action or as the sign-in page's
+  no-JavaScript form, gets a 403 and never runs.
+- `tests/unit/email-link-guard.test.ts` and `tests/unit/proxy.test.ts`
+  cover the guard's matching rules and its failing closed.
 - `npm run test:deploy` runs `install-anubis.sh` in the fake-root
   simulation: refusals (arch, checksum, signature, swapped key),
   first install, idempotent re-run, restart on change, port 3000 still

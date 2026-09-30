@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { type NextRequest, NextResponse } from 'next/server';
 import { config as portalConfig } from '@/config';
+import { isConfirmActionRequest, isEmailLinkPath, loadConfirmActionIds } from '@/lib/email-link-guard';
 import { buildCsp, originAllowed, securityHeaders } from '@/lib/web-security';
 
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -16,11 +17,15 @@ export function proxySkipsPath(pathname: string): boolean {
   return PROXY_SKIP.test(pathname.replace(/^\//, ''));
 }
 
-export function proxy(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const c = portalConfig();
   const https = c.origin.startsWith('https:');
   if (!SAFE.has(req.method) && !originAllowed(req.headers.get('origin'), c.origin)) {
     return new NextResponse('Forbidden: this request did not come from the OpenCell portal.', { status: 403 });
+  }
+  // The emailed-link page: only its own Confirm action (src/lib/email-link-guard.ts).
+  if (!SAFE.has(req.method) && isEmailLinkPath(req.nextUrl.pathname) && !(await isConfirmActionRequest(req, loadConfirmActionIds()))) {
+    return new NextResponse('Forbidden: this page only confirms its link.', { status: 403 });
   }
   const nonce = randomBytes(16).toString('base64');
   const csp = buildCsp(nonce, { dev: process.env.NODE_ENV === 'development', https });

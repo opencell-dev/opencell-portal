@@ -480,3 +480,46 @@ describe('the client address the portal sees', () => {
     expect(rateCount('magic_ip', '198.51.100.67')).toBe(0);
   });
 });
+
+describe('the emailed-link page takes only its Confirm action', () => {
+  // Anubis gives /auth/email/* the light no-JavaScript challenge, and every
+  // action of src/app/actions/auth.ts is callable on that page. The portal's
+  // proxy lets through only the Confirm action there (src/lib/email-link-guard.ts).
+  function actionId(exportedName: string): string {
+    const m = JSON.parse(readFileSync(join(REPO, '.next', 'server', 'server-reference-manifest.json'), 'utf8')) as {
+      node: Record<string, { exportedName?: string }>;
+    };
+    const id = Object.entries(m.node).find(([, v]) => v.exportedName === exportedName)?.[0];
+    if (!id) throw new Error(`no ${exportedName} in the build's action manifest`);
+    return id;
+  }
+
+  it('refuses another action id sent as a fetch action (Next-Action)', async () => {
+    const ip = '203.0.113.71';
+    const c = new Client(ip);
+    await passMetaRefresh(c, '/auth/email/not-a-token');
+    const fd = new FormData();
+    fd.set('email', 'someone@example.org');
+    const r = await c.post('/auth/email/not-a-token', fd, { 'next-action': actionId('magicLinkAction') });
+    expect(challengeOf(r)).toBeNull(); // Anubis let it through; the portal refused it
+    expect(r.status).toBe(403);
+    expect(rateCount('magic_ip', ip)).toBe(0);
+  });
+
+  it('refuses another action in a no-JavaScript form', async () => {
+    const ip = '203.0.113.72';
+    // The sign-in page's own form, fetched by a client that passed its proof of work...
+    const signIn = new Client('203.0.113.73');
+    const page = await passProofOfWork(signIn, '/sign-in');
+    const fd = formWith(page.body, 'name="email"');
+    fd.set('email', 'someone@example.org');
+    expect(JSON.stringify([...fd.keys()])).toContain('$ACTION_REF_');
+    // ...posted to the emailed-link page by one that only waited out the metarefresh.
+    const c = new Client(ip);
+    await passMetaRefresh(c, '/auth/email/not-a-token');
+    const r = await c.post('/auth/email/not-a-token', fd);
+    expect(challengeOf(r)).toBeNull();
+    expect(r.status).toBe(403);
+    expect(rateCount('magic_ip', ip)).toBe(0);
+  });
+});
