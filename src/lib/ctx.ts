@@ -1,6 +1,6 @@
 import { type Config, config } from '@/config';
-import { getCore } from '@/core';
-import type { CoreAdmin } from '@/core/types';
+import { getCore, getCores } from '@/core';
+import type { CoreAdmin, CoreHandle } from '@/core/types';
 import { type Db, openDb } from '@/db';
 import { startHousekeeping } from '@/lib/housekeeping';
 import { createMailer, type Mailer } from '@/lib/mail';
@@ -12,7 +12,10 @@ export interface Ctx {
   db: Db;
   mailer: Mailer;
   mailQueue: MailQueue;
+  /** Every number and subscriber operation's core: cores[0] until P5 (the East/West split). */
   core: CoreAdmin;
+  /** Every core, in config order (the admin dashboard). */
+  cores: CoreHandle[];
   now: () => number;
 }
 
@@ -22,7 +25,15 @@ const g = globalThis as typeof globalThis & { __ocCtx?: Ctx };
 export function createCtx(): Ctx {
   const c = config();
   const mailer = createMailer(c.mail);
-  return { config: c, db: openDb(c.dbPath), mailer, mailQueue: createMailQueue(mailer), core: getCore(), now: Date.now };
+  return {
+    config: c,
+    db: openDb(c.dbPath),
+    mailer,
+    mailQueue: createMailQueue(mailer),
+    core: getCore(),
+    cores: getCores(),
+    now: Date.now,
+  };
 }
 
 /**

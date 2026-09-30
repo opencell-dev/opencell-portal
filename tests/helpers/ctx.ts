@@ -14,6 +14,7 @@ export function testCtx(): TestCtx {
   const clock = { t: 1_790_000_000_000 };
   const now = () => clock.t;
   const mailer = new MemoryMailer();
+  const core = new FakeCore(now);
   return {
     config: parseConfig({
       OC_ORIGIN: TEST_ORIGIN,
@@ -25,7 +26,8 @@ export function testCtx(): TestCtx {
     db: openDb(':memory:'),
     mailer,
     mailQueue: createMailQueue(mailer),
-    core: new FakeCore(now),
+    core,
+    cores: [{ id: 'fake', where: 'in-process', core }],
     now,
     clock,
   };

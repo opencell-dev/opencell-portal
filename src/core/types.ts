@@ -81,6 +81,18 @@ export class CoreError extends Error {
   }
 }
 
+/**
+ * A core the portal knows (plan P4b): its id in the config (core1, core2;
+ * 'fake' for the fake core), where it listens (for the admin page), and its
+ * client. The admin dashboard shows every core; number and subscriber
+ * operations go to the first until P5.
+ */
+export interface CoreHandle {
+  id: string;
+  where: string;
+  core: CoreAdmin;
+}
+
 export interface CoreAdmin {
   /** Up to `count` (1–32) random free numbers in an exchange (+8831NPANXX);
    *  `pattern` is 5 characters of digits and `x` over the last five digits. */

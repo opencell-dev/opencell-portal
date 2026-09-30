@@ -272,12 +272,14 @@ beforeAll(async () => {
   await waitFor('anubis', async () => (await new Client('192.0.2.1').get('/healthz')).status === 200);
 
   const mailer = new MemoryMailer();
+  const core = new FakeCore(() => Date.now());
   ctx = {
     config: parseConfig(env),
     db: openDb(env.OC_DB_PATH),
     mailer,
     mailQueue: createMailQueue(mailer),
-    core: new FakeCore(() => Date.now()),
+    core,
+    cores: [{ id: 'fake', where: 'in-process', core }],
     now: () => Date.now(),
   } as Ctx;
 }, 180_000);
