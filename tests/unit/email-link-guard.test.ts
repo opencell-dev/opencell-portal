@@ -12,10 +12,15 @@ function post(headers: Record<string, string>, body?: BodyInit): Request {
   return new Request('https://portal.test/auth/email/tok', { method: 'POST', headers, body });
 }
 
-function mpa(fields: [string, string][]): Request {
+/** A no-JavaScript form POST as a browser sends it: multipart, with its Content-Length. */
+async function mpa(fields: [string, string][], length?: string | null): Promise<Request> {
   const fd = new FormData();
   for (const [k, v] of fields) fd.append(k, v);
-  return new Request('https://portal.test/auth/email/tok', { method: 'POST', body: fd });
+  const encoded = new Request('https://x/', { method: 'POST', body: fd });
+  const body = Buffer.from(await encoded.arrayBuffer());
+  const headers: Record<string, string> = { 'content-type': encoded.headers.get('content-type') ?? '' };
+  if (length !== null) headers['content-length'] = length ?? String(body.length);
+  return new Request('https://portal.test/auth/email/tok', { method: 'POST', headers, body });
 }
 
 const ids = new Set([CONFIRM]);
@@ -58,33 +63,44 @@ describe('the emailed-link page accepts only its own Confirm action', () => {
       ['$ACTION_1:1', '["token"]'],
       ['$ACTION_KEY', 'k1'],
     ];
-    expect(await isConfirmActionRequest(mpa(ref(CONFIRM)), ids)).toBe(true);
-    expect(await isConfirmActionRequest(mpa(ref(MAGIC)), ids)).toBe(false);
-    expect(await isConfirmActionRequest(mpa([['$ACTION_ID_' + CONFIRM, '']]), ids)).toBe(true);
-    expect(await isConfirmActionRequest(mpa([['$ACTION_ID_' + SIGNUP, ''], ['email', 'a@b.c']]), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa(ref(CONFIRM)), ids)).toBe(true);
+    expect(await isConfirmActionRequest(await mpa(ref(MAGIC)), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa([['$ACTION_ID_' + CONFIRM, '']]), ids)).toBe(true);
+    expect(await isConfirmActionRequest(await mpa([['$ACTION_ID_' + SIGNUP, ''], ['email', 'a@b.c']]), ids)).toBe(false);
   });
 
   it('refuses anything ambiguous or indirect', async () => {
     // A second action key: React takes the last one.
-    expect(await isConfirmActionRequest(mpa([['$ACTION_ID_' + CONFIRM, ''], ['$ACTION_ID_' + MAGIC, '']]), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa([['$ACTION_ID_' + CONFIRM, ''], ['$ACTION_ID_' + MAGIC, '']]), ids)).toBe(false);
     // The id as a reply reference ("$1") rather than the literal id.
     const indirect: [string, string][] = [
       ['$ACTION_REF_1', ''],
       ['$ACTION_1:0', JSON.stringify({ id: '$1', bound: null })],
       ['$ACTION_1:1', JSON.stringify(CONFIRM)],
     ];
-    expect(await isConfirmActionRequest(mpa(indirect), ids)).toBe(false);
-    expect(await isConfirmActionRequest(mpa([['$ACTION_REF_1', ''], ['$ACTION_1:0', '{oops']]), ids)).toBe(false);
-    expect(await isConfirmActionRequest(mpa([['$ACTION_REF_1', '']]), ids)).toBe(false);
-    expect(await isConfirmActionRequest(mpa([['email', 'a@b.c']]), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa(indirect), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa([['$ACTION_REF_1', ''], ['$ACTION_1:0', '{oops']]), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa([['$ACTION_REF_1', '']]), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa([['email', 'a@b.c']]), ids)).toBe(false);
     const urlencoded = post({ 'content-type': 'application/x-www-form-urlencoded' }, `$ACTION_ID_${CONFIRM}=`);
     expect(await isConfirmActionRequest(urlencoded, ids)).toBe(false);
-    expect(await isConfirmActionRequest(mpa([['$ACTION_ID_' + CONFIRM, '']]), new Set())).toBe(false);
+    expect(await isConfirmActionRequest(await mpa([['$ACTION_ID_' + CONFIRM, '']]), new Set())).toBe(false);
     expect(await isConfirmActionRequest(new Request('https://portal.test/auth/email/tok', { method: 'PUT', body: 'x' }), ids)).toBe(false);
   });
 
+  it('refuses to parse a form without a Content-Length or larger than 64 KiB (Next\'s own action limit)', async () => {
+    const ok: [string, string][] = [['$ACTION_ID_' + CONFIRM, '']];
+    expect(await isConfirmActionRequest(await mpa(ok, null), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa(ok, 'lots'), ids)).toBe(false);
+    expect(await isConfirmActionRequest(await mpa(ok, '-1'), ids)).toBe(false);
+    const big: [string, string][] = [...ok, ['pad', 'x'.repeat(64 * 1024)]];
+    expect(await isConfirmActionRequest(await mpa(big), ids)).toBe(false);
+    const fits: [string, string][] = [...ok, ['pad', 'x'.repeat(60 * 1024)]];
+    expect(await isConfirmActionRequest(await mpa(fits), ids)).toBe(true);
+  });
+
   it('leaves the body for the page to read', async () => {
-    const r = mpa([['$ACTION_ID_' + CONFIRM, ''], ['email', 'a@b.c']]);
+    const r = await mpa([['$ACTION_ID_' + CONFIRM, ''], ['email', 'a@b.c']]);
     expect(await isConfirmActionRequest(r, ids)).toBe(true);
     expect((await r.formData()).get('email')).toBe('a@b.c');
   });

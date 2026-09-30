@@ -15,6 +15,8 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const CONFIRM = { filename: 'src/app/actions/auth.ts', exportedName: 'confirmEmailLinkAction' };
+/** next.config.ts's serverActions.bodySizeLimit ('64kb'): a Confirm form is a few hundred bytes. */
+export const MAX_FORM_BYTES = 64 * 1024;
 const EMAIL_LINK_PATH = /^\/auth\/email\/[^/]+$/;
 
 export function isEmailLinkPath(pathname: string): boolean {
@@ -44,7 +46,11 @@ export function defaultManifestPath(): string {
 let cache: { path: string; mtimeMs: number; ids: Set<string> } | null = null;
 let warned = false;
 
-/** The confirm action's ids from the build's manifest; empty (refuse all) if it can't be read. */
+/**
+ * The confirm action's ids from the build's manifest. Empty (refuse all) if
+ * it has never been read; after a later read error, the ids last read (the
+ * running build has not changed).
+ */
 export function loadConfirmActionIds(path = defaultManifestPath()): Set<string> {
   try {
     const { mtimeMs } = statSync(path);
@@ -67,13 +73,18 @@ export function loadConfirmActionIds(path = defaultManifestPath()): Set<string> 
  * Whether `req` is the confirm action and nothing else: as a fetch action,
  * its Next-Action header; as a no-JavaScript form (multipart), every action
  * key React would look at ($ACTION_ID_<id>, or $ACTION_REF_<n> with the
- * literal id in $ACTION_<n>:0) names it. Reads a clone of the body.
+ * literal id in $ACTION_<n>:0) names it. Reads a clone of the body, and
+ * only one with a Content-Length of at most MAX_FORM_BYTES.
  */
 export async function isConfirmActionRequest(req: Request, ids: Set<string>): Promise<boolean> {
   if (req.method !== 'POST' || ids.size === 0) return false;
   const header = req.headers.get('next-action');
   if (header !== null) return ids.has(header);
   if (!(req.headers.get('content-type') ?? '').startsWith('multipart/form-data')) return false;
+  // Parse nothing Next would refuse anyway: Next clones up to 10 MB of body
+  // for the proxy, and anyone who waited out the metarefresh can send it.
+  const length = req.headers.get('content-length');
+  if (length === null || !/^\d{1,9}$/.test(length) || Number(length) > MAX_FORM_BYTES) return false;
   let form: FormData;
   try {
     form = await req.clone().formData();

@@ -536,6 +536,21 @@ describe('the emailed-link page takes only its Confirm action', () => {
     expect(rateCount('magic_ip', ip)).toBe(0);
   });
 
+  it('refuses to parse a form over 64 KiB, even one naming the Confirm action', async () => {
+    const c = new Client('203.0.113.74');
+    await passMetaRefresh(c, '/auth/email/not-a-token');
+    const form = (pad: number) => {
+      const fd = new FormData();
+      fd.set(`$ACTION_ID_${actionId('confirmEmailLinkAction')}`, '');
+      fd.set('pad', 'x'.repeat(pad));
+      return fd;
+    };
+    expect((await c.post('/auth/email/not-a-token', form(70 * 1024))).status).toBe(403);
+    // The same form at a normal size gets past the guard (and then fails in
+    // the action itself, which wants a bound token: not a 403).
+    expect((await c.post('/auth/email/not-a-token', form(10))).status).not.toBe(403);
+  });
+
   it('refuses another action in a no-JavaScript form', async () => {
     const ip = '203.0.113.72';
     // The sign-in page's own form, fetched by a client that passed its proof of work...
