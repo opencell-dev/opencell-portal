@@ -1,0 +1,20 @@
+# /etc/systemd/system/oc-cores-route.service on the portal guest (plan P4b).
+# oc-core-2's admin API (10.99.0.2:7444) is on the WireGuard link between the
+# cores (wg0, 10.99.0.0/24); oc-core-1 (10.0.0.60, on `internal`) forwards
+# this guest's connections to it, and only those. Proxmox rewrites
+# /etc/network/interfaces at every container start, so the route lives in
+# this unit instead; PartOf= puts it back after `systemctl restart networking`.
+[Unit]
+Description=Route to the cores' WireGuard network (10.99.0.0/24) via oc-core-1
+After=networking.service network-online.target
+Wants=network-online.target
+PartOf=networking.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ip route replace 10.99.0.0/24 via 10.0.0.60 dev eth0
+ExecStop=/usr/bin/ip route del 10.99.0.0/24 via 10.0.0.60 dev eth0
+
+[Install]
+WantedBy=multi-user.target
