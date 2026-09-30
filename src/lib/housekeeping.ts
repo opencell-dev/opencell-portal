@@ -1,5 +1,6 @@
 import { purgeStale } from '@/lib/accounts';
 import type { Ctx } from '@/lib/ctx';
+import { errorKind } from '@/lib/errors';
 
 export const HOUSEKEEPING_MS = 3600_000;
 
@@ -16,8 +17,7 @@ export function startHousekeeping(ctx: Ctx, every = HOUSEKEEPING_MS): () => void
     try {
       purgeStale(ctx);
     } catch (e) {
-      const kind = e instanceof Error && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : 'unknown error';
-      console.error(`oc-portal: housekeeping purge failed (${kind}); retrying in an hour`);
+      console.error(`oc-portal: housekeeping purge failed (${errorKind(e)}); retrying in an hour`);
     }
   };
   run();

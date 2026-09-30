@@ -474,6 +474,45 @@ describe('housekeeping (spec §10)', () => {
     expect(ctx.db.select().from(audit).where(eq(audit.actorId, kept.userId)).all().some((r) => r.ip === meta.ip)).toBe(true);
   });
 
+  it('purges more stale accounts than SQLite can bind in one statement (12,000), in chunks', () => {
+    const N = 12_000;
+    const old = ctx.clock.t;
+    const ins = ctx.db.$client.prepare('INSERT INTO users (name, email, created_at) VALUES (?, ?, ?)');
+    const aud = ctx.db.$client.prepare("INSERT INTO audit (at, actor_id, action, target, ip) VALUES (?, ?, 'account.signup', ?, ?)");
+    ctx.db.$client.transaction(() => {
+      for (let i = 0; i < N; i++) {
+        const id = Number(ins.run(`u${i}`, `u${i}@example.org`, old).lastInsertRowid);
+        aud.run(old, id, `user:${id}`, meta.ip);
+      }
+    })();
+    ctx.clock.t += 8 * 24 * 3600_000;
+    purgeStale(ctx);
+    expect(ctx.db.$client.prepare('SELECT count(*) AS n FROM users').get()).toEqual({ n: 0 });
+    expect(ctx.db.$client.prepare('SELECT count(*) AS n FROM audit WHERE ip IS NOT NULL').get()).toEqual({ n: 0 });
+    expect(ctx.db.$client.prepare('SELECT count(*) AS n FROM audit').get()).toEqual({ n: N });
+  });
+
+  it('never fails a sign-up because the purge failed, and logs the failure without details', async () => {
+    // A purge that throws: deleting an expired challenge is aborted by a trigger.
+    ctx.db.$client.exec("CREATE TRIGGER no_purge BEFORE DELETE ON challenges BEGIN SELECT RAISE(ABORT, 'purge blocked for ada@example.org'); END;");
+    ctx.db.$client
+      .prepare("INSERT INTO challenges (id, purpose, challenge, expires_at) VALUES ('c1', 'signin', 'x', ?)")
+      .run(ctx.clock.t - 1);
+    expect(() => purgeStale(ctx)).toThrow();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta)).toEqual({ ok: true });
+      await ctx.mailQueue.drain();
+      expect(ctx.mailer.sent.map((m) => m.subject)).toEqual(['Confirm your email for OpenCell']);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const line = spy.mock.calls[0].map(String).join(' ');
+      expect(line).toMatch(/purge failed/);
+      expect(line).not.toContain('ada@example.org');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('keeps an account still inside its 7 days, and its audit IP', async () => {
     await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta);
     const id = findUserByEmail(ctx, 'ada@example.org')!.id;

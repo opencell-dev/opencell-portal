@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import { z } from 'zod';
 import { audit, challenges, emailTokens, rateEvents, sessions, userRoles, users } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
+import { errorKind } from '@/lib/errors';
 import { checkCaptcha } from '@/lib/captcha';
 import type { Ctx } from '@/lib/ctx';
 import { emailChangedNotice, emailChangeMail, magicLinkMail, type Template, verifyMail } from '@/lib/mail-templates';
@@ -23,6 +24,8 @@ const LIFETIME_MS: Record<Purpose, number> = {
 };
 
 const UNVERIFIED_KEEP_MS = 7 * 24 * 3600_000;
+/** Stale accounts purged per transaction (4 bound variables each, well under SQLite's 32,766). */
+const PURGE_CHUNK = 500;
 
 const signUpSchema = z.object({ name: nameSchema, email: emailSchema, altcha: z.string().max(4096) });
 const emailOnlySchema = z.object({ email: emailSchema });
@@ -68,25 +71,33 @@ export function purgeStale(ctx: Ctx): void {
   ctx.db.delete(sessions).where(lt(sessions.expiresAt, now)).run();
   ctx.db.delete(emailTokens).where(lt(emailTokens.expiresAt, now - 24 * 3600_000)).run();
   ctx.db.delete(challenges).where(lt(challenges.expiresAt, now)).run();
-  ctx.db.transaction((tx) => {
-    const stale = tx
-      .select({ id: users.id, email: users.email })
-      .from(users)
-      .where(and(isNull(users.emailVerifiedAt), lt(users.createdAt, now - UNVERIFIED_KEEP_MS)))
-      .all();
-    if (stale.length === 0) return;
-    const ids = stale.map((u) => u.id);
-    tx.update(audit).set({ ip: null, detail: null }).where(inArray(audit.actorId, ids)).run();
-    tx.delete(rateEvents)
-      .where(
-        inArray(
-          rateEvents.key,
-          stale.flatMap((u) => [rateKey(ctx, 'signup_email', u.email), rateKey(ctx, 'magic_email', u.email), rateKey(ctx, 'email_change_user', String(u.id))]),
-        ),
-      )
-      .run();
-    tx.delete(users).where(inArray(users.id, ids)).run();
-  });
+  // In chunks: each account binds three rate keys and an id, and SQLite
+  // takes at most 32,766 variables per statement. Every chunk deletes the
+  // accounts it read, so the loop always ends.
+  for (;;) {
+    const done = ctx.db.transaction((tx) => {
+      const stale = tx
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(and(isNull(users.emailVerifiedAt), lt(users.createdAt, now - UNVERIFIED_KEEP_MS)))
+        .limit(PURGE_CHUNK)
+        .all();
+      if (stale.length === 0) return true;
+      const ids = stale.map((u) => u.id);
+      tx.update(audit).set({ ip: null, detail: null }).where(inArray(audit.actorId, ids)).run();
+      tx.delete(rateEvents)
+        .where(
+          inArray(
+            rateEvents.key,
+            stale.flatMap((u) => [rateKey(ctx, 'signup_email', u.email), rateKey(ctx, 'magic_email', u.email), rateKey(ctx, 'email_change_user', String(u.id))]),
+          ),
+        )
+        .run();
+      tx.delete(users).where(inArray(users.id, ids)).run();
+      return stale.length < PURGE_CHUNK;
+    });
+    if (done) break;
+  }
   ctx.db.delete(rateEvents).where(lt(rateEvents.at, now - longestWindowMs(ctx))).run();
 }
 
@@ -108,7 +119,12 @@ export async function signUp(
   if (!(await checkCaptcha(ctx, altcha))) return { ok: false, error: 'Please complete the “I’m not a robot” check.' };
   const byEmail = hit(ctx, 'signup_email', email);
   if (!byEmail.ok) return { ok: false, error: byEmail.message };
-  purgeStale(ctx);
+  // Housekeeping must never cost anyone their sign-up: the hourly run retries.
+  try {
+    purgeStale(ctx);
+  } catch (e) {
+    console.error(`oc-portal: purge failed during sign-up (${errorKind(e)}); the hourly run will retry`);
+  }
 
   const existing = findUserByEmail(ctx, email);
   if (existing?.emailVerifiedAt) {

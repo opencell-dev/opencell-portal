@@ -13,3 +13,11 @@ export function publicMessage(e: unknown, fallback: string): string {
   console.error('oc-portal: unexpected error in a server action:', e);
   return fallback;
 }
+
+/**
+ * An error's class for a log line, and nothing else: a database error's
+ * message can quote the statement's parameters (addresses), so it is never logged.
+ */
+export function errorKind(e: unknown): string {
+  return e instanceof Error && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : 'unknown error';
+}
