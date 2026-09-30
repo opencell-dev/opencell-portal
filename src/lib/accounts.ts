@@ -99,7 +99,7 @@ export async function signUp(
     userId = ctx.db.insert(users).values({ name, email, createdAt: ctx.now() }).returning({ id: users.id }).get().id;
     writeAudit(ctx, { actorId: userId, action: 'account.signup', target: `user:${userId}`, ip: meta.ip });
   }
-  mail(ctx, email, verifyMail(name, linkFor(ctx, issueEmailToken(ctx, userId, 'verify'))));
+  mail(ctx, email, verifyMail(linkFor(ctx, issueEmailToken(ctx, userId, 'verify'))));
   return { ok: true };
 }
 
@@ -115,7 +115,7 @@ export async function requestMagicLink(ctx: Ctx, input: { email: unknown }, meta
   const u = findUserByEmail(ctx, email);
   if (!u) return { ok: true };
   if (!u.emailVerifiedAt) {
-    mail(ctx, email, verifyMail(u.name, linkFor(ctx, issueEmailToken(ctx, u.id, 'verify'))));
+    mail(ctx, email, verifyMail(linkFor(ctx, issueEmailToken(ctx, u.id, 'verify'))));
   } else {
     mail(ctx, email, magicLinkMail(u.name, linkFor(ctx, issueEmailToken(ctx, u.id, 'magic'))));
   }
@@ -206,7 +206,7 @@ export async function changeEmail(ctx: Ctx, userId: number, input: { email: unkn
   const lim = hit(ctx, 'magic_email', email);
   if (!lim.ok) return { ok: false, error: lim.message };
   if (findUserByEmail(ctx, email)) return { ok: true }; // say nothing about other accounts
-  mail(ctx, email, emailChangeMail(u.name, linkFor(ctx, issueEmailToken(ctx, userId, 'email_change', email))));
+  mail(ctx, email, emailChangeMail(linkFor(ctx, issueEmailToken(ctx, userId, 'email_change', email))));
   return { ok: true };
 }
 

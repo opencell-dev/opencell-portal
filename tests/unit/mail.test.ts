@@ -33,7 +33,7 @@ describe('mail', () => {
   });
 
   it('writes the link and its lifetime into the templates', () => {
-    const v = verifyMail('Ada', 'https://opencell.k4ozi.com/auth/email/abc');
+    const v = verifyMail('https://opencell.k4ozi.com/auth/email/abc');
     expect(v.subject).toBe('Confirm your email for OpenCell');
     expect(v.text).toContain('https://opencell.k4ozi.com/auth/email/abc');
     expect(v.text).toContain('30 minutes');

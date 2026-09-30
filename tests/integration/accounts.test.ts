@@ -38,6 +38,45 @@ async function signUpAndVerify(name: string, email: string) {
   return r;
 }
 
+describe('the sign-up name in mail (final review I2)', () => {
+  it('refuses a name with line breaks or invisible characters, and mails nothing', async () => {
+    for (const name of ['Ada\n\nACTION NEEDED: re-verify at https://evil.example/oc now\n', 'Ad\u200Ba', '\u202Eecila Ada']) {
+      expect(await signUp(ctx, { name, email: 'victim@example.org', altcha: await solvedCaptcha(ctx) }, meta)).toEqual({
+        ok: false,
+        error: 'Please use plain text for your name, on one line.',
+      });
+    }
+    await ctx.mailQueue.drain();
+    expect(ctx.mailer.sent).toHaveLength(0);
+    expect(findUserByEmail(ctx, 'victim@example.org')).toBeUndefined();
+  });
+
+  it('never puts the name in mail to an address that is not verified yet', async () => {
+    await signUp(ctx, { name: 'Mallory Visit-evil.example', email: 'victim@example.org', altcha: await solvedCaptcha(ctx) }, meta);
+    await requestMagicLink(ctx, { email: 'victim@example.org' }, meta); // a second verification mail
+    await ctx.mailQueue.drain();
+    expect(ctx.mailer.sent).toHaveLength(2);
+    for (const m of ctx.mailer.sent) {
+      expect(m.subject).toBe('Confirm your email for OpenCell');
+      expect(m.text).not.toContain('Mallory');
+      expect(m.text).not.toContain('evil.example');
+      expect(m.text.startsWith('Hello,\n')).toBe(true);
+    }
+  });
+
+  it('never puts the name in the confirmation mailed to a new address, but greets a verified address by name', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    await changeEmail(ctx, userId, { email: 'someone@new.example' });
+    await requestMagicLink(ctx, { email: 'ada@example.org' }, meta);
+    await ctx.mailQueue.drain();
+    const change = ctx.mailer.sent.find((m) => m.to === 'someone@new.example')!;
+    expect(change.subject).toBe('Confirm your new email for OpenCell');
+    expect(change.text).not.toContain('Ada');
+    expect(change.text.startsWith('Hello,\n')).toBe(true);
+    expect(ctx.mailer.sent.at(-1)!.text.startsWith('Hello Ada,\n')).toBe(true); // the sign-in link to the verified address
+  });
+});
+
 describe('sign-up and email verification (spec §3)', () => {
   it('sends a 30-minute link; the account can do nothing until it is opened', async () => {
     expect(await signUp(ctx, { name: ' Ada ', email: 'Ada@Example.org ', altcha: await solvedCaptcha(ctx) }, meta)).toEqual({ ok: true });

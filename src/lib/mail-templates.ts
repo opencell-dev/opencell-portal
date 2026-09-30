@@ -7,11 +7,15 @@ export interface Template {
 
 const sig = '\n\n— OpenCell\nhttps://opencell.k4ozi.com\n';
 
-export function verifyMail(name: string, url: string): Template {
+// Mail to an address nobody has verified yet (sign-up, a new address) never
+// carries the name typed with it: anyone can type any name and any address,
+// so that would let strangers put their words into our mail (final review I2).
+
+export function verifyMail(url: string): Template {
   return {
     subject: 'Confirm your email for OpenCell',
     text:
-      `Hello ${name},\n\nSomeone (hopefully you) signed up for OpenCell with this address. ` +
+      `Hello,\n\nSomeone (hopefully you) signed up for OpenCell with this address. ` +
       `Open this link to confirm it. It works for 30 minutes:\n\n${url}\n\n` +
       `If you didn't sign up, ignore this message and nothing happens.${sig}`,
   };
@@ -26,11 +30,11 @@ export function magicLinkMail(name: string, url: string): Template {
   };
 }
 
-export function emailChangeMail(name: string, url: string): Template {
+export function emailChangeMail(url: string): Template {
   return {
     subject: 'Confirm your new email for OpenCell',
     text:
-      `Hello ${name},\n\nOpen this link to make this your OpenCell email address. It works for 30 minutes:\n\n${url}\n\n` +
+      `Hello,\n\nOpen this link to make this your OpenCell email address. It works for 30 minutes:\n\n${url}\n\n` +
       `If you didn't ask for this, ignore this message.${sig}`,
   };
 }

@@ -1,10 +1,23 @@
 import { z } from 'zod';
 
+// Plain text: no control characters (tabs, newlines, NULs) and no invisible
+// format characters (bidi overrides and isolates, zero-width spaces and
+// joiners, soft hyphens) that could make a label read as something else.
+const noControl = (s: string) => !/[\p{Cc}\p{Cf}]/u.test(s);
+// …and, for a name that goes into mail and lists, on one line: the Unicode
+// line and paragraph separators too.
+const oneLinePlain = (s: string) => noControl(s) && !/[\p{Zl}\p{Zp}]/u.test(s);
+
+/**
+ * The account's name (sign-up form). It reaches mail, the admin list and the
+ * directory, so it is one line of visible plain text (final review I2).
+ */
 export const nameSchema = z
   .string()
   .trim()
   .min(1, 'Please enter your name.')
-  .max(80, 'Please use at most 80 characters for your name.');
+  .max(80, 'Please use at most 80 characters for your name.')
+  .refine(oneLinePlain, 'Please use plain text for your name, on one line.');
 
 export const emailSchema = z
   .string()
@@ -17,11 +30,6 @@ export const emailSchema = z
 export function firstError(e: z.ZodError): string {
   return e.issues[0]?.message ?? 'Please check the form.';
 }
-
-// Plain text: no control characters (tabs, newlines, NULs) and no invisible
-// format characters (bidi overrides and isolates, zero-width spaces and
-// joiners, soft hyphens) that could make a label read as something else.
-const noControl = (s: string) => !/[\p{Cc}\p{Cf}]/u.test(s);
 
 /** A passkey's label, as the user typed it (spec §3 account page lists them by name). */
 export const passkeyNameSchema = z
