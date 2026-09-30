@@ -51,7 +51,32 @@ describe('parseConfig', () => {
     });
   });
 
-  it('refuses any core but the fake one until P4', () => {
+  it('takes the fake core or the real one over TLS, nothing else', () => {
     expect(() => parseConfig({ ...base, OC_CORE: 'mtls' })).toThrow(/OC_CORE/);
+    expect(parseConfig(base).coreTls).toBeUndefined();
+  });
+
+  it('needs the core address and TLS files for OC_CORE=tls', () => {
+    expect(() => parseConfig({ ...base, OC_CORE: 'tls' })).toThrow(/OC_CORE_ADDR/);
+    const tls = {
+      ...base,
+      OC_CORE: 'tls',
+      OC_CORE_ADDR: '10.0.0.60:7444',
+      OC_CORE_CA: '/etc/opencell/tls/ca.crt',
+      OC_CORE_CERT: 'portal.crt',
+      OC_CORE_KEY: 'portal.key',
+    };
+    expect(() => parseConfig({ ...tls, OC_CORE_KEY: undefined })).toThrow(/OC_CORE_KEY/);
+    expect(() => parseConfig({ ...tls, OC_CORE_ADDR: '10.0.0.60' })).toThrow(/OC_CORE_ADDR/);
+    const c = parseConfig(tls);
+    expect(c.core).toBe('tls');
+    expect(c.coreTls).toEqual({
+      host: '10.0.0.60',
+      port: 7444,
+      servername: 'core1.opencell.k4ozi.com',
+      ca: '/etc/opencell/tls/ca.crt',
+      cert: 'portal.crt',
+      key: 'portal.key',
+    });
   });
 });

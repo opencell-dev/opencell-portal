@@ -6,7 +6,17 @@ const envSchema = z
     OC_RP_ID: z.string().min(1),
     OC_SECRET: z.string().min(32, 'OC_SECRET must be at least 32 characters'),
     OC_DB_PATH: z.string().min(1).default('./data/portal.db'),
-    OC_CORE: z.literal('fake', { error: 'OC_CORE must be "fake" until P4 brings the mTLS client' }).default('fake'),
+    OC_CORE: z.enum(['fake', 'tls'], { error: 'OC_CORE is "fake" or "tls"' }).default('fake'),
+    // OC_CORE=tls: the core's admin API (portal spec §7). The files are
+    // paths, or (no '/') systemd credentials by name.
+    OC_CORE_ADDR: z
+      .string()
+      .regex(/^[^\s:]+:\d{1,5}$/, 'OC_CORE_ADDR is HOST:PORT, e.g. 10.0.0.60:7444')
+      .optional(),
+    OC_CORE_NAME: z.string().min(1).default('core1.opencell.k4ozi.com'),
+    OC_CORE_CA: z.string().min(1).optional(),
+    OC_CORE_CERT: z.string().min(1).optional(),
+    OC_CORE_KEY: z.string().min(1).optional(),
     OC_MAIL: z.enum(['smtp', 'outbox']).default('outbox'),
     OC_MAIL_OUTBOX: z.string().min(1).default('./data/outbox'),
     OC_MAIL_FROM: z.string().min(3).default('OpenCell <opencell@k4ozi.com>'),
@@ -22,6 +32,11 @@ const envSchema = z
     if (host !== env.OC_RP_ID && !host.endsWith(`.${env.OC_RP_ID}`)) {
       ctx.addIssue({ code: 'custom', path: ['OC_RP_ID'], message: 'OC_RP_ID must be the origin host or a parent domain of it' });
     }
+    if (env.OC_CORE === 'tls') {
+      for (const k of ['OC_CORE_ADDR', 'OC_CORE_CA', 'OC_CORE_CERT', 'OC_CORE_KEY'] as const) {
+        if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when OC_CORE=tls` });
+      }
+    }
     if (env.OC_MAIL === 'smtp') {
       for (const k of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TOKEN'] as const) {
         if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when OC_MAIL=smtp` });
@@ -34,7 +49,9 @@ export type Config = {
   rpId: string;
   secret: string;
   dbPath: string;
-  core: 'fake';
+  core: 'fake' | 'tls';
+  /** OC_CORE=tls only. */
+  coreTls?: { host: string; port: number; servername: string; ca: string; cert: string; key: string };
   secureCookies: boolean;
   sessionCookie: string;
   mail: {
@@ -61,6 +78,17 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     secret: e.OC_SECRET,
     dbPath: e.OC_DB_PATH,
     core: e.OC_CORE,
+    coreTls:
+      e.OC_CORE === 'tls'
+        ? {
+            host: e.OC_CORE_ADDR!.slice(0, e.OC_CORE_ADDR!.lastIndexOf(':')),
+            port: Number(e.OC_CORE_ADDR!.slice(e.OC_CORE_ADDR!.lastIndexOf(':') + 1)),
+            servername: e.OC_CORE_NAME,
+            ca: e.OC_CORE_CA!,
+            cert: e.OC_CORE_CERT!,
+            key: e.OC_CORE_KEY!,
+          }
+        : undefined,
     secureCookies: secure,
     sessionCookie: secure ? '__Host-oc_session' : 'oc_session',
     mail: {

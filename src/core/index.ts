@@ -1,15 +1,20 @@
 import { config } from '@/config';
 import { FakeCore } from './fake';
+import { TlsCore } from './tls-client';
 import type { CoreAdmin } from './types';
 
 export { CoreError } from './types';
 export type { CoreAdmin } from './types';
 
-const g = globalThis as typeof globalThis & { __ocFakeCore?: FakeCore };
+const g = globalThis as typeof globalThis & { __ocCore?: CoreAdmin };
 
-/** The core admin API client for this process (P1: the fake core, `OC_CORE=fake`). */
+/**
+ * The core admin API client for this process: the in-process fake core
+ * (OC_CORE=fake, development and tests) or the real core over mTLS
+ * (OC_CORE=tls). Made once; TlsCore connects on its first call.
+ */
 export function getCore(): CoreAdmin {
-  if (config().core !== 'fake') throw new Error('only OC_CORE=fake exists before P4');
-  g.__ocFakeCore ??= new FakeCore();
-  return g.__ocFakeCore;
+  const c = config();
+  g.__ocCore ??= c.core === 'tls' && c.coreTls ? new TlsCore(c.coreTls) : new FakeCore();
+  return g.__ocCore;
 }
