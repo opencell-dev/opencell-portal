@@ -6,5 +6,10 @@
   delaycompress
   missingok
   notifempty
-  create 0600 root root
+  # A deploy/rollback appends to this log through a file descriptor it holds
+  # open for the whole run (and the laptop follows the run by re-reading
+  # this path): copy then truncate in place, so a rotation mid-run neither
+  # strands the run's writes in the renamed file nor hides them from the
+  # follower. The copies keep the log's own 0600 root:root mode.
+  copytruncate
 }

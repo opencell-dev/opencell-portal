@@ -2,6 +2,8 @@
 # The deploy script's local checks: it refuses anything but an existing
 # vX.Y.Z tag before touching the network. (OC_PORTAL_SSH=false makes any
 # network step fail loudly.)
+# No `set -e`: every check below must run and report, whatever the one
+# before it did (each records a failure in $fail instead).
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 D=deploy/oc-portal-deploy
@@ -66,6 +68,10 @@ cleanup_sim() { rm -rf "$sim_root" "$sim_repo" "$sim_bin"; }
 trap cleanup_sim EXIT
 
 mkdir -p "$sim_root/opt/oc-portal/releases" "$sim_root/var/lib/oc-portal/backups" "$sim_root/var/lib/oc-portal-deploy/status" "$sim_root/var/log" "$sim_root/run" "$sim_root/fake-systemd"
+# The modes bootstrap/the OS give these on the guest, whatever this shell's
+# umask: the deploy script refuses group- or other-writable ones.
+chmod 0700 "$sim_root/var/lib/oc-portal-deploy" "$sim_root/var/lib/oc-portal-deploy/status"
+chmod 0755 "$sim_root/var/log" "$sim_root/run"
 echo fake-db-contents > "$sim_root/var/lib/oc-portal/portal.db"
 
 # A throwaway repo with the working tree's current deploy/ scripts (so the
@@ -76,7 +82,7 @@ rsync -a --exclude='.git' --exclude='node_modules' --exclude='.next' ./ "$sim_re
 git -C "$sim_repo" init -q
 git -C "$sim_repo" -c user.email=t@t -c user.name=t add -A
 git -C "$sim_repo" -c user.email=t@t -c user.name=t commit -q -m base
-for t in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4 v1.0.5 v1.0.6 v1.0.7; do git -C "$sim_repo" tag "$t"; done
+for t in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4 v1.0.5 v1.0.6 v1.0.7 v1.0.8 v1.0.9; do git -C "$sim_repo" tag "$t"; done
 
 cat > "$sim_bin/systemctl" <<'SH'
 #!/bin/bash
@@ -132,6 +138,11 @@ SH
 
 cat > "$sim_bin/npx" <<'SH'
 #!/bin/bash
+# fake-systemd/build-seconds makes the "build" take that long (real sleep:
+# the fake `sleep` below is a no-op), for the SSH-call-rate checks.
+state="${OC_PORTAL_ROOT:-}/fake-systemd"
+secs="$(cat "$state/build-seconds" 2>/dev/null || echo 0)"
+command -p sleep "$secs"
 mkdir -p .next && : > .next/.fake
 SH
 
@@ -161,8 +172,10 @@ chmod +x "$sim_bin"/*
 cat > "$sim_bin/oc-ssh-shim" <<'SH'
 #!/bin/bash
 # Local stand-in for OC_PORTAL_SSH: runs the "remote" command directly
-# (inheriting env and PATH) instead of connecting anywhere.
+# (inheriting env and PATH) instead of connecting anywhere. With
+# OC_PORTAL_SSH_COUNT set, every invocation appends a line to that file.
 set -euo pipefail
+if [ -n "${OC_PORTAL_SSH_COUNT:-}" ]; then echo call >> "$OC_PORTAL_SSH_COUNT"; fi
 if [ "${1:-}" = "bash -s" ] && [ "${2:-}" = "--" ]; then
   shift 2
   exec bash -s -- "$@"
@@ -185,20 +198,39 @@ cat > "$sim_bin/oc-ssh-shim-drop" <<'SH'
 # mid-session while the remote process kept running. The raw single-command
 # call shape (the tar upload, and oc-portal-deploy's own follow-up log/
 # status queries) still runs synchronously and correctly, so only the
-# deploy/rollback body itself is affected.
+# deploy/rollback body itself is affected. Counts calls like oc-ssh-shim.
 set -euo pipefail
+if [ -n "${OC_PORTAL_SSH_COUNT:-}" ]; then echo call >> "$OC_PORTAL_SSH_COUNT"; fi
 if [ "${1:-}" = "bash -s" ] && [ "${2:-}" = "--" ]; then
   shift 2
   script_file="$(mktemp "${OC_PORTAL_ROOT:-/tmp}/drop-script.XXXXXX")"
   cat > "$script_file"
   delay="${OC_PORTAL_DROP_DELAY:-0}"
   ( command -p sleep "$delay"; setsid bash -s -- "$@" < "$script_file" ) > /dev/null 2>&1 &
+  # OC_PORTAL_DROP_AFTER: how long the "connection" stays up before it
+  # drops (default 0), so the live follower has already shown some lines.
+  command -p sleep "${OC_PORTAL_DROP_AFTER:-0}"
   exit 255
 else
   exec bash -c "${1:-}"
 fi
 SH
 chmod +x "$sim_bin/oc-ssh-shim-drop"
+
+cat > "$sim_bin/oc-ssh-shim-truncate" <<'SH'
+#!/bin/bash
+# Simulates a transfer cut just before the script's last line: the
+# deploy/rollback body arrives without its final `main "$@"`, so the guest's
+# bash defines main, never calls it, and exits 0 having done nothing.
+set -euo pipefail
+if [ "${1:-}" = "bash -s" ] && [ "${2:-}" = "--" ]; then
+  shift 2
+  head -n -1 | bash -s -- "$@"
+else
+  exec bash -c "${1:-}"
+fi
+SH
+chmod +x "$sim_bin/oc-ssh-shim-truncate"
 
 sim_env() { env PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim" "$@"; }
 D_SIM="$sim_repo/deploy/oc-portal-deploy"
@@ -274,10 +306,8 @@ rm -f "$sim_root/fake-systemd/restart-fail-for"
 # a re-run, which for `rollback` would reverse a rollback that in fact
 # already succeeded), so each case below checks the actual text.
 touch "$sim_root/fake-systemd/unhealthy"
-set +e
 drop_out="$(env PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim-drop" "$D_SIM" deploy v1.0.2 2>&1)"
 drop_rc=$?
-set -e
 if [ "$drop_rc" -eq 1 ] && printf '%s' "$drop_out" | grep -q "guest recorded exit 1"; then
   echo "ok   sim: a dropped connection during the health window reports the guest's real outcome"
 else
@@ -297,10 +327,8 @@ rm -f "$sim_root/fake-systemd/unhealthy"
 # wall-clock waiting on the laptop side (bypassing PATH via `command -p`, so
 # that guest-side fake `sleep` could never shrink it).
 touch "$sim_root/fake-systemd/unhealthy"
-set +e
 slow_out="$(env PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim-drop" OC_PORTAL_DROP_DELAY=1 OC_PORTAL_DEPLOY_POLL_BUDGET=3 OC_PORTAL_DEPLOY_POLL_INTERVAL=0.2 "$D_SIM" deploy v1.0.5 2>&1)"
 slow_rc=$?
-set -e
 if [ "$slow_rc" -eq 1 ] && printf '%s' "$slow_out" | grep -q "guest recorded exit 1"; then
   echo "ok   sim: a guest slower than the first few polls still gets its real outcome reported"
 else
@@ -314,10 +342,8 @@ rm -f "$sim_root/fake-systemd/unhealthy"
 # say so plainly -- never claim a result it doesn't have, and never suggest
 # re-running deploy or rollback.
 touch "$sim_root/fake-systemd/unhealthy"
-set +e
 unknown_out="$(env PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim-drop" OC_PORTAL_DROP_DELAY=4 OC_PORTAL_DEPLOY_POLL_BUDGET=2 OC_PORTAL_DEPLOY_POLL_INTERVAL=0.2 "$D_SIM" deploy v1.0.6 2>&1)"
 unknown_rc=$?
-set -e
 if [ "$unknown_rc" -eq 1 ] \
   && printf '%s' "$unknown_out" | grep -q "no status recorded yet" \
   && ! printf '%s' "$unknown_out" | grep -q "guest recorded exit" \
@@ -347,10 +373,8 @@ decoy_dir="$(mktemp -d)" || exit 1
 chmod 0755 "$decoy_dir"
 rm -rf "$sim_root/var/lib/oc-portal-deploy/status"
 ln -s "$decoy_dir" "$sim_root/var/lib/oc-portal-deploy/status"
-set +e
 symlink_out="$(sim_env "$D_SIM" deploy v1.0.7 2>&1)"
 symlink_rc=$?
-set -e
 if [ "$symlink_rc" -eq 1 ] && printf '%s' "$symlink_out" | grep -q "is a symlink"; then
   echo "ok   sim: a symlinked deploy-status directory is refused"
 else
@@ -361,7 +385,7 @@ simassert "sim: the decoy directory's permissions are untouched (nothing chmod'e
 simassert "sim: current is unchanged after the symlink refusal" [ "$(current_tag)" = v1.0.1 ]
 rm -f "$sim_root/var/lib/oc-portal-deploy/status"
 rmdir "$decoy_dir"
-mkdir -p "$sim_root/var/lib/oc-portal-deploy/status"
+mkdir -m 0700 "$sim_root/var/lib/oc-portal-deploy/status"
 
 rm -f "$sim_root/fake-systemd/call-order.log"
 sim_env "$D_SIM" deploy v1.0.3 >/dev/null 2>&1
@@ -380,6 +404,158 @@ simassert "sim: pruning removes the oldest release (v1.0.0)" [ ! -d "$sim_root/o
 simcheck 0 "sim: rollback" "$D_SIM" rollback
 simassert "sim: current is v1.0.3 after rollback" [ "$(current_tag)" = v1.0.3 ]
 simassert "sim: rollback backs up the database first" bash -c 'compgen -G "'"$sim_root"'/var/lib/oc-portal/backups/pre-rollback-v1.0.3-*.db" >/dev/null'
+
+# A directory anyone but its owner can write to is refused like a symlink.
+chmod 0775 "$sim_root/var/log"
+gw_out="$(sim_env "$D_SIM" deploy v1.0.8 2>&1)"
+gw_rc=$?
+chmod 0755 "$sim_root/var/log"
+if [ "$gw_rc" -eq 1 ] && printf '%s' "$gw_out" | grep -q "group- or other-writable"; then
+  echo "ok   sim: a group-writable log directory is refused"
+else
+  echo "FAIL sim: group-writable log dir deploy exit was $gw_rc, wanted 1 naming the mode: $gw_out"
+  fail=1
+fi
+simassert "sim: current is unchanged after the group-writable refusal" [ "$(current_tag)" = v1.0.3 ]
+
+# Case L: while run A holds the deploy lock, a refused run B must not
+# replace A as the "latest run" -- status keeps reporting A (in progress),
+# and once A's lock is gone without a status, reports it as interrupted.
+latest_file="$sim_root/var/lib/oc-portal-deploy/latest-run-id"
+run_a="20260101T000000Z-4242"
+echo "$run_a" > "$latest_file"
+exec 8>"$sim_root/run/oc-portal-deploy.lock"
+if flock -n 8; then
+  lock_out="$(sim_env "$D_SIM" deploy v1.0.8 2>&1 8>&-)"
+  lock_rc=$?
+  status_busy="$(sim_env "$D_SIM" status 2>&1 8>&-)"
+  if [ "$lock_rc" -eq 1 ] && printf '%s' "$lock_out" | grep -q "another deploy/rollback is in progress" \
+    && printf '%s' "$lock_out" | grep -q "guest recorded exit 1"; then
+    echo "ok   sim: case L: a deploy while the lock is held is refused"
+  else
+    echo "FAIL sim: case L: locked deploy exit was $lock_rc: $lock_out"
+    fail=1
+  fi
+  simassert "sim: case L: the refused run did not replace the lock holder's latest-run-id" [ "$(cat "$latest_file")" = "$run_a" ]
+  if printf '%s' "$status_busy" | grep -qF "latest run: $run_a (in progress)"; then
+    echo "ok   sim: case L: status reports the lock holder as in progress"
+  else
+    echo "FAIL sim: case L: status while locked: $status_busy"
+    fail=1
+  fi
+else
+  echo "FAIL sim: case L: could not take the test's own lock"
+  fail=1
+fi
+exec 8>&-
+status_free="$(sim_env "$D_SIM" status 2>&1)"
+if printf '%s' "$status_free" | grep -qF "latest run: $run_a (no recorded status (interrupted"; then
+  echo "ok   sim: case L: once the lock is free, a run without a status reads as interrupted"
+else
+  echo "FAIL sim: case L: status after release: $status_free"
+  fail=1
+fi
+
+# ssh exiting 0 is not proof a run happened: a transfer cut just before the
+# script's last line exits 0 having done nothing. The run's own status file
+# decides.
+trunc_out="$(env PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim-truncate" "$D_SIM" deploy v1.0.8 2>&1)"
+trunc_rc=$?
+if [ "$trunc_rc" -eq 1 ] && printf '%s' "$trunc_out" | grep -q "recorded no status"; then
+  echo "ok   sim: ssh exit 0 without a recorded status (script cut short) is a failure"
+else
+  echo "FAIL sim: truncated-script deploy exit was $trunc_rc, wanted 1 with 'recorded no status': $trunc_out"
+  fail=1
+fi
+simassert "sim: current is unchanged after a truncated script" [ "$(current_tag)" = v1.0.3 ]
+
+# The live log and the result line: each log line printed once, the result
+# line once and last (after the follower has stopped). And the laptop's SSH
+# call rate stays low for the whole run: every call is counted by the shim,
+# and an 8-second deploy (a 1 s poll would make 10+ calls) must stay within
+# upload + deploy + ~2 polls at 5 s + the final fetch + the status read + 1.
+count_log() { wc -l < "$1" 2>/dev/null || echo 0; }
+check_single_run_output() { # description output want_rc_line
+  local what="$1" out="$2" want="$3"
+  local starts ends results last
+  starts="$(printf '%s\n' "$out" | grep -c '^=== run .* start ' || true)"
+  ends="$(printf '%s\n' "$out" | grep -c '^=== run .* end ' || true)"
+  results="$(printf '%s\n' "$out" | grep -c 'guest recorded exit' || true)"
+  last="$(printf '%s\n' "$out" | tail -n 1)"
+  if [ "$starts" = 1 ] && [ "$ends" = 1 ] && [ "$results" = 1 ] && printf '%s' "$last" | grep -q "^$want"; then
+    echo "ok   $what"
+  else
+    echo "FAIL $what (starts=$starts ends=$ends results=$results last='$last'): $out"
+    fail=1
+  fi
+}
+calls="$sim_root/ssh-calls"
+rm -f "$calls"
+echo 8 > "$sim_root/fake-systemd/build-seconds"
+rate_out="$(env -u OC_PORTAL_DEPLOY_POLL_INTERVAL -u OC_PORTAL_DEPLOY_POLL_BUDGET OC_PORTAL_SSH_COUNT="$calls" PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim" "$D_SIM" deploy v1.0.8 2>&1)"
+rate_rc=$?
+simassert "sim: an 8-second deploy succeeds" [ "$rate_rc" -eq 0 ]
+n="$(count_log "$calls")"
+simassert "sim: an 8-second deploy makes at most 7 SSH calls (made $n)" [ "$n" -le 7 ]
+check_single_run_output "sim: live log lines once each, result line once and last" "$rate_out" "guest recorded exit 0"
+
+# The same when the connection drops 6 s into an 8-second build, after the
+# live follower has already shown the first lines: the laptop keeps
+# following at the (default) 10 s poll from where it left off (no line
+# repeated) -- upload, the dropped call, the live follower's three fetches,
+# two post-drop polls and the status read, plus 1.
+rm -f "$calls"
+drop_rate_out="$(env -u OC_PORTAL_DEPLOY_POLL_INTERVAL -u OC_PORTAL_DEPLOY_POLL_BUDGET OC_PORTAL_DROP_AFTER=6 OC_PORTAL_SSH_COUNT="$calls" PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim-drop" "$D_SIM" deploy v1.0.9 2>&1)"
+drop_rate_rc=$?
+simassert "sim: a dropped 8-second deploy still reports success" [ "$drop_rate_rc" -eq 0 ]
+n="$(count_log "$calls")"
+simassert "sim: a dropped 8-second deploy makes at most 9 SSH calls (made $n)" [ "$n" -le 9 ]
+check_single_run_output "sim: after a drop, log lines once each, result line once and last" "$drop_rate_out" "guest recorded exit 0"
+simassert "sim: current is v1.0.9 after the dropped deploy finished" [ "$(current_tag)" = v1.0.9 ]
+rm -f "$sim_root/fake-systemd/build-seconds" "$calls"
+
+# The default SSH command (no OC_PORTAL_SSH): multiplexed over one master
+# connection through the jump host, socket in a private 0700 directory. A
+# fake `ssh` first on PATH records its arguments and fails like an
+# unreachable host -- guarded so the real ssh can never run here.
+fake_ssh_dir="$sim_bin/fake-ssh"
+mkdir -p "$fake_ssh_dir"
+cat > "$fake_ssh_dir/ssh" <<'SH'
+#!/bin/bash
+printf '%s\n' "$@" > "$OC_FAKE_SSH_ARGS"
+cat > /dev/null
+exit 255
+SH
+chmod +x "$fake_ssh_dir/ssh"
+if [ "$(PATH="$fake_ssh_dir:$PATH" command -v ssh)" != "$fake_ssh_dir/ssh" ]; then
+  echo "FAIL default ssh: the fake ssh is not first on PATH; not running these checks"
+  fail=1
+else
+  xdg_home="$sim_root/xdg"
+  mkdir -p "$xdg_home/short" "$xdg_home/sym/target" "$xdg_home/$(printf 'x%.0s' $(seq 1 80))"
+  ln -s "$xdg_home/sym/target" "$xdg_home/sym/oc-portal-ssh"
+  args_file="$sim_root/fake-ssh-args"
+  default_ssh() { # xdg_runtime_dir (relative to $xdg_home: socket paths must stay short)
+    (cd "$xdg_home" && env -u OC_PORTAL_SSH PATH="$fake_ssh_dir:$PATH" XDG_RUNTIME_DIR="$1" OC_FAKE_SSH_ARGS="$args_file" "$D_SIM" status 2>&1)
+  }
+  rm -f "$args_file"
+  default_ssh short >/dev/null
+  if [ -f "$args_file" ] && grep -qx 'ControlMaster=auto' "$args_file" && grep -qx 'ControlPath=short/oc-portal-ssh/%C' "$args_file" \
+    && grep -qx 'ControlPersist=60' "$args_file" && grep -qx 'root@147.135.11.61:222' "$args_file" && [ "$(tail -n 3 "$args_file" | head -n 1)" = root@10.0.0.61 ]; then
+    echo "ok   default ssh: every call is multiplexed over one master through the jump host"
+  else
+    echo "FAIL default ssh: arguments were: $(tr '\n' ' ' < "$args_file" 2>/dev/null)"
+    fail=1
+  fi
+  simassert "default ssh: the control socket directory is private (0700)" [ "$(stat -c %a "$xdg_home/short/oc-portal-ssh" 2>/dev/null)" = 700 ]
+  rm -f "$args_file"
+  sym_out="$(default_ssh sym)"; sym_rc=$?
+  simassert "default ssh: a symlinked control socket directory is refused before any ssh call" \
+    bash -c "[ '$sym_rc' -eq 2 ] && [ ! -f '$args_file' ] && printf '%s' \"\$1\" | grep -q 'is a symlink'" _ "$sym_out"
+  long_out="$(default_ssh "$xdg_home/$(printf 'x%.0s' $(seq 1 80))")"; long_rc=$?
+  simassert "default ssh: a control socket path too long for ssh is refused before any ssh call" \
+    bash -c "[ '$long_rc' -eq 2 ] && [ ! -f '$args_file' ] && printf '%s' \"\$1\" | grep -q 'too long'" _ "$long_out"
+fi
 
 fi
 

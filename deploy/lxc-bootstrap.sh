@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg sqlite3 nftables openssl build-essential python3 unattended-upgrades
+apt-get install -y ca-certificates curl gnupg sqlite3 nftables openssl build-essential python3 unattended-upgrades logrotate
 
 install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg

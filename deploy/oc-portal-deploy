@@ -24,16 +24,33 @@
 # start" / "=== run <id> end" markers, its exit status in
 # var/lib/oc-portal-deploy/status/<id> (a root-owned directory, never one
 # the oc-portal service user can write to or symlink-swap -- see
-# assert_safe_dir below), and its own id as the "latest run" marker. While
-# the connection is up, the local side streams this run's log live
-# (stream_log); after the ssh call returns, if its own exit code doesn't
-# look like a real remote status (anything other than 0 or 1 -- ssh's own
-# connection-error codes, conventionally 255), it polls the status file for
-# up to OC_PORTAL_DEPLOY_POLL_BUDGET seconds (default 900 = 15 minutes, long
-# enough to cover a normal build and health-check window) before giving up
-# and pointing the operator at `oc-portal-deploy status` -- never at
-# re-running the command, which for `rollback` would reverse a rollback
+# assert_safe_dir below), and -- only once it holds the deploy lock, so a
+# refused concurrent run can't hide the one in progress -- its own id as
+# the "latest run" marker. While the connection is up, the local side
+# follows this run's log live (every STREAM_INTERVAL seconds). When the ssh
+# call returns, the follower is stopped and drained first, and only then is
+# the result printed, once, from the run's own status file -- even when ssh
+# exited 0 (a transfer cut just before the script's last line would exit 0
+# having done nothing). If ssh itself failed (255, its own "the connection
+# failed"), the run keeps going on the guest, so the local side keeps
+# following its log (every OC_PORTAL_DEPLOY_POLL_INTERVAL seconds, default
+# 10) until it ends, for up to OC_PORTAL_DEPLOY_POLL_BUDGET seconds (default
+# 900 = 15 minutes, enough for a normal build and health check), before
+# giving up and pointing the operator at `oc-portal-deploy status` -- never
+# at re-running the command, which for `rollback` would reverse a rollback
 # that in fact already succeeded.
+#
+# One TCP connection per invocation: the default $SSH multiplexes every call
+# (upload, deploy, log polls, status reads) over a single master connection
+# (ControlMaster=auto, socket in a private 0700 directory, ControlPersist=60
+# so it closes itself a minute after the last call). The ProxyJump hop runs
+# inside that master, so the Proxmox host's sshd sees one connection, not
+# one per poll -- OVH drops bursts of new SSH connections to an IPv4 for
+# minutes. A stale socket (master gone) is unlinked by ssh, which then just
+# opens a new master; a master whose network hung is torn down by its own
+# ServerAlive checks (15 s x 4) and its clients fall back to a fresh
+# connection. The poll intervals above keep the call rate low even when
+# OC_PORTAL_SSH overrides the default and nothing is multiplexed.
 #
 # Restoring across a schema migration: `rollback` only swaps `current` back
 # to the previous release's code and takes a DB backup first — it does not
@@ -44,87 +61,177 @@
 # itself) over portal.db, then start oc-portal on the rolled-back release.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-SSH="${OC_PORTAL_SSH:-ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -J root@147.135.11.61:222 root@10.0.0.61}"
 KEEP=3
+STREAM_INTERVAL=5
+SSH=()
 
 usage() {
   echo "usage: oc-portal-deploy deploy vX.Y.Z | rollback | status" >&2
   exit 2
 }
 
-remote() { $SSH "bash -s" -- "$@"; }
+# Builds $SSH. OC_PORTAL_SSH (split on whitespace) replaces it outright.
+# Otherwise: the Proxmox host as jump host, multiplexed over one master
+# connection whose socket lives in a private directory we own (refusing a
+# symlink or someone else's directory rather than trusting it). ssh refuses
+# to run at all when a ControlPath reaches 108 bytes, and the master binds
+# a temporary name 17 bytes longer than the path while it starts, so a
+# directory that would push the socket past that is refused up front.
+setup_ssh() {
+  if [ -n "${OC_PORTAL_SSH:-}" ]; then
+    read -r -a SSH <<<"$OC_PORTAL_SSH"
+    return 0
+  fi
+  local base="${XDG_RUNTIME_DIR:-}"
+  [ -n "$base" ] && [ -d "$base" ] || base="$HOME/.ssh"
+  local dir="$base/oc-portal-ssh"
+  if [ $(( ${#dir} + 1 + 40 + 17 )) -ge 108 ]; then
+    echo "refusing: the ssh control socket directory $dir is too long for a socket path; set XDG_RUNTIME_DIR to a short private directory" >&2
+    exit 2
+  fi
+  [ -d "$base" ] || mkdir -m 0700 "$base"
+  [ -L "$dir" ] && { echo "refusing: $dir is a symlink" >&2; exit 2; }
+  [ -d "$dir" ] || mkdir -m 0700 "$dir"
+  if [ "$(stat -c %u "$dir")" != "$(id -u)" ]; then
+    echo "refusing: $dir is not owned by you" >&2
+    exit 2
+  fi
+  chmod 0700 "$dir"
+  SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
+    -o ControlMaster=auto -o "ControlPath=$dir/%C" -o ControlPersist=60
+    -J root@147.135.11.61:222 root@10.0.0.61)
+}
 
-# Streams this run's guest-side log live to our own stdout while the main
-# call is in flight: polls (once a second, via `command -p sleep` so a
-# test's faked `sleep` -- used to make the *guest-side* health-check loop
-# instant -- can't affect this) for this run's slice of the log, printing
-# only newly-appeared lines, until it sees the run's own end marker or the
-# caller drops a stop-flag file (once the main call has returned; a run
-# that was refused before ever writing a start marker would otherwise wait
-# forever for an end marker that will never come). Every ssh call this
-# makes is a quick, one-shot fetch (bounded by the default $SSH's own
-# ConnectTimeout) -- there is no long-lived remote process to track or
-# kill, so a slow or refused run can never make this hang the caller.
-stream_log() { # run_id stop_flag
-  local run_id="$1" stop_flag="$2" shown=0 total_output total
+remote() { "${SSH[@]}" "bash -s" -- "$@"; }
+
+# One short command on the guest, with $ROOT set as the remote scripts set
+# it. stdin is /dev/null so it can never eat what's left of a heredoc.
+guest_sh() { "${SSH[@]}" "ROOT=\"\${OC_PORTAL_ROOT:-}\"; $1" </dev/null; }
+
+# Sleeps SECONDS; with a STOP_FLAG, wakes within a quarter second of that
+# file appearing (whole seconds only). `command -p sleep` bypasses PATH, so
+# a test's faked `sleep` -- used to make the *guest-side* health-check loop
+# instant -- can never shrink the laptop's own waiting.
+pause() { # seconds [stop_flag]
+  local secs="$1" stop_flag="${2:-}"
+  if [ -z "$stop_flag" ]; then
+    command -p sleep "$secs"
+    return 0
+  fi
+  local ticks=$(( secs * 4 ))
+  while [ "$ticks" -gt 0 ] && [ ! -f "$stop_flag" ]; do
+    command -p sleep 0.25
+    ticks=$(( ticks - 1 ))
+  done
+}
+
+# Follows this run's slice of the guest-side log: every INTERVAL seconds,
+# one short fetch of the slice (plus whether the run's status file exists
+# yet), printing only lines beyond the count kept in SHOWN_FILE (shared by
+# the live follower and the post-drop one, so no line is ever printed
+# twice). Returns 0 once the run has finished -- its end marker seen, or its
+# status file present (so a rotated log can't hide the end) -- and 1 when
+# told to stop (STOP_FLAG appeared: it fetches once more first, so nothing
+# written before the stop is lost) or when DEADLINE (epoch seconds, 0 =
+# none) passes. Every call is a quick one-shot fetch: there is no
+# long-lived remote process to track or kill.
+follow_log() { # run_id shown_file interval stop_flag deadline
+  local run_id="$1" shown_file="$2" interval="$3" stop_flag="$4" deadline="$5"
+  local shown out total last=0 finished=0
+  shown="$(cat "$shown_file" 2>/dev/null || echo 0)"
   while :; do
-    total_output="$($SSH "ROOT=\"\${OC_PORTAL_ROOT:-}\"; sed -n \"/^=== run $run_id start/,/^=== run $run_id end/p\" \"\$ROOT/var/log/oc-portal-deploy.log\" 2>/dev/null" 2>/dev/null || true)"
-    if [ -n "$total_output" ]; then
-      total="$(printf '%s\n' "$total_output" | wc -l)"
+    if [ -n "$stop_flag" ] && [ -f "$stop_flag" ]; then last=1; fi
+    out="$(guest_sh "sed -n \"/^=== run $run_id start/,/^=== run $run_id end/p\" \"\$ROOT/var/log/oc-portal-deploy.log\" 2>/dev/null; if [ -f \"\$ROOT/var/lib/oc-portal-deploy/status/$run_id\" ]; then echo '@@oc-status'; fi" 2>/dev/null || true)"
+    case "$out" in
+      *@@oc-status)
+        finished=1
+        out="${out%@@oc-status}"
+        out="${out%$'\n'}"
+        ;;
+    esac
+    if [ -n "$out" ]; then
+      total="$(printf '%s\n' "$out" | wc -l)"
       if [ "$total" -gt "$shown" ]; then
-        printf '%s\n' "$total_output" | tail -n "+$((shown + 1))"
+        printf '%s\n' "$out" | tail -n "+$((shown + 1))"
         shown="$total"
+        echo "$shown" >"$shown_file"
       fi
-      case "$total_output" in
+      case "$out" in
         *"=== run $run_id end"*) return 0 ;;
       esac
     fi
-    [ -f "$stop_flag" ] && return 0
-    command -p sleep 1
+    # The status file is written just before the end marker: once it's
+    # there, one more fetch (right away) picks up the end line.
+    if [ "$last" = 1 ]; then return $(( 1 - finished )); fi
+    if [ "$finished" = 1 ]; then last=1; continue; fi
+    if [ "$deadline" -gt 0 ] && [ "$(date +%s)" -ge "$deadline" ]; then return 1; fi
+    pause "$interval" "$stop_flag"
   done
 }
 
-# Polls the guest's recorded status for a run, for up to a wall-clock budget
-# (OC_PORTAL_DEPLOY_POLL_BUDGET seconds, default 900) -- long enough for a
-# normal deploy to finish building and health-checking. `command -p sleep`
-# bypasses PATH, so a test's faked `sleep` (used to make the *guest-side*
-# health-check loop instant) can never shrink *this* budget.
-wait_for_status() { # run_id
-  local run_id="$1"
-  local budget="${OC_PORTAL_DEPLOY_POLL_BUDGET:-900}"
-  local interval="${OC_PORTAL_DEPLOY_POLL_INTERVAL:-5}"
-  local deadline=$(( $(date +%s) + budget ))
-  local s
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    s="$($SSH "ROOT=\"\${OC_PORTAL_ROOT:-}\"; cat \"\$ROOT/var/lib/oc-portal-deploy/status/$run_id\" 2>/dev/null" 2>/dev/null || true)"
+# The run's recorded exit status: a number, "none" (the guest answered: no
+# status file), or empty (the guest couldn't be asked -- tried 3 times).
+fetch_status() { # run_id
+  local run_id="$1" s tries=3
+  while [ "$tries" -gt 0 ]; do
+    s="$(guest_sh "f=\"\$ROOT/var/lib/oc-portal-deploy/status/$run_id\"; if [ -f \"\$f\" ]; then cat \"\$f\"; else echo none; fi" 2>/dev/null || true)"
     if [ -n "$s" ]; then printf '%s' "$s"; return 0; fi
-    command -p sleep "$interval"
+    tries=$(( tries - 1 ))
+    [ "$tries" -gt 0 ] && pause "${OC_PORTAL_DEPLOY_POLL_INTERVAL:-10}"
   done
   return 1
 }
 
-# Resolves the real exit status: ssh's own is trusted if it looks like one
-# of ours (0 or 1); anything else (typically 255, ssh's own "the connection
-# failed") means we don't actually know yet, since the remote script keeps
-# running independently of the dropped connection -- so this fetches
-# whatever of the log made it through, then polls for the guest's own
-# recorded result rather than guessing, and if that times out, says so
-# plainly instead of suggesting the operator re-run anything (re-running
-# `rollback` after an unconfirmed rollback would reverse a rollback that in
-# fact already succeeded).
-finish_run() { # run_id ssh_rc
-  local run_id="$1" rc="$2" status
-  case "$rc" in
-    0|1) return "$rc" ;;
-  esac
-  echo "ssh exited $rc (the connection may have dropped); the run keeps going on the guest independently -- checking its recorded status for $run_id" >&2
-  $SSH "ROOT=\"\${OC_PORTAL_ROOT:-}\"; sed -n \"/^=== run $run_id start/,/^=== run $run_id end/p\" \"\$ROOT/var/log/oc-portal-deploy.log\" 2>/dev/null" || true
-  if status="$(wait_for_status "$run_id")"; then
-    echo "guest recorded exit $status for run $run_id" >&2
-    return "$status"
+# Runs a deploy/rollback script (on stdin) on the guest with its log
+# followed live, then reports its result exactly once, after the follower
+# has stopped: always from the run's own status file, never from ssh's exit
+# code alone. 255 (ssh's "the connection failed") means the run may still be
+# going on the guest, so it keeps following the log until the run ends or
+# the poll budget runs out; any other code means the remote bash has exited,
+# so the status file is authoritative -- and its absence means no run
+# happened (refused before starting, or the script never arrived whole).
+run_tracked() { # run_id remote-args... <script
+  local run_id="$1"
+  shift
+  local shown_file stop_flag follower rc frc=0 status
+  local interval="${OC_PORTAL_DEPLOY_POLL_INTERVAL:-10}"
+  local budget="${OC_PORTAL_DEPLOY_POLL_BUDGET:-900}"
+  shown_file="$(mktemp)"
+  echo 0 >"$shown_file"
+  stop_flag="$shown_file.stop"
+  follow_log "$run_id" "$shown_file" "$STREAM_INTERVAL" "$stop_flag" 0 &
+  follower=$!
+  # shellcheck disable=SC2064 # expand the paths now: they are locals
+  trap "touch '$stop_flag' 2>/dev/null || true; wait $follower 2>/dev/null || true; rm -f '$shown_file' '$stop_flag'" EXIT
+  set +e # the caller restores errexit; every exit code here is handled
+  remote "$@"
+  rc=$?
+  touch "$stop_flag"
+  if ! wait "$follower" && [ "$rc" != 255 ]; then
+    # The follower never saw the end marker although the run is over (or
+    # never started): one catch-up fetch, from where it left off.
+    follow_log "$run_id" "$shown_file" 0 "$stop_flag" 0
   fi
-  echo "no status recorded yet for run $run_id after waiting -- it may still be running; run 'oc-portal-deploy status' to check (do not just re-run deploy or rollback)" >&2
-  return 1
+  if [ "$rc" = 255 ]; then
+    echo "ssh exited 255 (the connection may have dropped); the run keeps going on the guest independently -- following run $run_id until it finishes (every ${interval}s, for up to ${budget}s)" >&2
+    if ! follow_log "$run_id" "$shown_file" "$interval" "" $(( $(date +%s) + budget )); then
+      echo "no status recorded yet for run $run_id after waiting -- it may still be running; run 'oc-portal-deploy status' to check (do not just re-run deploy or rollback)" >&2
+      return 1
+    fi
+  fi
+  status="$(fetch_status "$run_id")"
+  case "$status" in
+    [0-9] | [0-9][0-9] | [0-9][0-9][0-9])
+      echo "guest recorded exit $status for run $run_id" >&2
+      frc="$status" ;;
+    none)
+      echo "the guest recorded no status for run $run_id (ssh exited $rc): it was refused before it began (see above) or the script never arrived whole -- this run changed nothing" >&2
+      frc=1 ;;
+    *)
+      echo "could not read the recorded status of run $run_id (ssh exited $rc); run 'oc-portal-deploy status' to check (do not just re-run deploy or rollback)" >&2
+      frc=1 ;;
+  esac
+  return "$frc"
 }
 
 # Refuses to use a directory that isn't exactly what bootstrap created: not
@@ -132,8 +239,10 @@ finish_run() { # run_id ssh_rc
 # been swapped for one, pointing anywhere), must already exist (bootstrap's
 # job, not this script's -- so there is nothing here for a compromised
 # service user to race to create first), and owned by whoever is running
-# this (root, in production; the invoking user in a test). Applied to the
-# deploy-status tree and the log directory, per-run, before touching either.
+# this (root, in production; the invoking user in a test), and not group-
+# or other-writable (anyone else able to write in it could swap what's
+# inside). Applied to the deploy-status tree, the log directory and the
+# lock's directory, per-run, before touching any of them.
 ASSERT_SAFE_DIR='
 assert_safe_dir() {
   local d="$1"
@@ -148,6 +257,11 @@ assert_safe_dir() {
   local owner; owner="$(stat -c %u "$d" 2>/dev/null || echo -1)"
   if [ "$owner" != "$(id -u)" ]; then
     echo "refusing: $d is not owned by the user running this ($owner != $(id -u))" >&2
+    exit 1
+  fi
+  local mode; mode="$(stat -c %a "$d" 2>/dev/null || echo 777)"
+  if [ $(( 8#$mode & 8#022 )) -ne 0 ]; then
+    echo "refusing: $d is group- or other-writable (mode $mode)" >&2
     exit 1
   fi
 }
@@ -186,15 +300,12 @@ case "$cmd" in
     tag="${2:-}"
     [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "only tags vX.Y.Z are deployed (got '${tag}')" >&2; exit 2; }
     git -C "$REPO" rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "no tag $tag in this repository" >&2; exit 2; }
+    setup_ssh
     echo "sending $tag"
-    git -C "$REPO" archive --format=tar --prefix="$tag/" "refs/tags/$tag" | $SSH "ROOT=\"\${OC_PORTAL_ROOT:-}\"; rm -rf \"\$ROOT/opt/oc-portal/releases/$tag.tmp\" && mkdir -p \"\$ROOT/opt/oc-portal/releases/$tag.tmp\" && tar -x -C \"\$ROOT/opt/oc-portal/releases/$tag.tmp\""
+    git -C "$REPO" archive --format=tar --prefix="$tag/" "refs/tags/$tag" | "${SSH[@]}" "ROOT=\"\${OC_PORTAL_ROOT:-}\"; rm -rf \"\$ROOT/opt/oc-portal/releases/$tag.tmp\" && mkdir -p \"\$ROOT/opt/oc-portal/releases/$tag.tmp\" && tar -x -C \"\$ROOT/opt/oc-portal/releases/$tag.tmp\""
     run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    stop_flag="$(mktemp -u)"
-    stream_log "$run_id" "$stop_flag" &
-    tail_job=$!
-    trap 'touch "$stop_flag" 2>/dev/null || true; wait "$tail_job" 2>/dev/null || true; rm -f "$stop_flag" 2>/dev/null || true' EXIT
     set +e
-    remote "$run_id" "$tag" "$KEEP" <<REMOTE
+    run_tracked "$run_id" "$run_id" "$tag" "$KEEP" <<REMOTE
 main() {
 set -euo pipefail
 trap '' HUP PIPE
@@ -214,7 +325,6 @@ assert_safe_dir "\$STATUS_DIR"
 assert_safe_dir "\$ROOT/var/log"
 assert_safe_dir "\$ROOT/run"
 : >> "\$LOG"; chmod 0600 "\$LOG"
-echo "\$runid" > "\$DEPLOY_STATE_DIR/latest-run-id"
 exec 9>"\$ROOT/run/oc-portal-deploy.lock"
 exec >>"\$LOG" 2>&1
 echo "=== run \$runid start \$(date -u +%Y-%m-%dT%H:%M:%SZ) deploy \$tag ==="
@@ -230,6 +340,9 @@ if ! flock -n 9; then
   rm -rf "\$rel.tmp"
   exit 1
 fi
+# Only now, holding the lock: a run refused above must not overwrite the id
+# of the run that holds it (status would lose track of that one).
+echo "\$runid" > "\$DEPLOY_STATE_DIR/latest-run-id"
 $SWITCH
 build="\$ROOT/opt/oc-portal/releases/.build-\$tag-\$\$"
 cur="\$(basename "\$(readlink "\$ROOT/opt/oc-portal/current" 2>/dev/null || true)")"
@@ -285,23 +398,16 @@ find "\$STATUS_DIR" -maxdepth 1 -type f -mtime +30 -delete || true
 }
 main "\$@"
 REMOTE
-    rc=$?
-    set -e
-    set +e
-    finish_run "$run_id" "$rc"
     frc=$?
     set -e
     exit "$frc"
     ;;
   rollback)
     [ $# -eq 1 ] || usage
+    setup_ssh
     run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    stop_flag="$(mktemp -u)"
-    stream_log "$run_id" "$stop_flag" &
-    tail_job=$!
-    trap 'touch "$stop_flag" 2>/dev/null || true; wait "$tail_job" 2>/dev/null || true; rm -f "$stop_flag" 2>/dev/null || true' EXIT
     set +e
-    remote "$run_id" <<REMOTE
+    run_tracked "$run_id" "$run_id" <<REMOTE
 main() {
 set -euo pipefail
 trap '' HUP PIPE
@@ -316,7 +422,6 @@ assert_safe_dir "\$STATUS_DIR"
 assert_safe_dir "\$ROOT/var/log"
 assert_safe_dir "\$ROOT/run"
 : >> "\$LOG"; chmod 0600 "\$LOG"
-echo "\$runid" > "\$DEPLOY_STATE_DIR/latest-run-id"
 exec 9>"\$ROOT/run/oc-portal-deploy.lock"
 exec >>"\$LOG" 2>&1
 echo "=== run \$runid start \$(date -u +%Y-%m-%dT%H:%M:%SZ) rollback ==="
@@ -330,6 +435,7 @@ if ! flock -n 9; then
   echo "another deploy/rollback is in progress"
   exit 1
 fi
+echo "\$runid" > "\$DEPLOY_STATE_DIR/latest-run-id"
 $SWITCH
 prev="\$(cat "\$ROOT/opt/oc-portal/previous" 2>/dev/null || true)"
 [ -n "\$prev" ] && [ -d "\$prev" ] || { echo "no previous build to roll back to"; exit 1; }
@@ -342,16 +448,13 @@ find "\$STATUS_DIR" -maxdepth 1 -type f -mtime +30 -delete || true
 }
 main "\$@"
 REMOTE
-    rc=$?
-    set -e
-    set +e
-    finish_run "$run_id" "$rc"
     frc=$?
     set -e
     exit "$frc"
     ;;
   status)
     [ $# -eq 1 ] || usage
+    setup_ssh
     remote <<'REMOTE'
 main() {
 ROOT="${OC_PORTAL_ROOT:-}"
@@ -365,6 +468,8 @@ assert_safe_dir() {
   if [ ! -d "$d" ]; then echo "refusing: $d does not exist (bootstrap must create it first)" >&2; exit 1; fi
   local owner; owner="$(stat -c %u "$d" 2>/dev/null || echo -1)"
   if [ "$owner" != "$(id -u)" ]; then echo "refusing: $d is not owned by the user running this ($owner != $(id -u))" >&2; exit 1; fi
+  local mode; mode="$(stat -c %a "$d" 2>/dev/null || echo 777)"
+  if [ $(( 8#$mode & 8#022 )) -ne 0 ]; then echo "refusing: $d is group- or other-writable (mode $mode)" >&2; exit 1; fi
 }
 assert_safe_dir "$DEPLOY_STATE_DIR"
 assert_safe_dir "$STATUS_DIR"
@@ -378,12 +483,16 @@ latest_id="$(cat "$DEPLOY_STATE_DIR/latest-run-id" 2>/dev/null || true)"
 if [ -z "$latest_id" ]; then
   echo "latest run: none"
 else
+  # Probe the lock *before* reading the status file: a run writes its
+  # status before it releases the lock, so a run that finishes between the
+  # two steps reads as finished, never as "interrupted".
+  if flock -n "$LOCKFILE" -c true 2>/dev/null; then locked=0; else locked=1; fi
   if [ -f "$STATUS_DIR/$latest_id" ]; then
     result="exit $(cat "$STATUS_DIR/$latest_id")"
-  elif flock -n "$LOCKFILE" -c true 2>/dev/null; then
-    result="no recorded status (interrupted before it could finish)"
-  else
+  elif [ "$locked" = 1 ]; then
     result="in progress"
+  else
+    result="no recorded status (interrupted before it could finish)"
   fi
   echo "latest run: $latest_id ($result)"
   echo "--- tail of run $latest_id's log ---"
