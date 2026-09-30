@@ -15,6 +15,6 @@ const g = globalThis as typeof globalThis & { __ocCore?: CoreAdmin };
  */
 export function getCore(): CoreAdmin {
   const c = config();
-  g.__ocCore ??= c.core === 'tls' && c.coreTls ? new TlsCore(c.coreTls) : new FakeCore();
+  g.__ocCore ??= c.core === 'tls' && c.cores.length > 0 ? new TlsCore(c.cores[0]) : new FakeCore();
   return g.__ocCore;
 }

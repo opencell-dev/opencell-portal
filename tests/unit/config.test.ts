@@ -53,7 +53,7 @@ describe('parseConfig', () => {
 
   it('takes the fake core or the real one over TLS, nothing else', () => {
     expect(() => parseConfig({ ...base, OC_CORE: 'mtls' })).toThrow(/OC_CORE/);
-    expect(parseConfig(base).coreTls).toBeUndefined();
+    expect(parseConfig(base).cores).toEqual([]);
   });
 
   it('needs the core address and TLS files for OC_CORE=tls', () => {
@@ -70,13 +70,76 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ ...tls, OC_CORE_ADDR: '10.0.0.60' })).toThrow(/OC_CORE_ADDR/);
     const c = parseConfig(tls);
     expect(c.core).toBe('tls');
-    expect(c.coreTls).toEqual({
-      host: '10.0.0.60',
-      port: 7444,
-      servername: 'core1.opencell.k4ozi.com',
-      ca: '/etc/opencell/tls/ca.crt',
-      cert: 'portal.crt',
-      key: 'portal.key',
-    });
+    // Today's single-core environment is one core, core1 (P4b: backward compatible).
+    expect(c.cores).toEqual([
+      {
+        id: 'core1',
+        host: '10.0.0.60',
+        port: 7444,
+        servername: 'core1.opencell.k4ozi.com',
+        ca: '/etc/opencell/tls/ca.crt',
+        cert: 'portal.crt',
+        key: 'portal.key',
+      },
+    ]);
+    expect(parseConfig({ ...tls, OC_CORE_NAME: 'other.example' }).cores[0].servername).toBe('other.example');
+  });
+});
+
+describe('parseConfig: several cores (OC_CORES, plan P4b)', () => {
+  const files = {
+    ...base,
+    OC_CORE: 'tls',
+    OC_CORE_CA: 'core-ca.crt',
+    OC_CORE_CERT: 'core-client.crt',
+    OC_CORE_KEY: 'core-client.key',
+  };
+  const two = {
+    ...files,
+    OC_CORES: 'core1,core2',
+    OC_CORE_CORE1_ADDR: '10.0.0.60:7444',
+    OC_CORE_CORE1_NAME: 'core1.opencell.k4ozi.com',
+    OC_CORE_CORE2_ADDR: '10.99.0.2:7444',
+    OC_CORE_CORE2_NAME: 'core2.opencell.k4ozi.com',
+  };
+
+  it('lists the cores in OC_CORES order, each with its address and name, sharing the TLS files', () => {
+    const c = parseConfig(two);
+    expect(c.cores.map((e) => [e.id, e.host, e.port, e.servername])).toEqual([
+      ['core1', '10.0.0.60', 7444, 'core1.opencell.k4ozi.com'],
+      ['core2', '10.99.0.2', 7444, 'core2.opencell.k4ozi.com'],
+    ]);
+    for (const e of c.cores) expect([e.ca, e.cert, e.key]).toEqual(['core-ca.crt', 'core-client.crt', 'core-client.key']);
+  });
+
+  it("needs each listed core's address and name", () => {
+    expect(() => parseConfig({ ...two, OC_CORE_CORE2_ADDR: undefined })).toThrow(/OC_CORE_CORE2_ADDR/);
+    expect(() => parseConfig({ ...two, OC_CORE_CORE2_ADDR: '10.99.0.2' })).toThrow(/OC_CORE_CORE2_ADDR/);
+    expect(() => parseConfig({ ...two, OC_CORE_CORE2_ADDR: '10.99.0.2:70000' })).toThrow(/OC_CORE_CORE2_ADDR/);
+    expect(() => parseConfig({ ...two, OC_CORE_CORE2_NAME: undefined })).toThrow(/OC_CORE_CORE2_NAME/);
+  });
+
+  it('refuses a bad or repeated core id', () => {
+    expect(() => parseConfig({ ...two, OC_CORES: 'core1,Core-2' })).toThrow(/OC_CORES/);
+    expect(() => parseConfig({ ...two, OC_CORES: 'core1,core1' })).toThrow(/listed twice/);
+    expect(() => parseConfig({ ...two, OC_CORES: 'core1,' })).toThrow(/OC_CORES/);
+  });
+
+  it('refuses a per-core setting for a core not in OC_CORES (a typo would hide a core)', () => {
+    expect(() => parseConfig({ ...two, OC_CORE_CORE3_ADDR: '10.99.0.3:7444' })).toThrow(
+      /OC_CORE_CORE3_ADDR: core3 is not in OC_CORES/,
+    );
+    expect(() => parseConfig({ ...files, OC_CORE_ADDR: '10.0.0.60:7444', OC_CORE_CORE2_NAME: 'x' })).toThrow(
+      /OC_CORE_CORE2_NAME/,
+    );
+  });
+
+  it('refuses the single-core OC_CORE_ADDR or OC_CORE_NAME beside OC_CORES', () => {
+    expect(() => parseConfig({ ...two, OC_CORE_ADDR: '10.0.0.60:7444' })).toThrow(/OC_CORE_ADDR/);
+    expect(() => parseConfig({ ...two, OC_CORE_NAME: 'core1.opencell.k4ozi.com' })).toThrow(/OC_CORE_NAME/);
+  });
+
+  it('refuses OC_CORES with the fake core', () => {
+    expect(() => parseConfig({ ...base, OC_CORES: 'core1' })).toThrow(/OC_CORES.*OC_CORE=tls/);
   });
 });
