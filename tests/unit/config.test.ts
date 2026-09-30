@@ -134,6 +134,17 @@ describe('parseConfig: several cores (OC_CORES, plan P4b)', () => {
     );
   });
 
+  it('also refuses an underscored or lowercase typo in an unlisted core key (review M1)', () => {
+    // core3 was forgotten in OC_CORES; a typo'd key must still be refused,
+    // not silently dropped, even when the typo itself isn't all-caps A-Z0-9.
+    expect(() => parseConfig({ ...two, OC_CORE_CORE_3_ADDR: '10.99.0.3:7444' })).toThrow(
+      /OC_CORE_CORE_3_ADDR: core_3 is not in OC_CORES/,
+    );
+    expect(() => parseConfig({ ...two, OC_CORE_core3_ADDR: '10.99.0.3:7444' })).toThrow(
+      /OC_CORE_core3_ADDR: core3 is not in OC_CORES/,
+    );
+  });
+
   it('refuses the single-core OC_CORE_ADDR or OC_CORE_NAME beside OC_CORES', () => {
     expect(() => parseConfig({ ...two, OC_CORE_ADDR: '10.0.0.60:7444' })).toThrow(/OC_CORE_ADDR/);
     expect(() => parseConfig({ ...two, OC_CORE_NAME: 'core1.opencell.k4ozi.com' })).toThrow(/OC_CORE_NAME/);

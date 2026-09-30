@@ -32,8 +32,13 @@ describe('the deploy files for two cores', () => {
   it("oc-cores-route.service routes the cores' WireGuard network through oc-core-1", () => {
     const unit = readFileSync(join(DEPLOY, 'oc-cores-route.service'), 'utf8');
     expect(unit).toMatch(/^ExecStart=\/usr\/bin\/ip route replace 10\.99\.0\.0\/24 via 10\.0\.0\.60 dev eth0$/m);
-    expect(unit).toMatch(/^ExecStop=\/usr\/bin\/ip route del 10\.99\.0\.0\/24 via 10\.0\.0\.60 dev eth0$/m);
+    // Leading '-' (review M7): ExecStop must not fail the unit when the
+    // route is already gone (eth0 flapped, or PartOf= already tore it down).
+    expect(unit).toMatch(/^ExecStop=-\/usr\/bin\/ip route del 10\.99\.0\.0\/24 via 10\.0\.0\.60 dev eth0$/m);
     expect(unit).toMatch(/^PartOf=networking\.service$/m);
-    expect(unit).toMatch(/^WantedBy=multi-user\.target$/m);
+    // Also WantedBy=networking.service (review M8): PartOf= alone only
+    // restores the route on stop/restart, not on a plain `start` after
+    // `stop`, or after eth0 itself goes down and up.
+    expect(unit).toMatch(/^WantedBy=multi-user\.target networking\.service$/m);
   });
 });

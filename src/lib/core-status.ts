@@ -18,10 +18,15 @@ async function statusOf(h: CoreHandle, actor: number, deadlineMs: number): Promi
     }, deadlineMs);
   });
   // Caught here, so a failure after the deadline is logged, not unhandled.
-  const asked = h.core.coreStatus(actor).catch((e: unknown) => {
-    console.error(`oc-portal: core ${h.id} (${h.where}) status failed:`, e);
-    return null;
-  });
+  // Wrapped in Promise.resolve().then(): a CoreAdmin whose coreStatus throws
+  // synchronously (none does today) must still give null, not a rejection
+  // that skips the deadline race and leaves the timer running (review M3).
+  const asked = Promise.resolve()
+    .then(() => h.core.coreStatus(actor))
+    .catch((e: unknown) => {
+      console.error(`oc-portal: core ${h.id} (${h.where}) status failed:`, e);
+      return null;
+    });
   try {
     return await Promise.race([asked, late]);
   } finally {

@@ -21,4 +21,15 @@ describe.skipIf(!CORE_DIR)('against a real oc-core', () => {
       await c.done();
     }
   });
+
+  it('done() does not hang on a process that already died by a signal (review M5)', async () => {
+    const c = await startRealCore();
+    process.kill(c.pid, 'SIGKILL');
+    // Give the OS time to reap it, so the ChildProcess's own 'exit' event has
+    // already fired by the time done() looks — the scenario a clean SIGTERM
+    // exit (exitCode set) never hits, since only signalCode gets set here.
+    await new Promise((r) => setTimeout(r, 300));
+    await c.done();
+    await c.done(); // idempotent: must not hang waiting on a stale 'exit' listener
+  }, 10_000);
 });

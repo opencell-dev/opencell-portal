@@ -3,7 +3,12 @@
 # cores (wg0, 10.99.0.0/24); oc-core-1 (10.0.0.60, on `internal`) forwards
 # this guest's connections to it, and only those. Proxmox rewrites
 # /etc/network/interfaces at every container start, so the route lives in
-# this unit instead; PartOf= puts it back after `systemctl restart networking`.
+# this unit instead; PartOf= puts it back after `systemctl restart networking`,
+# and WantedBy=networking.service (review M8) after `stop` then `start`, or
+# after eth0 itself is taken down and up (ifdown/ifup, a link flap). ExecStop
+# is prefixed '-' (review M7) so a `stop` after the route is already gone
+# (from an ifdown, or from PartOf= having already torn it down) is not an
+# error.
 [Unit]
 Description=Route to the cores' WireGuard network (10.99.0.0/24) via oc-core-1
 After=networking.service network-online.target
@@ -14,7 +19,7 @@ PartOf=networking.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/bin/ip route replace 10.99.0.0/24 via 10.0.0.60 dev eth0
-ExecStop=/usr/bin/ip route del 10.99.0.0/24 via 10.0.0.60 dev eth0
+ExecStop=-/usr/bin/ip route del 10.99.0.0/24 via 10.0.0.60 dev eth0
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target networking.service

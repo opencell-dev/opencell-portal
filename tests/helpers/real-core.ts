@@ -67,7 +67,7 @@ export interface RealCoreOptions {
   block?: string;
 }
 
-export type RealCore = ContractCore & { adminSocket: string; port: number; log: () => string };
+export type RealCore = ContractCore & { adminSocket: string; port: number; pid: number; log: () => string };
 
 /**
  * oc-core on 127.0.0.1 with its admin API on, in a temp directory: the
@@ -117,9 +117,17 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
     timeoutMs: 3000,
   });
   const log = () => readFileSync(join(t, 'log'), 'utf8');
+  let stopped = false;
   const done = async () => {
+    // Idempotent (review M5): a caller may stop the core early in a test and
+    // again in afterAll. Also check signalCode, not just exitCode — a
+    // process that died by signal never sets exitCode, so a second call
+    // (without `stopped`) would still try to await a fresh 'exit' listener
+    // on a process whose 'exit' event already fired, and hang forever.
+    if (stopped) return;
+    stopped = true;
     core.close();
-    if (proc.exitCode === null) {
+    if (proc.exitCode === null && proc.signalCode === null) {
       await new Promise<void>((r) => {
         proc.once('exit', () => r());
         proc.kill('SIGTERM');
@@ -141,5 +149,5 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
       await new Promise((r) => setTimeout(r, 100));
     }
   }
-  return { core, done, log, port, adminSocket: join(t, 'admin.sock') };
+  return { core, done, log, port, pid: proc.pid!, adminSocket: join(t, 'admin.sock') };
 }

@@ -70,7 +70,11 @@ export interface CoreEndpoint {
 }
 
 const CORE_ID = /^[a-z][a-z0-9]{0,15}$/;
-const PER_CORE = /^OC_CORE_([A-Z0-9]+)_(ADDR|NAME)$/;
+// Loose on purpose (review M1): an underscore or lowercase typo in an
+// unlisted core's key (OC_CORE_CORE_3_ADDR, OC_CORE_core3_ADDR) must still
+// be caught below, not silently ignored because it doesn't look like a
+// normal per-core key. Never matches OC_CORE_ADDR/OC_CORE_NAME themselves.
+const PER_CORE = /^OC_CORE_(.+)_(ADDR|NAME)$/i;
 
 function endpoint(id: string, addr: string, servername: string, e: Env): CoreEndpoint {
   const at = addr.lastIndexOf(':');

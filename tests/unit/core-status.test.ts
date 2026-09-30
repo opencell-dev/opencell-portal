@@ -66,4 +66,31 @@ describe('the cores for the admin dashboard', () => {
     expect(a).toHaveBeenCalledWith(42);
     expect(b).toHaveBeenCalledWith(42);
   });
+
+  it('gives null, not a rejection, when a core client throws synchronously (review M3)', async () => {
+    const { ctx, core2 } = twoCores();
+    vi.spyOn(core2, 'coreStatus').mockImplementation(() => {
+      throw new Error('sync boom');
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const rows = await coreStatuses(ctx, 1);
+    expect(rows[0].status).toMatchObject({ name: 'fake-core' });
+    expect(rows[1]).toEqual({ id: 'core2', where: '10.99.0.2:7444', status: null });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('core2'), expect.any(Error));
+  });
+
+  it('leaves no timer running and logs nothing once every core has answered (review M4)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { ctx } = twoCores();
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const rows = await coreStatuses(ctx, 1);
+      expect(rows.every((r) => r.status !== null)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(5000);
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
