@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nameSchema } from '@/lib/validation';
+import { emailSchema, isOneLinePlain, nameSchema, optionalPasskeyNameSchema, passkeyNameSchema } from '@/lib/validation';
 
 // The sign-up name (final review I2): it ends up in mail and, later, in the
 // directory and the admin list, so it is one line of visible plain text.
@@ -48,5 +48,54 @@ describe('account name (sign-up form)', () => {
     const r = nameSchema.safeParse(name);
     expect(r.success).toBe(false);
     if (!r.success) expect(r.error.issues[0].message).toBe('Please use plain text for your name, on one line.');
+  });
+});
+
+// Re-review F3: a long name must be refused cheaply, before any per-character
+// rule runs, and that rule must be linear anyway (the portal is one thread).
+describe('long input is refused quickly', () => {
+  const KB64 = 64 * 1024;
+  const markRun = 'a' + '\u0301'.repeat(KB64 - 2) + '\u200D'; // a letter, then 64 KB of combining marks, then a joiner
+  const joiners = 'a\u200D'.repeat(32_000); // 32k ZWJs, each between two letters but one
+  const ms = (f: () => void) => {
+    const t = performance.now();
+    f();
+    return performance.now() - t;
+  };
+
+  it.each([
+    ['a 64 KB mark run', markRun],
+    ['32k joiners', joiners],
+  ])('refuses a name of %s in under 20 ms', (_what, name) => {
+    let ok = true;
+    expect(ms(() => (ok = nameSchema.safeParse(name).success))).toBeLessThan(20);
+    expect(ok).toBe(false);
+    const r = nameSchema.safeParse(name);
+    if (!r.success) expect(r.error.issues.map((i) => i.message)).toEqual(['Please use at most 80 characters for your name.']);
+  });
+
+  // The scan itself, past the length cap: about 5 ms here for 64 KB; the old
+  // lookbehind took about 17 s on the mark run. 200 ms tells them apart
+  // without flaking on a slow machine.
+  it('checks a 64 KB string for plain text in linear time', () => {
+    let ok = true;
+    expect(ms(() => (ok = isOneLinePlain(markRun)))).toBeLessThan(200);
+    expect(ok).toBe(false);
+    expect(ms(() => (ok = isOneLinePlain(joiners.slice(0, -1))))).toBeLessThan(200); // every joiner between letters
+    expect(ok).toBe(true);
+  });
+
+  it('stops at the length cap for the other checked fields too (passkey names, emails)', () => {
+    const long = 'x\u200B'.repeat(32_000); // too long, and not plain text either: only the length is reported
+    for (const [schema, message] of [
+      [passkeyNameSchema, 'Please use at most 64 characters for the passkey name.'],
+      [optionalPasskeyNameSchema, 'Please use at most 64 characters for the passkey name.'],
+      [emailSchema, 'That email address is too long.'],
+    ] as const) {
+      let r: ReturnType<typeof schema.safeParse> | undefined;
+      expect(ms(() => (r = schema.safeParse(long)))).toBeLessThan(20);
+      expect(r!.success).toBe(false);
+      if (!r!.success) expect(r!.error.issues.map((i) => i.message)).toEqual([message]);
+    }
   });
 });
