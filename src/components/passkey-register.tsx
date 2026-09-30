@@ -4,6 +4,7 @@ import { startRegistration } from '@simplewebauthn/browser';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { passkeyRegisterFinish, passkeyRegisterStart } from '@/app/actions/auth';
+import { reauthenticate } from '@/components/use-reauth';
 
 export function PasskeyRegister({ then }: { then?: string }) {
   const router = useRouter();
@@ -15,11 +16,27 @@ export function PasskeyRegister({ then }: { then?: string }) {
     setBusy(true);
     setError('');
     try {
-      const start = await passkeyRegisterStart();
-      if (!start.ok) return setError(start.error);
-      const response = await startRegistration({ optionsJSON: start.options });
-      const r = await passkeyRegisterFinish(start.challengeId, response, name);
-      if (!r.ok) return setError(r.error);
+      // An admin first confirms with a passkey (the service answers `reauth`);
+      // after that one confirmation, a second `reauth` answer is an error.
+      let confirmed = false;
+      for (;;) {
+        const start = await passkeyRegisterStart();
+        if (!start.ok) {
+          if (!('reauth' in start) || confirmed) return setError(start.error);
+          if (!(await reauthenticate())) return setError('The passkey confirmation did not work; nothing was changed.');
+          confirmed = true;
+          continue;
+        }
+        const response = await startRegistration({ optionsJSON: start.options });
+        const r = await passkeyRegisterFinish(start.challengeId, response, name);
+        if (!r.ok) {
+          if (!('reauth' in r) || confirmed) return setError(r.error);
+          if (!(await reauthenticate())) return setError('The passkey confirmation did not work; nothing was changed.');
+          confirmed = true;
+          continue;
+        }
+        break;
+      }
       if (then) router.push(then);
       router.refresh();
     } catch {

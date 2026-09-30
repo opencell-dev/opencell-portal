@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type CDPSession, expect, type Page, type TestInfo } from '@playwright/test';
@@ -20,6 +21,20 @@ export function liftLimits() {
     );
   }
   db.close();
+}
+
+/** The bootstrap CLI, run against the e2e database as the deploy runs it on the guest. */
+export function portalAdmin(...args: string[]) {
+  return execFileSync('npx', ['tsx', 'scripts/oc-portal-admin.ts', ...args], {
+    env: {
+      ...process.env,
+      OC_ORIGIN: 'http://localhost:3100',
+      OC_RP_ID: 'localhost',
+      OC_SECRET: 'e2e-secret-e2e-secret-e2e-secret-0000',
+      OC_DB_PATH: '.e2e/portal.db',
+    },
+    encoding: 'utf8',
+  });
 }
 
 export function uniqueEmail(info: TestInfo, tag: string) {

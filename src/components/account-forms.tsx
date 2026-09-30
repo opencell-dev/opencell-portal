@@ -3,6 +3,7 @@
 import { useActionState } from 'react';
 import { changeEmailAction, deleteAccountAction, removePasskeyAction } from '@/app/actions/account';
 import type { FormState } from '@/app/actions/auth';
+import { reauthenticate } from '@/components/use-reauth';
 import type { OwnedNumber } from '@/lib/owned-numbers';
 
 const input = 'mt-1 w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-slate-900';
@@ -32,11 +33,27 @@ export function ChangeEmailForm() {
   );
 }
 
+/**
+ * Remove one passkey. An admin is asked to confirm with a passkey first (the
+ * action answers `reauth`), then it is tried once more (as PromoteForm does).
+ * Passkeys need JavaScript anyway, so this form does too.
+ */
 export function RemovePasskeyButton({ id, name }: { id: string; name: string }) {
-  const [state, action, pending] = useActionState<FormState, FormData>(removePasskeyAction, null);
+  const [state, action, pending] = useActionState<FormState, FormData>(async () => {
+    try {
+      let r = await removePasskeyAction(id);
+      if (!r.ok && 'reauth' in r) {
+        if (!(await reauthenticate())) return { ok: false, message: 'The passkey confirmation did not work; nothing was changed.' };
+        r = await removePasskeyAction(id);
+        if (!r.ok && 'reauth' in r) return { ok: false, message: 'The passkey confirmation expired; try again.' };
+      }
+      return { ok: r.ok, message: r.message };
+    } catch {
+      return { ok: false, message: "Couldn't reach the portal. Please try again." };
+    }
+  }, null);
   return (
     <form action={action} className="inline">
-      <input type="hidden" name="id" value={id} />
       <button type="submit" disabled={pending} aria-label={`Remove ${name}`} className="text-sm text-red-600 underline">
         Remove
       </button>

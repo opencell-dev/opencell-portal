@@ -1,22 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
-import { addPasskey, addPasskeyDevice, e2eDb, liftLimits, signInWithPasskey, signOut, signUpAndVerify, uniqueEmail } from './helpers';
+import { addPasskey, addPasskeyDevice, e2eDb, liftLimits, portalAdmin, signInWithPasskey, signOut, signUpAndVerify, uniqueEmail } from './helpers';
 
 test.beforeEach(() => liftLimits());
-
-/** The bootstrap CLI, run against the e2e database as the deploy runs it on the guest. */
-function portalAdmin(...args: string[]) {
-  return execFileSync('npx', ['tsx', 'scripts/oc-portal-admin.ts', ...args], {
-    env: {
-      ...process.env,
-      OC_ORIGIN: 'http://localhost:3100',
-      OC_RP_ID: 'localhost',
-      OC_SECRET: 'e2e-secret-e2e-secret-e2e-secret-0000',
-      OC_DB_PATH: '.e2e/portal.db',
-    },
-    encoding: 'utf8',
-  });
-}
 
 test('admin pages are a 404 for a subscriber', async ({ page }, info) => {
   await signUpAndVerify(page, 'Gus', uniqueEmail(info, 'gus'));

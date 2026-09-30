@@ -79,15 +79,38 @@ function currentSession(ctx: Ctx, id: string): Session | undefined {
   return ctx.db.select().from(sessions).where(eq(sessions.id, id)).get();
 }
 
-/** Admins change passkeys only from a passkey session confirmed (with UV) in the last 5 minutes. */
-function mayChangePasskeys(ctx: Ctx, s: Session): boolean {
-  return !isAdmin(ctx, s.userId) || (s.method === 'passkey' && isFresh(ctx, s));
+/**
+ * Thrown by registrationOptions when an admin's passkey session needs a fresh
+ * assertion first: the browser can get one (reauthenticate()) and retry.
+ */
+export class NeedsReauth extends UserError {
+  override name = 'NeedsReauth';
+}
+
+/** "Confirm with your passkey, then try again": the answer the account page acts on. */
+export type NeedsFreshPasskey = { ok: false; reauth: true; error: string };
+
+const SIGN_IN_WITH_PASSKEY = 'Admins sign in with a passkey, not an email link, before changing passkeys.';
+const CONFIRM_FRESH = 'Admins confirm with a fresh passkey before changing passkeys.';
+
+/**
+ * Admins change passkeys only from a passkey session confirmed (with UV) in
+ * the last 5 minutes. Null when this session may; otherwise why not. Only a
+ * passkey session can be confirmed again (finishReauth refuses the others),
+ * so only that refusal carries `reauth`.
+ */
+function passkeyChangeRefusal(ctx: Ctx, s: Session): NeedsFreshPasskey | { ok: false; error: string } | null {
+  if (!isAdmin(ctx, s.userId)) return null;
+  if (s.method !== 'passkey') return { ok: false, error: SIGN_IN_WITH_PASSKEY };
+  if (!isFresh(ctx, s)) return { ok: false, reauth: true, error: CONFIRM_FRESH };
+  return null;
 }
 
 export async function registrationOptions(ctx: Ctx, s: Session) {
   const u = getUser(ctx, s.userId);
   if (!u?.emailVerifiedAt) throw new UserError('Only a verified account can add a passkey.');
-  if (!mayChangePasskeys(ctx, s)) throw new UserError('Admins confirm with a fresh passkey before adding one.');
+  const refusal = passkeyChangeRefusal(ctx, s);
+  if (refusal) throw 'reauth' in refusal ? new NeedsReauth(refusal.error) : new UserError(refusal.error);
   const admin = isAdmin(ctx, u.id);
   const options = await generateRegistrationOptions({
     rpName: 'OpenCell',
@@ -109,7 +132,7 @@ export async function finishRegistration(
   response: RegistrationResponseJSON,
   name: string | undefined,
   meta: RequestMeta,
-): Promise<Result<{ credentialId: string }>> {
+): Promise<Result<{ credentialId: string }> | NeedsFreshPasskey> {
   // Client-supplied, so checked before anything else (and before the
   // challenge is used, so a bad name can be corrected and sent again).
   const label = optionalPasskeyNameSchema.safeParse(name);
@@ -124,7 +147,9 @@ export async function finishRegistration(
   const u = getUser(ctx, s.userId);
   if (!u?.emailVerifiedAt) return { ok: false, error: 'Only a verified account can add a passkey.' };
   const live = currentSession(ctx, s.id);
-  if (!live || !mayChangePasskeys(ctx, live)) return { ok: false, error: 'Admins confirm with a passkey before changing passkeys.' };
+  if (!live) return { ok: false, error: 'The passkey request expired. Please try again.' };
+  const refusal = passkeyChangeRefusal(ctx, live);
+  if (refusal) return refusal;
   const admin = isAdmin(ctx, s.userId);
   let v: Awaited<ReturnType<typeof verifyRegistrationResponse>>;
   try {
@@ -297,8 +322,9 @@ export async function finishReauth(
   return { ok: true };
 }
 
-export function removePasskey(ctx: Ctx, s: Session, passkeyId: string, meta: RequestMeta): Result {
-  if (!mayChangePasskeys(ctx, s)) return { ok: false, error: 'Admins confirm with a passkey before changing passkeys.' };
+export function removePasskey(ctx: Ctx, s: Session, passkeyId: string, meta: RequestMeta): Result | NeedsFreshPasskey {
+  const refusal = passkeyChangeRefusal(ctx, s);
+  if (refusal) return refusal;
   const own = listPasskeys(ctx, s.userId);
   const target = own.find((p) => p.id === passkeyId);
   if (!target) return { ok: false, error: 'No such passkey.' };

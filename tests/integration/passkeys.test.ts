@@ -12,6 +12,7 @@ import {
   signInOptions,
 } from '@/lib/passkeys';
 import { UserError } from '@/lib/errors';
+import { NeedsReauth } from '@/lib/passkeys';
 import { LIMITS, limitOf } from '@/lib/ratelimit';
 import { canUseAdmin, createSession, isFresh, sessionFromToken } from '@/lib/sessions';
 import { grantRole } from '@/lib/users';
@@ -405,10 +406,33 @@ describe('admins (spec §3)', () => {
     const { token } = await freshAdminSession(uid);
     ctx.clock.t += 5 * 60_000;
     const stale = sessionFromToken(ctx, token)!.session;
+    // A passkey session can be confirmed again in the browser: say so, typed.
     expect(removePasskey(ctx, stale, listPasskeys(ctx, uid)[0].id, meta)).toEqual({
       ok: false,
-      error: 'Admins confirm with a passkey before changing passkeys.',
+      reauth: true,
+      error: 'Admins confirm with a fresh passkey before changing passkeys.',
     });
+    await expect(registrationOptions(ctx, stale)).rejects.toBeInstanceOf(NeedsReauth);
+  });
+
+  it('lets an admin whose passkey session was confirmed again add and remove a passkey', async () => {
+    const uid = addUser('root@example.org');
+    await register(uid);
+    grantRole(ctx, uid, 'admin', null);
+    const r = await signIn();
+    if (!r.ok) throw new Error(r.error);
+    const s = sessionFromToken(ctx, r.sessionToken)!.session;
+    await expect(registrationOptions(ctx, s)).rejects.toBeInstanceOf(NeedsReauth);
+    const { challengeId, options } = await reauthOptions(ctx, s);
+    expect((await finishReauth(ctx, s, challengeId, auth.get(options, 0), meta)).ok).toBe(true);
+    const fresh = sessionFromToken(ctx, r.sessionToken)!.session;
+    const reg = await registrationOptions(ctx, fresh);
+    const key2 = new SoftAuthenticator(TEST_ORIGIN);
+    expect((await finishRegistration(ctx, fresh, reg.challengeId, key2.create(reg.options), 'Backup key', meta)).ok).toBe(true);
+    expect(listPasskeys(ctx, uid)).toHaveLength(2);
+    const backup = listPasskeys(ctx, uid).find((p) => p.name === 'Backup key')!;
+    expect(removePasskey(ctx, fresh, backup.id, meta)).toEqual({ ok: true });
+    expect(listPasskeys(ctx, uid)).toHaveLength(1);
   });
 
   it('requires user verification to register a second passkey for an admin', async () => {
@@ -438,7 +462,8 @@ describe('admins (spec §3)', () => {
     ctx.db.update(sessions).set({ reauthAt: null }).where(eq(sessions.id, fresh.id)).run();
     expect(await finishRegistration(ctx, fresh, challengeId, response, undefined, meta)).toEqual({
       ok: false,
-      error: 'Admins confirm with a passkey before changing passkeys.',
+      reauth: true,
+      error: 'Admins confirm with a fresh passkey before changing passkeys.',
     });
   });
 
@@ -447,11 +472,14 @@ describe('admins (spec §3)', () => {
     await register(uid);
     grantRole(ctx, uid, 'admin', null);
     const s = emailSession(uid);
-    await expect(registrationOptions(ctx, s)).rejects.toThrow(/fresh passkey/);
+    // An email-link session can't be confirmed with a passkey (finishReauth
+    // refuses it), so there is no re-auth offer: sign in with a passkey instead.
+    await expect(registrationOptions(ctx, s)).rejects.toThrow('Admins sign in with a passkey, not an email link, before changing passkeys.');
     await expect(registrationOptions(ctx, s)).rejects.toBeInstanceOf(UserError);
+    await expect(registrationOptions(ctx, s)).rejects.not.toBeInstanceOf(NeedsReauth);
     expect(removePasskey(ctx, s, listPasskeys(ctx, uid)[0].id, meta)).toEqual({
       ok: false,
-      error: 'Admins confirm with a passkey before changing passkeys.',
+      error: 'Admins sign in with a passkey, not an email link, before changing passkeys.',
     });
   });
 

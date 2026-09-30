@@ -10,6 +10,7 @@ import {
   finishReauth,
   finishRegistration,
   finishSignIn,
+  NeedsReauth,
   reauthOptions,
   registrationOptions,
   signInOptions,
@@ -87,11 +88,17 @@ export async function passkeySignInFinish(id: string, response: AuthenticationRe
   return { ok: true as const };
 }
 
+/**
+ * Options for a new passkey. An admin whose passkey session isn't freshly
+ * confirmed gets `{ reauth: true }`: the page asks for the passkey
+ * (reauthenticate()) and tries once more.
+ */
 export async function passkeyRegisterStart() {
   const { session } = await requireUser();
   try {
     return { ok: true as const, ...(await registrationOptions(appCtx(), session)) };
   } catch (e) {
+    if (e instanceof NeedsReauth) return { ok: false as const, reauth: true as const, error: e.message };
     return { ok: false as const, error: publicMessage(e, 'Adding a passkey did not work. Please try again.') };
   }
 }
@@ -108,7 +115,8 @@ export async function passkeyRegisterFinish(id: string, response: RegistrationRe
     label.data,
     await requestMeta(),
   );
-  return r.ok ? { ok: true as const } : { ok: false as const, error: r.error };
+  if (r.ok) return { ok: true as const };
+  return 'reauth' in r ? { ok: false as const, reauth: true as const, error: r.error } : { ok: false as const, error: r.error };
 }
 
 export async function reauthStart() {

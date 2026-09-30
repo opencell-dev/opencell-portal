@@ -1,5 +1,16 @@
 import { expect, test } from '@playwright/test';
-import { addPasskey, addPasskeyDevice, e2eDb, liftLimits, mailedLink, signUpAndVerify, uniqueEmail } from './helpers';
+import {
+  addPasskey,
+  addPasskeyDevice,
+  e2eDb,
+  liftLimits,
+  mailedLink,
+  portalAdmin,
+  signInWithPasskey,
+  signOut,
+  signUpAndVerify,
+  uniqueEmail,
+} from './helpers';
 
 test.beforeEach(() => liftLimits());
 
@@ -53,4 +64,78 @@ test('passkeys are listed and removed; a deleted account is gone', async ({ page
   expect(del.actor_id).toBeGreaterThan(0);
   expect(del.detail).not.toContain(email);
   db.close();
+});
+
+test('an admin confirms with a passkey on the account page to add a second passkey and remove one', async ({ page }, info) => {
+  const { cdp, authenticatorId: phone } = await addPasskeyDevice(page);
+  const email = uniqueEmail(info, 'ivy');
+  await signUpAndVerify(page, 'Ivy', email);
+  await addPasskey(page, 'Phone');
+  await expect(page.getByRole('status')).toContainText('Your passkey is ready');
+  expect(portalAdmin('promote', email).trim()).toBe(`${email} is now an admin`);
+  await signOut(page);
+  await signInWithPasskey(page); // a passkey session, but not freshly confirmed
+
+  const db = e2eDb();
+  const { id: userId } = db.prepare('SELECT id FROM users WHERE email = ?').get(email) as { id: number };
+  db.close();
+  const count = (sql: string) => {
+    const d = e2eDb();
+    const n = (d.prepare(sql).get(userId) as { n: number }).n;
+    d.close();
+    return n;
+  };
+  const reauths = () => count("SELECT count(*) AS n FROM audit WHERE action = 'session.reauth' AND actor_id = ?");
+  const keys = () => count('SELECT count(*) AS n FROM passkeys WHERE user_id = ?');
+
+  // One virtual authenticator can't both confirm with its passkey and create
+  // a second one (the server excludes the credential it already holds). So
+  // once the phone has answered the confirmation, before the page goes on to
+  // create the new passkey, swap the phone for a security key, as a person
+  // would pick up their backup key.
+  let swapped = false;
+  await page.exposeFunction('__ocAfterPasskeyCheck', async () => {
+    if (swapped) return;
+    swapped = true;
+    await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId: phone });
+    await cdp.send('WebAuthn.addVirtualAuthenticator', {
+      options: {
+        protocol: 'ctap2',
+        transport: 'usb',
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true,
+      },
+    });
+  });
+  await page.addInitScript(() => {
+    const creds = navigator.credentials;
+    const get = creds.get.bind(creds);
+    creds.get = async (options?: CredentialRequestOptions) => {
+      const c = await get(options);
+      await (window as unknown as { __ocAfterPasskeyCheck: () => Promise<void> }).__ocAfterPasskeyCheck();
+      return c;
+    };
+  });
+
+  await page.goto('/account');
+  expect(reauths()).toBe(0);
+  await addPasskey(page, 'Backup key');
+  await expect(page.getByRole('button', { name: 'Remove Backup key' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Remove Phone' })).toBeVisible();
+  expect(swapped).toBe(true);
+  expect(reauths()).toBe(1);
+  expect(keys()).toBe(2);
+
+  // The confirmation lasts five minutes; end it, so removing asks again
+  // (the security key, now the only authenticator, answers).
+  const d = e2eDb();
+  d.prepare('UPDATE sessions SET reauth_at = NULL WHERE user_id = ?').run(userId);
+  d.close();
+  await page.getByRole('button', { name: 'Remove Backup key' }).click();
+  await expect(page.getByRole('button', { name: 'Remove Backup key' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Remove Phone' })).toBeVisible();
+  expect(reauths()).toBe(2);
+  expect(keys()).toBe(1);
 });

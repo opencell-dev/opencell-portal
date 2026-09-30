@@ -24,12 +24,16 @@ export async function setDirectoryAction(form: FormData): Promise<void> {
   redirect('/account');
 }
 
-export async function removePasskeyAction(_prev: FormState, form: FormData): Promise<FormState> {
+/** What removing a passkey answers; `reauth` asks the page to confirm with a passkey and try once more. */
+export type RemovePasskeyResult = { ok: true; message: string } | { ok: false; message: string } | { ok: false; reauth: true; message: string };
+
+export async function removePasskeyAction(passkeyId: string): Promise<RemovePasskeyResult> {
   const { session } = await requireUser();
-  const id = z.string().min(1).max(1024).parse(form.get('id'));
+  const id = z.string().min(1).max(1024).parse(passkeyId);
   const r = removePasskey(appCtx(), session, id, await requestMeta());
   revalidatePath('/account');
-  return r.ok ? { ok: true, message: 'Passkey removed.' } : { ok: false, message: r.error };
+  if (r.ok) return { ok: true, message: 'Passkey removed.' };
+  return 'reauth' in r ? { ok: false, reauth: true, message: r.error } : { ok: false, message: r.error };
 }
 
 export async function deleteAccountAction(_prev: FormState, form: FormData): Promise<FormState> {
