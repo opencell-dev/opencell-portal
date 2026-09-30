@@ -16,7 +16,8 @@ function openssl(dir: string, ...args: string[]) {
 
 /**
  * ca (a root), server (localhost / 127.0.0.1, serverAuth), client
- * (clientAuth), and rogue-ca + rogue-server (another root) - made with the
+ * (clientAuth), wrong-name (our root, another name), and rogue-ca +
+ * rogue-server (another root) - made with the
  * openssl command line, ECDSA P-256, as tools/ca/oc-ca in opencell-core does.
  */
 export function makeTestPki(): TestPki {
@@ -36,6 +37,7 @@ export function makeTestPki(): TestPki {
   root('ca');
   leaf('ca', 'server', 'extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1');
   leaf('ca', 'client', 'extendedKeyUsage=clientAuth');
+  leaf('ca', 'wrong-name', 'extendedKeyUsage=serverAuth\nsubjectAltName=DNS:core9.opencell.invalid');
   root('rogue-ca');
   leaf('rogue-ca', 'rogue-server', 'extendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1');
   return { dir, path: (n) => join(dir, n), read: (n) => readFileSync(join(dir, n)) };

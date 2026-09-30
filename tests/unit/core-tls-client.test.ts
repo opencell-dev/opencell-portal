@@ -44,7 +44,8 @@ afterEach(async () => {
   server = undefined;
 });
 
-async function serve(script: Script, opts: { cert?: string; alpn?: string[] } = {}): Promise<number> {
+/** opts.alpn: the protocols the core offers (default oc-admin/1); null: none at all. */
+async function serve(script: Script, opts: { cert?: string; alpn?: string[] | null } = {}): Promise<number> {
   connections = 0;
   server = tls.createServer(
     {
@@ -54,7 +55,7 @@ async function serve(script: Script, opts: { cert?: string; alpn?: string[] } = 
       requestCert: true,
       rejectUnauthorized: true,
       minVersion: 'TLSv1.3',
-      ALPNProtocols: opts.alpn ?? ['oc-admin/1'],
+      ...(opts.alpn === null ? {} : { ALPNProtocols: opts.alpn ?? ['oc-admin/1'] }),
     },
     (sock) => {
       connections++;
@@ -199,14 +200,44 @@ describe('TlsCore', () => {
     expect(await c.numCheck(1, '+883171746412345')).toBe('taken');
   });
 
+  // The cores below answer every call: a TlsCore that let one of them
+  // through would get an answer, so each refusal is TlsCore's own, made at
+  // the handshake (no request reaches the core), and says why.
+  async function refusedBy(opts: { cert?: string; alpn?: string[] | null }, why: RegExp) {
+    let served = 0;
+    const port = await serve(
+      (r) => {
+        served++;
+        return [frame(r.op, r.req, 0, (w) => w.u16(1).u32(0).u32(0).u32(0).u32(0).u16(0).text('x').text('v'))];
+      },
+      opts,
+    );
+    const t0 = Date.now();
+    const err = await client(port, 3000).coreStatus(1).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CoreError);
+    expect(err).toMatchObject({ code: 'unavailable' });
+    expect((err as Error).message).toMatch(why);
+    expect(Date.now() - t0).toBeLessThan(1000); // at the handshake, not at the call's timeout
+    expect(served).toBe(0);
+  }
+
   it('refuses a core whose certificate is not from the OpenCell root', async () => {
-    const port = await serve(() => undefined, { cert: 'rogue-server' });
-    await expect(client(port).coreStatus(1)).rejects.toMatchObject({ code: 'unavailable' });
+    await refusedBy({ cert: 'rogue-server' }, /unable to verify/i);
+  });
+
+  it('refuses a core whose certificate is for another name', async () => {
+    await refusedBy({ cert: 'wrong-name' }, /does not match|altnames/i);
   });
 
   it('refuses a core that does not speak oc-admin/1', async () => {
-    const port = await serve(() => undefined, { alpn: ['oc-cell/1'] });
-    await expect(client(port).coreStatus(1)).rejects.toMatchObject({ code: 'unavailable' });
+    await refusedBy({ alpn: null }, /does not speak oc-admin\/1/);
+  });
+
+  it('refuses a core that offers only another protocol', async () => {
+    await refusedBy({ alpn: ['oc-cell/1'] }, /alert|protocol/i);
   });
 
   it('says so when its files are missing', async () => {
