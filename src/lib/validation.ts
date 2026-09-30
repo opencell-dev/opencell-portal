@@ -5,8 +5,16 @@ import { z } from 'zod';
 // joiners, soft hyphens) that could make a label read as something else.
 const noControl = (s: string) => !/[\p{Cc}\p{Cf}]/u.test(s);
 // …and, for a name that goes into mail and lists, on one line: the Unicode
-// line and paragraph separators too.
-const oneLinePlain = (s: string) => noControl(s) && !/[\p{Zl}\p{Zp}]/u.test(s);
+// line and paragraph separators too. The one exception is ZWNJ (U+200C) and
+// ZWJ (U+200D) between two letters (a letter and its marks on the left, a
+// letter on the right): Persian and Indic names need them to be spelled
+// right. Anywhere else (at an edge, by a space or digit, doubled, inside an
+// emoji sequence) they stay refused.
+const JOINER_BETWEEN_LETTERS = /(?<=\p{L}\p{M}*)[\u200C\u200D](?=\p{L})/gu;
+const oneLinePlain = (s: string) => {
+  const rest = s.replace(JOINER_BETWEEN_LETTERS, '');
+  return noControl(rest) && !/[\p{Zl}\p{Zp}]/u.test(rest);
+};
 
 /**
  * The account's name (sign-up form). It reaches mail, the admin list and the
