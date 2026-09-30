@@ -1,5 +1,5 @@
-// The core admin API as the portal sees it (portal spec §7). P1 implements it
-// with FakeCore (in-process); P4 adds the mTLS client for oc-core's port 7444.
+// The core admin API as the portal sees it (portal spec §7): FakeCore
+// (in-process, OC_CORE=fake) or TlsCore (oc-core's port 7444, OC_CORE=tls).
 // Every operation takes `actor`: the portal account id on whose behalf it
 // acts (0 for the portal itself), which the core writes to its audit.
 
@@ -67,7 +67,9 @@ export type CoreErrorCode =
   | 'not_assignable'
   | 'not_unactivated'
   | 'rate_limited'
-  | 'unavailable';
+  | 'unavailable'
+  /** The core doesn't do this yet: route.offer until P5. */
+  | 'unsupported';
 
 export class CoreError extends Error {
   constructor(
