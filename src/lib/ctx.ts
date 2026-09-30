@@ -2,6 +2,7 @@ import { type Config, config } from '@/config';
 import { getCore } from '@/core';
 import type { CoreAdmin } from '@/core/types';
 import { type Db, openDb } from '@/db';
+import { startHousekeeping } from '@/lib/housekeeping';
 import { createMailer, type Mailer } from '@/lib/mail';
 import { createMailQueue, type MailQueue } from '@/lib/mailqueue';
 
@@ -17,12 +18,23 @@ export interface Ctx {
 
 const g = globalThis as typeof globalThis & { __ocCtx?: Ctx };
 
-/** The process's context: one database connection, the configured mailer and core. */
+/** A context from the environment: one database connection, the configured mailer and core. */
+export function createCtx(): Ctx {
+  const c = config();
+  const mailer = createMailer(c.mail);
+  return { config: c, db: openDb(c.dbPath), mailer, mailQueue: createMailQueue(mailer), core: getCore(), now: Date.now };
+}
+
+/**
+ * The server process's context, built by its first request (the deploy's
+ * /healthz check, right after start). Building it also starts housekeeping:
+ * purgeStale at once, then hourly (housekeeping.ts). The admin CLI uses
+ * createCtx() instead, so a CLI run purges nothing.
+ */
 export function appCtx(): Ctx {
   if (!g.__ocCtx) {
-    const c = config();
-    const mailer = createMailer(c.mail);
-    g.__ocCtx = { config: c, db: openDb(c.dbPath), mailer, mailQueue: createMailQueue(mailer), core: getCore(), now: Date.now };
+    g.__ocCtx = createCtx();
+    startHousekeeping(g.__ocCtx);
   }
   return g.__ocCtx;
 }

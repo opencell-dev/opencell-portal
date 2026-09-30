@@ -56,13 +56,37 @@ function mail(ctx: Ctx, to: string, t: Template): void {
   ctx.mailQueue.send({ to, subject: t.subject, text: t.text });
 }
 
-/** Remove what has run out: expired sessions, links, challenges, rate-limit rows and unverified accounts after 7 days. */
+/**
+ * Remove what has run out: expired sessions, links, challenges, rate-limit
+ * rows, and accounts never verified after 7 days. A purged account goes the
+ * way a deleted one does (spec §10): its audit rows keep the account id only
+ * (no IP, no detail), and the rate-limit rows keyed by its address go too.
+ * Runs on sign-up and, in the server, at start and hourly (housekeeping.ts).
+ */
 export function purgeStale(ctx: Ctx): void {
   const now = ctx.now();
   ctx.db.delete(sessions).where(lt(sessions.expiresAt, now)).run();
   ctx.db.delete(emailTokens).where(lt(emailTokens.expiresAt, now - 24 * 3600_000)).run();
   ctx.db.delete(challenges).where(lt(challenges.expiresAt, now)).run();
-  ctx.db.delete(users).where(and(isNull(users.emailVerifiedAt), lt(users.createdAt, now - UNVERIFIED_KEEP_MS))).run();
+  ctx.db.transaction((tx) => {
+    const stale = tx
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(and(isNull(users.emailVerifiedAt), lt(users.createdAt, now - UNVERIFIED_KEEP_MS)))
+      .all();
+    if (stale.length === 0) return;
+    const ids = stale.map((u) => u.id);
+    tx.update(audit).set({ ip: null, detail: null }).where(inArray(audit.actorId, ids)).run();
+    tx.delete(rateEvents)
+      .where(
+        inArray(
+          rateEvents.key,
+          stale.flatMap((u) => [rateKey(ctx, 'signup_email', u.email), rateKey(ctx, 'magic_email', u.email), rateKey(ctx, 'email_change_user', String(u.id))]),
+        ),
+      )
+      .run();
+    tx.delete(users).where(inArray(users.id, ids)).run();
+  });
   ctx.db.delete(rateEvents).where(lt(rateEvents.at, now - longestWindowMs(ctx))).run();
 }
 

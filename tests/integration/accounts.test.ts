@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { audit, emailTokens, rateEvents, sessions, users } from '@/db/schema';
 import {
   changeEmail,
@@ -11,7 +11,8 @@ import {
   setDirectoryListed,
   signUp,
 } from '@/lib/accounts';
-import { rateKey } from '@/lib/ratelimit';
+import { HOUSEKEEPING_MS, startHousekeeping } from '@/lib/housekeeping';
+import { rateKey, setLimit } from '@/lib/ratelimit';
 import { createSession, sessionFromToken } from '@/lib/sessions';
 import { hashToken, newToken } from '@/lib/tokens';
 import { findUserByEmail, grantRole, revokeRole } from '@/lib/users';
@@ -452,6 +453,71 @@ describe('account page services (spec §3)', () => {
 });
 
 describe('housekeeping (spec §10)', () => {
+  it('purges an account never verified after 7 days, and with it the sign-up IP and every trace of the address', async () => {
+    setLimit(ctx, 'signup_email', 3, 30 * 86400); // a window longer than the 7 days, so its row would outlive the account
+    await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta);
+    await requestMagicLink(ctx, { email: 'ada@example.org' }, meta);
+    const id = findUserByEmail(ctx, 'ada@example.org')!.id;
+    expect(ctx.db.select().from(audit).where(eq(audit.actorId, id)).all().map((r) => r.ip)).toEqual([meta.ip]);
+    const kept = await signUpAndVerify('Bob', 'bob@example.org'); // verified: stays, with its audit IPs
+    ctx.clock.t += 7 * 24 * 3600_000 + MIN;
+    purgeStale(ctx);
+    expect(findUserByEmail(ctx, 'ada@example.org')).toBeUndefined();
+    const rows = ctx.db.select().from(audit).where(eq(audit.actorId, id)).all();
+    expect(rows.map((r) => r.action)).toEqual(['account.signup']); // the audit keeps the account id only
+    expect(rows.every((r) => r.ip === null && r.detail === null)).toBe(true);
+    const tables = ctx.db.$client.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[];
+    const dump = JSON.stringify(tables.flatMap((t) => ctx.db.$client.prepare(`SELECT * FROM ${t.name}`).all()));
+    expect(dump).not.toContain('ada@example.org');
+    expect(ctx.db.select().from(rateEvents).all().map((r) => r.key)).not.toContain(rateKey(ctx, 'signup_email', 'ada@example.org'));
+    expect(findUserByEmail(ctx, 'bob@example.org')?.id).toBe(kept.userId);
+    expect(ctx.db.select().from(audit).where(eq(audit.actorId, kept.userId)).all().some((r) => r.ip === meta.ip)).toBe(true);
+  });
+
+  it('keeps an account still inside its 7 days, and its audit IP', async () => {
+    await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta);
+    const id = findUserByEmail(ctx, 'ada@example.org')!.id;
+    ctx.clock.t += 7 * 24 * 3600_000 - MIN;
+    purgeStale(ctx);
+    expect(findUserByEmail(ctx, 'ada@example.org')?.id).toBe(id);
+    expect(ctx.db.select().from(audit).where(eq(audit.actorId, id)).get()?.ip).toBe(meta.ip);
+  });
+
+  it('runs the purge when the server’s context starts, and again every hour', async () => {
+    vi.useFakeTimers();
+    try {
+      await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta);
+      ctx.clock.t += 8 * 24 * 3600_000;
+      const stop = startHousekeeping(ctx);
+      expect(findUserByEmail(ctx, 'ada@example.org')).toBeUndefined(); // at once
+      await signUp(ctx, { name: 'Bob', email: 'bob@example.org', altcha: await solvedCaptcha(ctx) }, meta);
+      ctx.clock.t += 8 * 24 * 3600_000;
+      vi.advanceTimersByTime(HOUSEKEEPING_MS - 1);
+      expect(findUserByEmail(ctx, 'bob@example.org')).toBeDefined();
+      vi.advanceTimersByTime(1);
+      expect(findUserByEmail(ctx, 'bob@example.org')).toBeUndefined(); // on the hour
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the timer going when one purge fails, and logs no details', () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const failing = { ...ctx, now: () => { throw new Error('SQLITE_BUSY near ada@example.org'); } };
+      const stop = startHousekeeping(failing);
+      vi.advanceTimersByTime(HOUSEKEEPING_MS);
+      expect(spy).toHaveBeenCalledTimes(2);
+      for (const c of spy.mock.calls) expect(c.map(String).join(' ')).not.toContain('ada@example.org');
+      stop();
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('purges rate-limit rows once no window could still need them', async () => {
     await signUp(ctx, { name: 'Ada', email: 'ada@example.org', altcha: await solvedCaptcha(ctx) }, meta);
     expect(ctx.db.$client.prepare('SELECT count(*) AS n FROM rate_events').get()).not.toEqual({ n: 0 });
