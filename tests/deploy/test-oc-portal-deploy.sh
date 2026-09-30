@@ -648,10 +648,12 @@ cat > "$a_bin/systemctl" <<'SH'
 state="$OC_PORTAL_ROOT/fake-state"
 echo "$*" >> "$state/systemctl.log"
 case "$1" in
-  is-active) [ -f "$state/active" ] ;;
+  is-active) [ -f "$state/active" ]; exit ;;
   start|restart) touch "$state/active" ;;
+  enable) if [ "$2" = --now ]; then touch "$state/active"; fi ;;
   *) : ;;
 esac
+exit 0
 SH
 cat > "$a_bin/ss" <<'SH'
 #!/bin/bash
@@ -700,14 +702,15 @@ simassert "anubis: ...places the instance environment (0644, as committed)" bash
 simassert "anubis: ...places the policy (0644, as committed)" bash -c "cmp -s '$a_src/anubis/oc-portal.botPolicies.yaml' '$a_root/etc/anubis/oc-portal.botPolicies.yaml' && [ \"\$(stat -c %a '$a_root/etc/anubis/oc-portal.botPolicies.yaml')\" = 644 ]"
 simassert "anubis: ...places the systemd drop-in" cmp -s "$a_src/anubis/opencell.conf" "$a_root/etc/systemd/system/anubis@oc-portal.service.d/opencell.conf"
 simassert "anubis: ...generates the signing key, root-only (0600)" bash -c "grep -qxE 'ED25519_PRIVATE_KEY_HEX=[0-9a-f]{64}' '$a_root/etc/anubis/oc-portal.key.env' && [ \"\$(stat -c %a '$a_root/etc/anubis/oc-portal.key.env')\" = 600 ]"
-simassert "anubis: ...reloads systemd, enables and starts anubis@oc-portal" bash -c "grep -qx daemon-reload '$st/systemctl.log' && grep -qx 'enable anubis@oc-portal.service' '$st/systemctl.log' && grep -qx 'start anubis@oc-portal.service' '$st/systemctl.log'"
+simassert "anubis: ...reloads systemd, then enables and starts anubis@oc-portal (port 3000 free)" bash -c "grep -qx daemon-reload '$st/systemctl.log' && grep -qx 'enable --now anubis@oc-portal.service' '$st/systemctl.log'"
 key_before="$(cat "$a_root/etc/anubis/oc-portal.key.env")"
 
 : > "$st/systemctl.log"; curl_before="$(calls "$st/curl.log")"
 a_check 0 "anubis: a second run"
 simassert "anubis: ...downloads and installs nothing (the pinned version is there)" [ "$(calls "$st/curl.log")" = "$curl_before" -a "$(calls "$st/apt.log")" = 1 ]
 simassert "anubis: ...keeps the signing key (passes stay valid)" [ "$(cat "$a_root/etc/anubis/oc-portal.key.env")" = "$key_before" ]
-simassert "anubis: ...restarts nothing when nothing changed" bash -c "! grep -qE '^(re)?start ' '$st/systemctl.log'"
+simassert "anubis: ...restarts nothing when nothing changed" bash -c "! grep -qE '^(re)?start |--now' '$st/systemctl.log'"
+simassert "anubis: ...and keeps the running instance enabled" grep -qx 'enable anubis@oc-portal.service' "$st/systemctl.log"
 
 echo "# a policy edit" >> "$a_src/anubis/oc-portal.botPolicies.yaml"
 : > "$st/systemctl.log"
@@ -718,7 +721,7 @@ simassert "anubis: ...and restarts the running instance" grep -qx 'restart anubi
 rm -f "$st/active"; touch "$st/port-busy"; : > "$st/systemctl.log"
 echo "# another edit" >> "$a_src/anubis/oc-portal.botPolicies.yaml"
 a_check 0 "anubis: with port 3000 still taken (the portal not yet moved to 3001)"
-simassert "anubis: ...enables but does not start it, and says why" bash -c "grep -qx 'enable anubis@oc-portal.service' '$st/systemctl.log' && ! grep -qE '^(re)?start ' '$st/systemctl.log' && grep -q 'port 3000' <<<\"\$1\"" _ "$a_out"
+simassert "anubis: ...neither enables nor starts it (a reboot must not race the portal for 3000), and says why" bash -c "! grep -qE '^(enable|(re)?start) ' '$st/systemctl.log' && grep -q 'port 3000' <<<\"\$1\" && grep -q 'enable --now' <<<\"\$1\"" _ "$a_out"
 rm -f "$st/port-busy"
 
 fi

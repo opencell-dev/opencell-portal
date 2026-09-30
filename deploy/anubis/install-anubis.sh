@@ -7,9 +7,10 @@
 # version is not already installed, after checking its SHA-256 and its
 # signature by the pinned key; it puts the instance's environment, policy and
 # systemd drop-in in place; it makes the JWT signing key once; and it
-# restarts anubis@oc-portal only when something changed. It never starts
-# Anubis while port 3000 is taken (by the portal, before its move to
-# 127.0.0.1:3001): it says so and leaves the start to the operator.
+# restarts anubis@oc-portal only when something changed. While port 3000 is
+# taken (by the portal, before its move to 127.0.0.1:3001) it neither enables
+# nor starts Anubis, so a reboot can't race the two for the port: it says so
+# and leaves `systemctl enable --now` to the operator.
 # OC_PORTAL_ROOT prefixes every absolute path it touches (tests only, as in
 # oc-portal-deploy; unset in production).
 set -euo pipefail
@@ -83,8 +84,8 @@ fi
 chmod 0600 "$key"
 
 systemctl daemon-reload
-systemctl enable "$UNIT"
 if systemctl is-active --quiet "$UNIT"; then
+  systemctl enable "$UNIT"
   if [ "$changed" -eq 1 ]; then
     systemctl restart "$UNIT"
     echo "install-anubis: restarted $UNIT"
@@ -92,9 +93,11 @@ if systemctl is-active --quiet "$UNIT"; then
     echo "install-anubis: $UNIT unchanged and running"
   fi
 elif [ -n "$(ss -Hltn "sport = :$PORT")" ]; then
+  # Not even enabled: after a reboot it would race the portal for the port.
   echo "install-anubis: port $PORT is still taken (the portal, not yet moved to 127.0.0.1:3001?):" >&2
-  echo "install-anubis: $UNIT is enabled but not started; start it once the port is free" >&2
+  echo "install-anubis: $UNIT is installed but neither enabled nor started; once the portal" >&2
+  echo "install-anubis: is on 3001, run: systemctl enable --now $UNIT" >&2
 else
-  systemctl start "$UNIT"
-  echo "install-anubis: started $UNIT"
+  systemctl enable --now "$UNIT"
+  echo "install-anubis: enabled and started $UNIT"
 fi
