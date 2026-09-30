@@ -8,6 +8,22 @@ export interface MailQueue {
   drain(): Promise<void>;
 }
 
+/**
+ * What kind of failure `e` was, and nothing else: its name, nodemailer's
+ * error code (EENVELOPE, EAUTH, …) and the SMTP reply code, each only when it
+ * has the expected shape. Never the message or the error object: nodemailer
+ * puts a rejected recipient's address in both (`rejected`, `response`,
+ * `rejectedErrors[].recipient`), which would defeat the tag below.
+ */
+function errorClass(e: unknown): string {
+  if (!(e instanceof Error) || !/^[A-Za-z]{1,40}$/.test(e.name)) return 'unknown error';
+  const { code, responseCode } = e as { code?: unknown; responseCode?: unknown };
+  const parts = [e.name];
+  if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,31}$/.test(code)) parts.push(code);
+  if (typeof responseCode === 'number' && Number.isInteger(responseCode) && responseCode >= 100 && responseCode <= 599) parts.push(String(responseCode));
+  return parts.join(' ');
+}
+
 /** A tiny in-process fire-and-forget sender: one retry, then it just logs. */
 export function createMailQueue(mailer: Mailer): MailQueue {
   const pending = new Set<Promise<void>>();
@@ -25,7 +41,7 @@ export function createMailQueue(mailer: Mailer): MailQueue {
           try {
             await mailer.send(mail);
           } catch (e) {
-            console.error(`mail to recipient ${tag} failed twice, giving up:`, e);
+            console.error(`mail to recipient ${tag} failed twice, giving up (${errorClass(e)})`);
           }
         }
       })();
