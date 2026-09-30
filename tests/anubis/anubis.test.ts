@@ -342,6 +342,12 @@ describe('unchallenged: health check, public pages, static files', () => {
     expect(String(r.headers['content-type'])).toMatch(/javascript/);
   });
 
+  it('lets /.well-known/ through (the portal answers: it has none yet, a 404)', async () => {
+    const r = await new Client('203.0.113.7').get('/.well-known/security.txt');
+    expect(challengeOf(r)).toBeNull();
+    expect(r.status).toBe(404);
+  });
+
   it('lets the ALTCHA worker and favicon path through', async () => {
     expect((await new Client('203.0.113.7').get('/altcha/pbkdf2.js')).status).toBe(200);
     const fav = await new Client('203.0.113.7').get('/favicon.ico');
@@ -374,6 +380,30 @@ describe('challenged', () => {
   ])('%s gets the proof-of-work challenge', async (path) => {
     const r = await new Client('203.0.113.7').get(path);
     expect(challengeOf(r)?.rules).toEqual({ algorithm: 'fast', difficulty: 4 });
+  });
+
+  // Dot segments: Anubis matches the decoded path as sent, while Next (like
+  // nginx-proxy's proxy_pass ...$request_uri, which passes it on raw)
+  // resolves them. Sent as-is: the test client never normalizes a path.
+  it.each([
+    '/_next/static/../../sign-in',
+    '/_next/static/%2e%2e/%2e%2e/sign-in',
+    '/_next/static/.%2E/.%2E/sign-in',
+    '/_next/static/../../numbers',
+    '/_next/static/../../api/altcha',
+    '/_next/static/./../../sign-in',
+    '/.well-known/../sign-in',
+    '/.well-known/%2e%2e/api/altcha',
+    '/.well-known/./../sign-up',
+    '/altcha/../sign-in',
+    '/altcha/%2e%2e/api/altcha',
+    '/healthz/../sign-in',
+    '/coverage/../sign-in',
+    '/./sign-in',
+    '/favicon.ico/../sign-in',
+  ])('%s (dot segments out of an open prefix) gets the proof-of-work challenge', async (path) => {
+    const r = await new Client('203.0.113.7').get(path);
+    expect(challengeOf(r)?.rules.algorithm).toBe('fast');
   });
 
   it('a POST to a public page is challenged too (a server action can be sent to any page)', async () => {

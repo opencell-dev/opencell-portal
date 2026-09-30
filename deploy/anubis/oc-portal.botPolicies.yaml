@@ -12,6 +12,13 @@
 # - Next.js lets a server action be POSTed to any page (it forwards the call
 #   to the page that has it), so a POST is never let through as "public":
 #   the ALLOW rules below take only GET and HEAD.
+# - Anubis matches the path as sent (percent-decoded, never cleaned), while
+#   nginx-proxy passes it on raw and Next resolves dot segments: without a
+#   guard, /_next/static/../../sign-in would be "static" to Anubis and the
+#   sign-in page to Next. So no ALLOW rule matches a path with a "." or ".."
+#   segment (decoded, so %2e%2e and .%2E count too): those fall through to
+#   the challenge. Every ALLOW rule carries the line, the exact-path ones too,
+#   so none can lose it by being widened later.
 bots:
   # 1. The deploy's and any monitor's health check. First, so that no rule
   #    added later can ever challenge it.
@@ -21,6 +28,7 @@ bots:
       all:
         - method == "GET" || method == "HEAD"
         - path == "/healthz"
+        - '!path.matches("/\\.\\.?(/|$)")'
 
   # 2. Next's build output (content-hashed JS and CSS), which every page
   #    needs, the public ones included.
@@ -30,6 +38,7 @@ bots:
       all:
         - method == "GET" || method == "HEAD"
         - path.startsWith("/_next/static/")
+        - '!path.matches("/\\.\\.?(/|$)")'
 
   # 3. Files a browser or a crawler fetches on its own, without cookies: the
   #    favicon and app icons, the web manifest, /.well-known/, and the
@@ -41,6 +50,7 @@ bots:
       all:
         - method == "GET" || method == "HEAD"
         - path.matches("^/(favicon\\.ico|(apple-)?icon[0-9a-z._-]*|manifest\\.webmanifest|altcha/[0-9A-Za-z._-]+\\.js)$") || path.startsWith("/.well-known/")
+        - '!path.matches("/\\.\\.?(/|$)")'
 
   # 4. The public pages: anyone, any client, no challenge. Only these paths
   #    (tests/unit/site-header.test.ts reads this list: the site header
@@ -51,6 +61,7 @@ bots:
       all:
         - method == "GET" || method == "HEAD"
         - path in ["/", "/coverage", "/operator-agreement"]
+        - '!path.matches("/\\.\\.?(/|$)")'
 
   # 5. The links the portal emails (/auth/email/<token>): the page and its
   #    Confirm button's POST. The no-JavaScript challenge, so a link opened
