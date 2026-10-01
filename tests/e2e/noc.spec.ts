@@ -1,24 +1,50 @@
 import { expect, type Page, test } from '@playwright/test';
-import { addPasskey, addPasskeyDevice, liftLimits, portalAdmin, signInWithPasskey, signOut, signUpAndVerify, uniqueEmail, watchCsp } from './helpers';
+import { addPasskey, addPasskeyDevice, liftLimits, mailedLink, NOC_DIR, NOC_URL, nocAdmin, signInWithPasskey, uniqueEmail, watchCsp } from './helpers';
 
-// NOC design §4, §9, §10 (plan N1): who opens the NOC, what it shows, and the
-// 3 s "Unreachable" on the fake core's simulated outage. Ruling 2026-10-01
-// #8/#9: NOC operators and admins may both look up a number (unmasked); the
-// demo controls stay admin-only.
+// NOC design §4, §9, §10 (plan N1), on the NOC's own site (§N1.5): who opens
+// the NOC, what it shows, and the 3 s "Unreachable" on the fake core's
+// simulated outage. Ruling 2026-10-01 #8/#9: NOC operators and admins may
+// both look up a number (unmasked); the demo controls stay admin-only.
+// tests/e2e/site.spec.ts checks the subscriber portal has no NOC at all.
 
-test.beforeEach(() => liftLimits());
+test.use({ baseURL: NOC_URL });
+test.beforeEach(() => liftLimits(NOC_DIR));
 
-const NOC_PAGES = ['/noc', '/noc/cells', '/noc/topology', '/noc/cores/fake', '/noc/lookup', '/noc/demo'];
+const STAFF_ONLY = 'This site is for OpenCell staff only, and this account has no staff role here.';
 
-/** A verified account with a passkey, given `role` by the bootstrap CLI, then signed in with the passkey. */
-async function staff(page: Page, info: Parameters<typeof uniqueEmail>[0], tag: string, cmd: 'promote' | 'noc-grant') {
+/** Ask the sign-in page for an email link to `email`; returns the link (newer than `after`). */
+async function emailLink(page: Page, email: string, after?: string) {
+  await page.goto('/sign-in');
+  await page.getByLabel('Email').fill(email);
+  await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
+  await expect(page.getByRole('status')).toContainText('If that address has an account');
+  return mailedLink(email, after, NOC_DIR);
+}
+
+/**
+ * The NOC site's bootstrap: the CLI adds the account; its first emailed link
+ * verifies it and signs it in on Account, where it adds a passkey; with a
+ * passkey and no role yet it is signed out.
+ */
+async function addedWithPasskey(page: Page, info: Parameters<typeof uniqueEmail>[0], tag: string) {
   await addPasskeyDevice(page);
   const email = uniqueEmail(info, tag);
-  await signUpAndVerify(page, tag, email);
+  expect(nocAdmin('add', email, tag)).toContain(`${email} added.`);
+  const link = await emailLink(page, email);
+  await page.goto(link);
+  await page.getByRole('button', { name: 'Confirm my email' }).click();
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(page.getByRole('note')).toContainText('This account has no staff role yet');
   await addPasskey(page, 'Key');
-  await expect(page.getByRole('status')).toContainText('Your passkey is ready');
-  portalAdmin(cmd, email);
-  return email;
+  await expect(page).toHaveURL(/\/sign-in$/);
+  return { email, link };
+}
+
+/** An added account with a passkey, given `role` by the bootstrap CLI. */
+async function staff(page: Page, info: Parameters<typeof uniqueEmail>[0], tag: string, cmd: 'promote' | 'noc-grant') {
+  const r = await addedWithPasskey(page, info, tag);
+  nocAdmin(cmd, r.email);
+  return r;
 }
 
 /** The demo controls page: press a button and wait for its message. */
@@ -28,23 +54,41 @@ async function demo(page: Page, button: string, says: string | RegExp) {
   await expect(page.getByRole('status')).toContainText(says);
 }
 
-test('the NOC is a 404 for a subscriber, with no NOC tab', async ({ page }, info) => {
-  await signUpAndVerify(page, 'Sub', uniqueEmail(info, 'sub'));
-  for (const path of NOC_PAGES) {
+test('the NOC site has no sign-up and no subscriber pages; its front page is the NOC', async ({ page }) => {
+  for (const path of ['/sign-up', '/welcome', '/numbers', '/calls', '/directory', '/nodes', '/coverage', '/operator-agreement']) {
     const res = await page.goto(path);
     expect(res?.status(), path).toBe(404);
   }
-  await expect(page.getByRole('link', { name: 'NOC', exact: true })).toHaveCount(0);
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/sign-in$/);
+  await expect(page.getByRole('heading', { name: 'Sign in to the OpenCell NOC' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Sign up' })).toHaveCount(0);
+});
+
+test('an account with no staff role is refused at sign-in, and told why', async ({ page }, info) => {
+  const { email, link } = await addedWithPasskey(page, info, 'norole');
+  await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
+  // (Next's route announcer is an alert too: pick ours by its text.)
+  await expect(page.getByRole('alert').filter({ hasText: STAFF_ONLY })).toBeVisible();
+  await page.goto(await emailLink(page, email, link));
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).toHaveURL(/\/sign-in\?staff=1$/);
+  await expect(page.getByRole('status')).toHaveText(STAFF_ONLY);
+  const res = await page.goto('/noc');
+  await expect(page).toHaveURL(/\/sign-in$/);
+  expect(res?.status()).toBe(200);
 });
 
 test('a NOC operator opens the NOC with a passkey, including number lookup, but not the admin pages or the demo', async ({ page }, info) => {
-  await staff(page, info, 'nocop', 'noc-grant');
-  // The email-link session does not open the NOC.
+  const { email, link } = await staff(page, info, 'nocop', 'noc-grant');
+  // An email-link session does not open the NOC.
+  await page.goto(await emailLink(page, email, link));
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(page.getByRole('note')).toContainText('The NOC needs a sign-in with a passkey');
   await page.goto('/noc');
   await expect(page).toHaveURL(/\/sign-in\?noc=1$/);
   await expect(page.getByText('NOC pages need a sign-in with a passkey')).toBeVisible();
-  await signOut(page);
-  await page.goto('/sign-in?noc=1');
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   await expect(page).toHaveURL(/\/noc$/);
   await expect(page.getByRole('heading', { name: 'Network overview' })).toBeVisible();
@@ -67,8 +111,7 @@ test('a NOC operator opens the NOC with a passkey, including number lookup, but 
 test('an admin sees the demo network, a core that stops answering as Unreachable within the deadline, and a number', async ({ page }, info) => {
   const violations = await watchCsp(page);
   await staff(page, info, 'nocadmin', 'promote');
-  await signOut(page);
-  await signInWithPasskey(page);
+  await signInWithPasskey(page, /\/noc$/);
   try {
     await demo(page, 'Load the demo network', 'The demo network is loaded on fake.');
     await page.getByRole('link', { name: 'NOC', exact: true }).click();
