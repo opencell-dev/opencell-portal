@@ -24,7 +24,7 @@ export function NocRoleForm() {
       }
       setMessage('reauth' in r ? 'The passkey confirmation expired; try again.' : r.message);
     } catch {
-      setMessage("Couldn't reach the portal or your admin session has ended. Sign in again with your passkey.");
+      setMessage("Couldn't reach the portal or your session has ended. Sign in again with your passkey.");
     } finally {
       setBusy(false);
     }

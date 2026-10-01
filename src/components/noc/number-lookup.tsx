@@ -30,7 +30,7 @@ export function NumberLookup({ serviceNumbers }: { serviceNumbers: string[] }) {
     try {
       setR(await lookupNumberAction(number));
     } catch {
-      setR({ ok: false, message: "Couldn't reach the portal or your admin session has ended. Sign in again with your passkey." });
+      setR({ ok: false, message: "Couldn't reach the portal or your session has ended. Sign in again with your passkey." });
     } finally {
       setBusy(false);
     }

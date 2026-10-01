@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { users } from '@/db/schema';
+import { passkeys, users } from '@/db/schema';
 import { runAdmin } from '@/lib/admin-cli';
 import { listAudit } from '@/lib/audit';
 import { canUseAdmin, canUseNoc, createSession, sessionFromToken } from '@/lib/sessions';
@@ -10,6 +10,11 @@ import { type TestCtx, testCtx } from '../helpers/ctx';
 const H = 3600_000;
 let ctx: TestCtx;
 let uid: number;
+
+/** A passkey row for `userId` (review I3: noc-grant needs one on the account first). */
+function addPasskeyRow(userId: number) {
+  ctx.db.insert(passkeys).values({ id: `cred-${userId}`, userId, publicKey: Buffer.from([1]), counter: 0, createdAt: 1 }).run();
+}
 
 beforeEach(() => {
   ctx = testCtx();
@@ -81,6 +86,7 @@ describe('the NOC operator role', () => {
 
 describe('oc-portal-admin noc-grant / noc-revoke', () => {
   it('grants and revokes by email, and says so when there is nothing to do', () => {
+    addPasskeyRow(uid);
     expect(runAdmin(ctx, ['noc-grant', 'NIA@example.org'])).toEqual({ code: 0, out: 'nia@example.org is now a NOC operator' });
     expect(runAdmin(ctx, ['noc-grant', 'nia@example.org'])).toEqual({ code: 0, out: 'nia@example.org is already a NOC operator' });
     expect(runAdmin(ctx, ['users']).out).toContain('subscriber,noc');
@@ -93,5 +99,15 @@ describe('oc-portal-admin noc-grant / noc-revoke', () => {
     expect(runAdmin(ctx, ['noc-grant', 'nobody@example.org'])).toEqual({ code: 1, out: 'no account with email nobody@example.org' });
     expect(runAdmin(ctx, ['noc-grant', 'new@example.org']).code).toBe(1);
     expect(runAdmin(ctx, ['noc-grant']).code).toBe(2);
+  });
+
+  it('refuses to grant an account with no passkey yet, so the first noc-grant cannot lock it out (review I3)', () => {
+    expect(runAdmin(ctx, ['noc-grant', 'nia@example.org'])).toEqual({
+      code: 1,
+      out: 'nia@example.org has no passkey yet: ask them to add one on Account first',
+    });
+    expect(rolesOf(ctx, uid)).toEqual(['subscriber']);
+    addPasskeyRow(uid);
+    expect(runAdmin(ctx, ['noc-grant', 'nia@example.org'])).toEqual({ code: 0, out: 'nia@example.org is now a NOC operator' });
   });
 });

@@ -2,6 +2,7 @@ import { asc, eq } from 'drizzle-orm';
 import { userRoles, users } from '@/db/schema';
 import { listAudit, writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
+import { listPasskeys } from '@/lib/passkeys';
 import { isLimitName, LIMITS, limitOf, setLimit } from '@/lib/ratelimit';
 import { findUserByEmail, grantRole, revokeRole, rolesOf } from '@/lib/users';
 
@@ -59,6 +60,13 @@ export function runAdmin(ctx: Ctx, argv: string[]): Out {
       if (!u) return { code: 1, out: `no account with email ${args[0]}` };
       if (cmd === 'noc-grant') {
         if (!u.emailVerifiedAt) return { code: 1, out: `${u.email} has not verified its email yet; sign up and open the link first` };
+        // Review I3: staff (admin, noc) need a passkey session to sign in to
+        // the NOC at all. Granting the role to an account with none strands
+        // it: it has no way to add one, since registering a passkey as
+        // staff itself needs a passkey session to confirm.
+        if (listPasskeys(ctx, u.id).length === 0) {
+          return { code: 1, out: `${u.email} has no passkey yet: ask them to add one on Account first` };
+        }
         const added = grantRole(ctx, u.id, 'noc', null);
         return { code: 0, out: added ? `${u.email} is now a NOC operator` : `${u.email} is already a NOC operator` };
       }

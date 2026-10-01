@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { appCtx } from '@/lib/ctx';
 import { publicMessage } from '@/lib/errors';
+import { listPasskeys } from '@/lib/passkeys';
 import { findUserByEmail, grantRole, revokeRole, rolesOf } from '@/lib/users';
 import { emailSchema } from '@/lib/validation';
 import { freshAdmin } from '@/server/request';
@@ -47,6 +48,12 @@ export async function nocRoleAction(email: string, grant: boolean): Promise<Admi
     revokeRole(ctx, u.id, 'noc', f.s.user.id);
     revalidatePath('/admin/users');
     return { ok: true, message: `${u.email} is no longer a NOC operator.` };
+  }
+  // Review I3: granting the role to an account with no passkey strands it —
+  // the NOC redirects it to a passkey sign-in it cannot complete, and
+  // registering a passkey as staff itself needs a passkey session to confirm.
+  if (listPasskeys(ctx, u.id).length === 0) {
+    return { ok: false, message: `${u.email} has no passkey yet: ask them to add one on Account first.` };
   }
   let added: boolean;
   try {

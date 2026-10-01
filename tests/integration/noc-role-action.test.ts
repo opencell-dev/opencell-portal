@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { users } from '@/db/schema';
+import { passkeys, users } from '@/db/schema';
 import { listAudit } from '@/lib/audit';
 import { rolesOf } from '@/lib/users';
 import { type TestCtx, testCtx } from '../helpers/ctx';
@@ -20,6 +20,11 @@ const { nocRoleAction } = await import('@/app/actions/admin');
 let ctx: TestCtx;
 let nia: number;
 
+/** A passkey row for `userId` (review I3: granting needs one on the account first). */
+function addPasskeyRow(userId: number) {
+  ctx.db.insert(passkeys).values({ id: `cred-${userId}`, userId, publicKey: Buffer.from([1]), counter: 0, createdAt: 1 }).run();
+}
+
 beforeEach(() => {
   ctx = testCtx();
   state.ctx = ctx;
@@ -30,6 +35,7 @@ beforeEach(() => {
 
 describe('nocRoleAction', () => {
   it('grants the role, audited with the admin as actor, then takes it away', async () => {
+    addPasskeyRow(nia);
     expect(await nocRoleAction('nia@example.org', true)).toEqual({ ok: true, message: 'nia@example.org is now a NOC operator.' });
     expect(rolesOf(ctx, nia)).toEqual(['subscriber', 'noc']);
     expect(listAudit(ctx, 1)[0]).toMatchObject({ actorId: state.adminId, action: 'role.grant', target: `user:${nia}` });
@@ -51,5 +57,15 @@ describe('nocRoleAction', () => {
     expect(await nocRoleAction('not an email', true)).toEqual({ ok: false, message: 'Please enter a valid email address.' });
     expect(await nocRoleAction('nobody@example.org', true)).toEqual({ ok: false, message: 'No verified account has that address.' });
     expect(await nocRoleAction('new@example.org', true)).toEqual({ ok: false, message: 'No verified account has that address.' });
+  });
+
+  it('refuses to grant an account with no passkey yet, so the first grant cannot lock it out (review I3)', async () => {
+    expect(await nocRoleAction('nia@example.org', true)).toEqual({
+      ok: false,
+      message: 'nia@example.org has no passkey yet: ask them to add one on Account first.',
+    });
+    expect(rolesOf(ctx, nia)).toEqual(['subscriber']);
+    addPasskeyRow(nia);
+    expect(await nocRoleAction('nia@example.org', true)).toEqual({ ok: true, message: 'nia@example.org is now a NOC operator.' });
   });
 });

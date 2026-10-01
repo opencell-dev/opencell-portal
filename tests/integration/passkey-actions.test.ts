@@ -114,10 +114,10 @@ describe('account passkey actions for an admin (final review I1)', () => {
     grantRole(ctx, uid, 'admin', null);
     state.token = createSession(ctx, uid, 'email', meta).token;
     const start = await passkeyRegisterStart();
-    expect(start).toEqual({ ok: false, error: 'Admins sign in with a passkey, not an email link, before changing passkeys.' });
+    expect(start).toEqual({ ok: false, error: 'Staff sign in with a passkey, not an email link, before changing passkeys.' });
     expect(await removePasskeyAction(listPasskeys(ctx, uid)[0].id)).toEqual({
       ok: false,
-      message: 'Admins sign in with a passkey, not an email link, before changing passkeys.',
+      message: 'Staff sign in with a passkey, not an email link, before changing passkeys.',
     });
   });
 

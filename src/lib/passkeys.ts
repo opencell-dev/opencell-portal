@@ -90,8 +90,8 @@ export class NeedsReauth extends UserError {
 /** "Confirm with your passkey, then try again": the answer the account page acts on. */
 export type NeedsFreshPasskey = { ok: false; reauth: true; error: string };
 
-const SIGN_IN_WITH_PASSKEY = 'Admins sign in with a passkey, not an email link, before changing passkeys.';
-const CONFIRM_FRESH = 'Admins confirm with a fresh passkey before changing passkeys.';
+const SIGN_IN_WITH_PASSKEY = 'Staff sign in with a passkey, not an email link, before changing passkeys.';
+const CONFIRM_FRESH = 'Staff confirm with a fresh passkey before changing passkeys.';
 
 /**
  * Staff (admins, NOC operators) change passkeys only from a passkey session confirmed (with UV) in

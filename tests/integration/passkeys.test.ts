@@ -410,7 +410,7 @@ describe('admins (spec §3)', () => {
     expect(removePasskey(ctx, stale, listPasskeys(ctx, uid)[0].id, meta)).toEqual({
       ok: false,
       reauth: true,
-      error: 'Admins confirm with a fresh passkey before changing passkeys.',
+      error: 'Staff confirm with a fresh passkey before changing passkeys.',
     });
     await expect(registrationOptions(ctx, stale)).rejects.toBeInstanceOf(NeedsReauth);
   });
@@ -477,7 +477,7 @@ describe('admins (spec §3)', () => {
     expect(await finishRegistration(ctx, fresh, challengeId, response, undefined, meta)).toEqual({
       ok: false,
       reauth: true,
-      error: 'Admins confirm with a fresh passkey before changing passkeys.',
+      error: 'Staff confirm with a fresh passkey before changing passkeys.',
     });
   });
 
@@ -488,12 +488,12 @@ describe('admins (spec §3)', () => {
     const s = emailSession(uid);
     // An email-link session can't be confirmed with a passkey (finishReauth
     // refuses it), so there is no re-auth offer: sign in with a passkey instead.
-    await expect(registrationOptions(ctx, s)).rejects.toThrow('Admins sign in with a passkey, not an email link, before changing passkeys.');
+    await expect(registrationOptions(ctx, s)).rejects.toThrow('Staff sign in with a passkey, not an email link, before changing passkeys.');
     await expect(registrationOptions(ctx, s)).rejects.toBeInstanceOf(UserError);
     await expect(registrationOptions(ctx, s)).rejects.not.toBeInstanceOf(NeedsReauth);
     expect(removePasskey(ctx, s, listPasskeys(ctx, uid)[0].id, meta)).toEqual({
       ok: false,
-      error: 'Admins sign in with a passkey, not an email link, before changing passkeys.',
+      error: 'Staff sign in with a passkey, not an email link, before changing passkeys.',
     });
   });
 
