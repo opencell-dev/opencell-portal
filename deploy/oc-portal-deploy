@@ -71,7 +71,9 @@ usage() {
 }
 
 # Builds $SSH. OC_PORTAL_SSH (split on whitespace) replaces it outright.
-# Otherwise: the Proxmox host as jump host, multiplexed over one master
+# Otherwise: the `oc-portal` host from the operator's own SSH config
+# (OC_SSH_CONFIG, default ~/.ssh/cm/oc-portal.conf -- not in this repo; it
+# defines `oc-portal` and its jump host), multiplexed over one master
 # connection whose socket lives in a private directory we own (refusing a
 # symlink or someone else's directory rather than trusting it). ssh refuses
 # to run at all when a ControlPath reaches 108 bytes, and the master binds
@@ -97,9 +99,10 @@ setup_ssh() {
     exit 2
   fi
   chmod 0700 "$dir"
-  SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
+  SSH=(ssh -F "${OC_SSH_CONFIG:-$HOME/.ssh/cm/oc-portal.conf}"
+    -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
     -o ControlMaster=auto -o "ControlPath=$dir/%C" -o ControlPersist=60
-    -J root@147.135.11.61:222 root@10.0.0.61)
+    oc-portal)
 }
 
 remote() { "${SSH[@]}" "bash -s" -- "$@"; }

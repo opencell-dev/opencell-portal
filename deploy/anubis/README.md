@@ -304,11 +304,13 @@ The switch in step 6 is a few seconds of downtime. Every step says how to
 undo it.
 
 ```sh
-# From the laptop.
+# From the laptop. G and N use the operator's own SSH config (not in this
+# repo), which defines `oc-portal` and the Proxmox host's `ovh-pve` alias;
+# nginx-proxy has no alias of its own, so N jumps through ovh-pve directly.
 TAG=v0.2.1
-G='ssh -J root@147.135.11.61:222 root@10.0.0.61'    # the portal guest (LXC 116)
-N='ssh -J root@147.135.11.61:222 root@10.0.0.100'   # nginx-proxy (LXC 100), or from the host:
-                                                      #   ssh -p 222 root@147.135.11.61 'pct exec 100 -- …'
+G='ssh -F "${OC_SSH_CONFIG:-$HOME/.ssh/cm/oc-portal.conf}" oc-portal'  # the portal guest (LXC 116)
+N='ssh -J ovh-pve root@10.0.0.100'                   # nginx-proxy (LXC 100), or from the host:
+                                                      #   ssh ovh-pve 'pct exec 100 -- …'
 NPM_API=http://10.0.0.100:81/api                     # NPM's admin API, however you reach it
 NPM_TOKEN=...                                        # your NPM API token
 H="Authorization: Bearer $NPM_TOKEN"

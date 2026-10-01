@@ -531,10 +531,12 @@ simcheck 0 "sim: rollback with the portal on 3001" "$D_SIM" rollback
 simassert "sim: ...health-checks 127.0.0.1:3001 (got $(last_health_url))" [ "$(last_health_url)" = http://127.0.0.1:3001/healthz ]
 rm -f "$sim_root/etc/opencell/portal.env"
 
-# The default SSH command (no OC_PORTAL_SSH): multiplexed over one master
-# connection through the jump host, socket in a private 0700 directory. A
-# fake `ssh` first on PATH records its arguments and fails like an
-# unreachable host -- guarded so the real ssh can never run here.
+# The default SSH command (no OC_PORTAL_SSH): the `oc-portal` host from the
+# operator's own SSH config (OC_SSH_CONFIG, default ~/.ssh/cm/oc-portal.conf
+# -- not in this repo), multiplexed over one master connection, socket in a
+# private 0700 directory. A fake `ssh` first on PATH records its arguments
+# and fails like an unreachable host -- guarded so the real ssh can never
+# run here.
 fake_ssh_dir="$sim_bin/fake-ssh"
 mkdir -p "$fake_ssh_dir"
 cat > "$fake_ssh_dir/ssh" <<'SH'
@@ -558,8 +560,9 @@ else
   rm -f "$args_file"
   default_ssh short >/dev/null
   if [ -f "$args_file" ] && grep -qx 'ControlMaster=auto' "$args_file" && grep -qx 'ControlPath=short/oc-portal-ssh/%C' "$args_file" \
-    && grep -qx 'ControlPersist=60' "$args_file" && grep -qx 'root@147.135.11.61:222' "$args_file" && [ "$(tail -n 3 "$args_file" | head -n 1)" = root@10.0.0.61 ]; then
-    echo "ok   default ssh: every call is multiplexed over one master through the jump host"
+    && grep -qx 'ControlPersist=60' "$args_file" && grep -qx -- '-F' "$args_file" \
+    && grep -qx "$HOME/.ssh/cm/oc-portal.conf" "$args_file" && [ "$(tail -n 3 "$args_file" | head -n 1)" = oc-portal ]; then
+    echo "ok   default ssh: every call is multiplexed over one master, through the operator's oc-portal SSH alias"
   else
     echo "FAIL default ssh: arguments were: $(tr '\n' ' ' < "$args_file" 2>/dev/null)"
     fail=1
