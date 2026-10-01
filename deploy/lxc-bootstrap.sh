@@ -12,9 +12,16 @@
 # does the rest. Safe to re-run: every step checks before it changes.
 set -euo pipefail
 PROXY_IP="${1:?usage: lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc]}"
-SITE="${2:-portal}"
+# No default (final review I1): a missing site is left for
+# anubis/install-anubis.sh to read from what is already on this guest
+# (its own marker, OC_SITE in /etc/opencell/portal.env, or the files
+# already installed), so re-running this script on an upgrade never
+# silently takes a NOC guest back to the portal's settings.
+SITE="${2:-}"
 [[ "$PROXY_IP" =~ ^10\.0\.0\.[0-9]{1,3}$ ]] || { echo "expected an address on internal (10.0.0.x)" >&2; exit 2; }
-[[ "$SITE" =~ ^(portal|noc)$ ]] || { echo "usage: lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc] (got '$SITE')" >&2; exit 2; }
+if [ -n "$SITE" ]; then
+  [[ "$SITE" =~ ^(portal|noc)$ ]] || { echo "usage: lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc] (got '$SITE')" >&2; exit 2; }
+fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -63,11 +70,18 @@ if [ "$UNITS_CHANGED" -eq 1 ]; then
   echo "unit files changed: restarted the affected units"
 fi
 
-# Anubis, the pinned release, verified; its instance anubis@oc-portal on :3000.
-bash "$HERE/anubis/install-anubis.sh" "$SITE"
+# Anubis, the pinned release, verified; its instance anubis@oc-portal on
+# :3000. With no site given, install-anubis.sh reads what is already here
+# (final review I1) instead of defaulting to portal.
+if [ -n "$SITE" ]; then
+  bash "$HERE/anubis/install-anubis.sh" "$SITE"
+else
+  bash "$HERE/anubis/install-anubis.sh"
+fi
 
+site_installed="$(cat "${OC_PORTAL_ROOT:-}/etc/anubis/oc-portal.site" 2>/dev/null || echo "${SITE:-portal}")"
 echo "bootstrap done: node $(node --version), $(anubis --version 2>/dev/null || echo 'anubis ?')"
 example=portal.env.example
-if [ "$SITE" = noc ]; then example=noc.env.example; fi
+if [ "$site_installed" = noc ]; then example=noc.env.example; fi
 echo "now write /etc/opencell/portal.env (from $example: PORT=3001, OC_LISTEN=127.0.0.1,"
 echo "OC_TRUSTED_PROXY=127.0.0.1) and portal-smtp.env, then deploy"

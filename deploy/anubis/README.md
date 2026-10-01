@@ -27,6 +27,7 @@ unchanged too: only nginx-proxy may reach 3000, and loopback (the portal on
 | `oc-portal.botPolicies.yaml` | `/etc/anubis/oc-portal.botPolicies.yaml` 0644 | the policy |
 | `opencell.conf` | `/etc/systemd/system/anubis@oc-portal.service.d/opencell.conf` | drop-in for the package's `anubis@.service`: signing key, hardening, `LimitNOFILE` a container can grant |
 | (made on the guest) | `/etc/anubis/oc-portal.key.env` 0600 | `ED25519_PRIVATE_KEY_HEX`: signs the pass cookies, so passes survive restarts |
+| (made on the guest) | `/etc/anubis/oc-portal.site` 0644 | `portal` or `noc`: which settings are installed here, written every run (final review I1), so a later run with no argument never has to guess |
 | `install-anubis.sh` | | installs or updates all of the above (see below) |
 
 `install-anubis.sh` is idempotent. `lxc-bootstrap.sh` runs it on a new
@@ -270,7 +271,14 @@ locations.
 3. Update the four lines of `release.env`. Read the release notes for
    changes to cookies, the policy format, or `X-Real-IP`/`X-Forwarded-For`
    handling.
-4. Run `npm run test:anubis`. On the guest, run `install-anubis.sh`.
+4. Run `npm run test:anubis`. On each guest, run `install-anubis.sh` with its
+   own site: `install-anubis.sh portal` on 116, `install-anubis.sh noc` on
+   118. Omitting it is safe too (final review I1) — it reads the site
+   already there (the marker it writes every run, `/etc/anubis/oc-portal.site`,
+   or OC_SITE in `/etc/opencell/portal.env`, or, on a guest from before that
+   marker existed, whichever settings are already installed) and refuses an
+   argument that contradicts it, rather than ever silently defaulting to
+   portal.
 
 
 ## Runbook: putting Anubis in front of the live portal (LXC 116)

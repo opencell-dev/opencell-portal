@@ -4,10 +4,19 @@
 # lxc-bootstrap.sh runs it; it can also be run on its own from a copy of
 # deploy/ (see deploy/anubis/README.md):
 #   bash deploy/anubis/install-anubis.sh [portal|noc]
-# The site (default portal) picks the settings and the policy: oc-portal.env
-# and oc-portal.botPolicies.yaml, or oc-noc.env and oc-noc.botPolicies.yaml.
+# The site picks the settings and the policy: oc-portal.env and
+# oc-portal.botPolicies.yaml, or oc-noc.env and oc-noc.botPolicies.yaml.
 # Either is installed under the one instance name, anubis@oc-portal, so the
 # unit, its drop-in and oc-portal-deploy's status line are the same on both.
+# Omitting it is safe (final review I1): it never silently assumes "portal".
+# It is read from, in order, the marker this script writes on every run
+# (the instance's own .site file, below), or OC_SITE in this guest's
+# /etc/opencell/portal.env (Task 12's settings, written after bootstrap), or,
+# for a guest already running a version of this script from before the
+# marker existed, whichever of oc-portal.env/oc-noc.env the files already in
+# place match byte for byte. Nothing found at all (a brand-new guest, nothing
+# to clobber) falls back to portal. An explicit argument that contradicts
+# what is already here is refused outright, never silently overridden.
 # Idempotent: it installs the pinned .deb (release.env) only when that exact
 # version is not already installed, after checking its SHA-256 and its
 # signature by the pinned key; it puts the instance's environment, policy and
@@ -21,17 +30,49 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${OC_PORTAL_ROOT:-}"
-SITE="${1:-portal}"
-case "$SITE" in
-  portal | noc) ;;
-  *) echo "usage: install-anubis.sh [portal|noc] (got '$SITE')" >&2; exit 2 ;;
-esac
-[ $# -le 1 ] || { echo "usage: install-anubis.sh [portal|noc]" >&2; exit 2; }
 INSTANCE=oc-portal
 UNIT="anubis@$INSTANCE.service"
 PORT=3000
+MARKER="$ROOT/etc/anubis/$INSTANCE.site"
 
 die() { echo "install-anubis: $*" >&2; exit 1; }
+
+# Which site (if any) is already set up here (see the comment above).
+detect_installed_site() {
+  if [ -f "$MARKER" ]; then
+    case "$(cat "$MARKER" 2>/dev/null || true)" in
+      portal | noc) cat "$MARKER"; return ;;
+    esac
+  fi
+  if [ -f "$ROOT/etc/opencell/portal.env" ]; then
+    local v; v="$(sed -n 's/^OC_SITE=\(portal\|noc\)[[:space:]]*$/\1/p' "$ROOT/etc/opencell/portal.env" | tail -n 1)"
+    if [ -n "$v" ]; then echo "$v"; return; fi
+  fi
+  local installed="$ROOT/etc/anubis/$INSTANCE.env"
+  if [ -f "$installed" ]; then
+    if cmp -s "$HERE/oc-noc.env" "$installed"; then echo noc; return; fi
+    if cmp -s "$HERE/oc-portal.env" "$installed"; then echo portal; return; fi
+  fi
+  echo ""
+}
+
+if [ $# -gt 1 ]; then
+  echo "usage: install-anubis.sh [portal|noc]" >&2
+  exit 2
+fi
+detected="$(detect_installed_site)"
+if [ $# -eq 1 ]; then
+  SITE="$1"
+  case "$SITE" in
+    portal | noc) ;;
+    *) echo "usage: install-anubis.sh [portal|noc] (got '$SITE')" >&2; exit 2 ;;
+  esac
+  if [ -n "$detected" ] && [ "$detected" != "$SITE" ]; then
+    die "this guest is already set up as '$detected' ($MARKER, OC_SITE in $ROOT/etc/opencell/portal.env, or the files already installed); refusing to switch it to '$SITE'. Remove $MARKER first if this is really intended."
+  fi
+else
+  SITE="${detected:-portal}"
+fi
 [ "$(id -u)" -eq 0 ] || [ -n "$ROOT" ] || die "run this as root on the portal guest"
 
 # shellcheck source=release.env
@@ -84,6 +125,15 @@ install -d -m 0755 "$ROOT/etc/anubis" "$ROOT/etc/systemd/system/$UNIT.d"
 place 0644 "$HERE/oc-$SITE.env" "$ROOT/etc/anubis/$INSTANCE.env"
 place 0644 "$HERE/oc-$SITE.botPolicies.yaml" "$ROOT/etc/anubis/$INSTANCE.botPolicies.yaml"
 place 0644 "$HERE/opencell.conf" "$ROOT/etc/systemd/system/$UNIT.d/opencell.conf"
+
+# Final review I1: record the site every run, so the next one (even with no
+# argument) knows it without guessing, however this guest got here. Writing
+# it is not itself a "change" (it never restarts anything on its own).
+if [ "$(cat "$MARKER" 2>/dev/null || true)" != "$SITE" ]; then
+  printf '%s\n' "$SITE" > "$MARKER.new"
+  mv -f "$MARKER.new" "$MARKER"
+  chmod 0644 "$MARKER"
+fi
 
 key="$ROOT/etc/anubis/$INSTANCE.key.env"
 if ! grep -qxE 'ED25519_PRIVATE_KEY_HEX=[0-9a-f]{64}' "$key" 2>/dev/null; then

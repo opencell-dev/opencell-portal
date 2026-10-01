@@ -772,16 +772,89 @@ a_out="$(a_noc admin)"; got=$?
 if [ "$got" -eq 2 ]; then echo "ok   anubis: refuses a site that is neither portal nor noc"; else echo "FAIL anubis: site 'admin' (exit $got): $a_out"; fail=1; fi
 a_out="$(a_noc noc extra)"; got=$?
 if [ "$got" -eq 2 ]; then echo "ok   anubis: refuses a second argument"; else echo "FAIL anubis: two arguments (exit $got): $a_out"; fail=1; fi
+
+# I1 (final review): $a_root is already set up as portal (every a_check 0
+# run above left its marker so), so an explicit, contradicting argument
+# must be refused outright, never silently switch it.
 touch "$st/active"; : > "$st/systemctl.log"
 a_out="$(a_noc noc)"; got=$?
-if [ "$got" -eq 0 ]; then echo "ok   anubis: the NOC's site (install-anubis.sh noc)"; else echo "FAIL anubis: noc (exit $got): $a_out"; fail=1; fi
-simassert "anubis: ...places the NOC's environment as the instance's" cmp -s "$a_src/anubis/oc-noc.env" "$a_root/etc/anubis/oc-portal.env"
-simassert "anubis: ...and the NOC's policy" cmp -s "$a_src/anubis/oc-noc.botPolicies.yaml" "$a_root/etc/anubis/oc-portal.botPolicies.yaml"
-simassert "anubis: ...keeps the signing key" [ "$(cat "$a_root/etc/anubis/oc-portal.key.env")" = "$key_before" ]
-simassert "anubis: ...and restarts the running instance for the change" grep -qx 'restart anubis@oc-portal.service' "$st/systemctl.log"
+if [ "$got" -eq 1 ]; then echo "ok   I1: install-anubis.sh noc is refused on a guest already set up as portal"; else echo "FAIL I1: noc on a portal guest (exit $got): $a_out"; fail=1; fi
+simassert "I1: ...names the already-installed site" grep -qi portal <<<"$a_out"
+simassert "I1: ...changes nothing (still the portal's environment)" cmp -s "$a_src/anubis/oc-portal.env" "$a_root/etc/anubis/oc-portal.env"
+simassert "I1: ...keeps the signing key" [ "$(cat "$a_root/etc/anubis/oc-portal.key.env")" = "$key_before" ]
+simassert "I1: ...and restarts nothing" bash -c "! grep -qE '^(re)?start ' '$st/systemctl.log'"
 simassert "anubis: lxc-bootstrap passes its site to install-anubis.sh" grep -q 'anubis/install-anubis.sh" "$SITE"' deploy/lxc-bootstrap.sh
 # (With the fakes first on PATH, so even a broken check could install nothing here.)
 simassert "anubis: lxc-bootstrap refuses a site that is neither portal nor noc, before installing anything" bash -c "env PATH='$a_bin:$PATH' OC_PORTAL_ROOT='$a_root' bash deploy/lxc-bootstrap.sh 10.0.0.100 admin >/dev/null 2>&1; [ \$? -eq 2 ] && [ \"\$(wc -l < '$st/apt.log')\" = 1 ]"
+old_default='SITE="${2:-portal}"'
+if grep -qF "$old_default" deploy/lxc-bootstrap.sh; then
+  echo "FAIL I1: lxc-bootstrap.sh still defaults a missing site to portal"; fail=1
+else
+  echo "ok   I1: lxc-bootstrap.sh no longer defaults a missing site to portal"
+fi
+no_arg_call='bash "$HERE/anubis/install-anubis.sh"'
+if grep -qF "$no_arg_call" deploy/lxc-bootstrap.sh; then
+  echo "ok   I1: lxc-bootstrap.sh delegates a missing site to install-anubis.sh's own detection"
+else
+  echo "FAIL I1: lxc-bootstrap.sh does not call install-anubis.sh with no argument when none was given"; fail=1
+fi
+
+# I1: a second, independent guest -- a genuinely fresh one, given its site
+# explicitly once (as lxc-bootstrap.sh always does), then re-run with no
+# argument at all (an Anubis upgrade, following the README) -- must stay
+# the NOC's, never silently fall back to the portal's.
+a_root2="$(mktemp -d)" || exit 1
+assert_scratch_dir "$a_root2" "install-anubis second scratch root (a NOC guest)"
+cleanup_anubis_sim2() { rm -rf "$a_root2"; }
+trap 'cleanup_sim; cleanup_anubis_sim; cleanup_anubis_sim2' EXIT
+mkdir -p "$a_root2/fake-state"
+a_run2() { env PATH="$a_bin:$PATH" OC_PORTAL_ROOT="$a_root2" A_DL="$a_src/dl" GNUPGHOME=/nonexistent bash "$A" "$@" 2>&1; }
+st2="$a_root2/fake-state"
+
+a_out="$(a_run2 noc)"; got=$?
+if [ "$got" -eq 0 ]; then echo "ok   I1: a fresh NOC guest, given its site explicitly (install-anubis.sh noc)"; else echo "FAIL I1: fresh noc install (exit $got): $a_out"; fail=1; fi
+simassert "I1: ...places the NOC's environment" cmp -s "$a_src/anubis/oc-noc.env" "$a_root2/etc/anubis/oc-portal.env"
+simassert "I1: ...and records the site in a marker for next time" [ "$(cat "$a_root2/etc/anubis/oc-portal.site" 2>/dev/null)" = noc ]
+
+: > "$st2/systemctl.log"
+a_out="$(a_run2)"; got=$?
+if [ "$got" -eq 0 ]; then echo "ok   I1: re-running install-anubis.sh with no argument on that guest"; else echo "FAIL I1: no-argument re-run (exit $got): $a_out"; fail=1; fi
+simassert "I1: ...keeps the NOC's environment (never silently defaults to portal)" cmp -s "$a_src/anubis/oc-noc.env" "$a_root2/etc/anubis/oc-portal.env"
+simassert "I1: ...and its policy" cmp -s "$a_src/anubis/oc-noc.botPolicies.yaml" "$a_root2/etc/anubis/oc-portal.botPolicies.yaml"
+simassert "I1: ...restarting nothing, since nothing changed" bash -c "! grep -qE '^(re)?start |--now' '$st2/systemctl.log'"
+
+a_out="$(a_run2 portal)"; got=$?
+if [ "$got" -eq 1 ]; then echo "ok   I1: an explicit argument that contradicts the installed site is refused"; else echo "FAIL I1: contradicting argument (exit $got): $a_out"; fail=1; fi
+simassert "I1: ...names the conflict" grep -qi noc <<<"$a_out"
+simassert "I1: ...and changes nothing" cmp -s "$a_src/anubis/oc-noc.env" "$a_root2/etc/anubis/oc-portal.env"
+
+# I1: a guest set up by a copy of this script from before the site marker
+# existed (the oc-noc guest bootstrapped with v0.4.0-rc.3, before this fix):
+# no marker, no portal.env yet either, but the NOC's files are already in
+# place. A bare re-run must recognize that from what's installed and keep
+# it, not fall back to portal.
+a_root3="$(mktemp -d)" || exit 1
+assert_scratch_dir "$a_root3" "install-anubis third scratch root (a legacy NOC guest)"
+cleanup_anubis_sim3() { rm -rf "$a_root3"; }
+trap 'cleanup_sim; cleanup_anubis_sim; cleanup_anubis_sim2; cleanup_anubis_sim3' EXIT
+mkdir -p "$a_root3/etc/anubis" "$a_root3/etc/systemd/system/anubis@oc-portal.service.d" "$a_root3/fake-state"
+cp "$a_src/anubis/oc-noc.env" "$a_root3/etc/anubis/oc-portal.env"
+cp "$a_src/anubis/oc-noc.botPolicies.yaml" "$a_root3/etc/anubis/oc-portal.botPolicies.yaml"
+cp "$a_src/anubis/opencell.conf" "$a_root3/etc/systemd/system/anubis@oc-portal.service.d/opencell.conf"
+printf 'ED25519_PRIVATE_KEY_HEX=%s\n' "$(openssl rand -hex 32)" > "$a_root3/etc/anubis/oc-portal.key.env"
+chmod 0600 "$a_root3/etc/anubis/oc-portal.key.env"
+echo "$a_ver" > "$a_root3/fake-state/anubis-version"
+touch "$a_root3/fake-state/active"
+a_run3() { env PATH="$a_bin:$PATH" OC_PORTAL_ROOT="$a_root3" A_DL="$a_src/dl" GNUPGHOME=/nonexistent bash "$A" "$@" 2>&1; }
+
+a_out="$(a_run3)"; got=$?
+if [ "$got" -eq 0 ]; then
+  echo "ok   I1: a guest already running the NOC's settings from before the marker existed is recognized by its installed files"
+else
+  echo "FAIL I1: legacy-noc detection (exit $got): $a_out"; fail=1
+fi
+simassert "I1: ...keeps the NOC's environment" cmp -s "$a_src/anubis/oc-noc.env" "$a_root3/etc/anubis/oc-portal.env"
+simassert "I1: ...and writes the marker for next time" [ "$(cat "$a_root3/etc/anubis/oc-portal.site" 2>/dev/null)" = noc ]
 
 fi
 
