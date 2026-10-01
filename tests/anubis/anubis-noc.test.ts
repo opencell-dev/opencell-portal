@@ -186,10 +186,16 @@ afterAll(() => {
 });
 
 describe("the NOC site's committed Anubis settings", () => {
-  it("are the portal's but for the site's own name", () => {
+  it("are the portal's but for the site's own name and pass-cookie prefix (M2, final review)", () => {
     const portal = readEnvFile(join(ANUBIS_DIR, 'oc-portal.env'));
     const noc = readEnvFile(join(ANUBIS_DIR, 'oc-noc.env'));
-    expect(noc).toEqual({ ...portal, COOKIE_DOMAIN: 'noc.opencell.k4ozi.com', REDIRECT_DOMAINS: 'noc.opencell.k4ozi.com' });
+    expect(noc).toEqual({
+      ...portal,
+      COOKIE_DOMAIN: 'noc.opencell.k4ozi.com',
+      REDIRECT_DOMAINS: 'noc.opencell.k4ozi.com',
+      COOKIE_PREFIX: 'oc-noc-anubis',
+    });
+    expect(portal.COOKIE_PREFIX).not.toBe(noc.COOKIE_PREFIX);
   });
 
   it('have no public pages and no ALTCHA worker in the policy; the rest is the same', () => {
@@ -241,5 +247,14 @@ describe('past the proof of work, the NOC site', () => {
       expect(r.status, path).toBe(404);
       expect(fromSite(r), path).toBe(true);
     }
+  });
+
+  // M2 (final review): a distinct COOKIE_PREFIX, checked against a real
+  // Anubis pass, not just the committed .env files.
+  it("the pass cookie's name carries the NOC's own prefix, never the portal's", async () => {
+    const c = await passProofOfWork(new Client('203.0.113.21'), '/sign-in');
+    const names = [...c.jar.keys()];
+    expect(names.some((k) => k.startsWith('oc-noc-anubis-auth-'))).toBe(true);
+    expect(names.some((k) => k.startsWith('oc-anubis-auth-'))).toBe(false);
   });
 });

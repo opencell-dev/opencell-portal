@@ -60,9 +60,13 @@ instance name (`/etc/anubis/oc-portal.env`, `anubis@oc-portal`), so the unit,
 its drop-in and `oc-portal-deploy status` are the same on both guests.
 
 - `oc-noc.env` is `oc-portal.env` with `COOKIE_DOMAIN` and
-  `REDIRECT_DOMAINS` set to `noc.opencell.k4ozi.com`. The portal's pass
-  cookie (`Domain=opencell.k4ozi.com`) also reaches the NOC's host, but
-  Anubis names its cookie after its settings, so the two never mix.
+  `REDIRECT_DOMAINS` set to `noc.opencell.k4ozi.com`, and its own
+  `COOKIE_PREFIX` (`oc-noc-anubis`, final review M2). The portal's pass
+  cookie (`Domain=opencell.k4ozi.com`) also reaches the NOC's host; Anubis
+  names its cookie after `COOKIE_DOMAIN` too, so the two would not collide
+  even with the same prefix, but the distinct prefix removes that
+  dependency outright — `tests/anubis/anubis-noc.test.ts` checks the two
+  `Set-Cookie` names actually differ, past a real proof of work.
 - `oc-noc.botPolicies.yaml` is the portal's policy without rule 4 (no public
   pages: the NOC's front page is the NOC) and without the ALTCHA worker (no
   sign-up). `tests/anubis/anubis-noc.test.ts` checks both against the
