@@ -24,6 +24,11 @@ const envSchema = z
     OC_CORE_CA: z.string().min(1).optional(),
     OC_CORE_CERT: z.string().min(1).optional(),
     OC_CORE_KEY: z.string().min(1).optional(),
+    // OC_CORE=fake only (NOC design §10): how many fake cores (fake, fake2, …)
+    // and whether each starts with the demo network. Never in production,
+    // which runs OC_CORE=tls: either one with tls is a configuration error.
+    OC_FAKE_CORES: z.coerce.number().int().min(1).max(4, 'OC_FAKE_CORES is 1 to 4').optional(),
+    OC_FAKE_DEMO: z.enum(['0', '1'], { error: 'OC_FAKE_DEMO is 0 or 1' }).optional(),
     OC_MAIL: z.enum(['smtp', 'outbox']).default('outbox'),
     OC_MAIL_OUTBOX: z.string().min(1).default('./data/outbox'),
     OC_MAIL_FROM: z.string().min(3).default('OpenCell <opencell@k4ozi.com>'),
@@ -46,6 +51,11 @@ const envSchema = z
       if (env.OC_CORES === undefined && !env.OC_CORE_ADDR) {
         const message = 'OC_CORE_ADDR is required when OC_CORE=tls (or list the cores in OC_CORES)';
         ctx.addIssue({ code: 'custom', path: ['OC_CORE_ADDR'], message });
+      }
+    }
+    if (env.OC_CORE === 'tls') {
+      for (const k of ['OC_FAKE_CORES', 'OC_FAKE_DEMO'] as const) {
+        if (env[k] !== undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is for the fake core only (OC_CORE=fake)` });
       }
     }
     if (env.OC_MAIL === 'smtp') {
@@ -143,6 +153,8 @@ export type Config = {
   core: 'fake' | 'tls';
   /** OC_CORE=tls: one or more, the first takes the number and subscriber operations; the fake core: none. */
   cores: CoreEndpoint[];
+  /** OC_CORE=fake: how many fake cores, and whether they start with the demo network (NOC design §10). */
+  fake: { cores: number; demo: boolean };
   secureCookies: boolean;
   sessionCookie: string;
   mail: {
@@ -171,6 +183,7 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     dbPath: e.OC_DB_PATH,
     core: e.OC_CORE,
     cores,
+    fake: { cores: e.OC_FAKE_CORES ?? 1, demo: e.OC_FAKE_DEMO === '1' },
     secureCookies: secure,
     sessionCookie: secure ? '__Host-oc_session' : 'oc_session',
     mail: {
