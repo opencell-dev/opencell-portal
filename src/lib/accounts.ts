@@ -10,7 +10,7 @@ import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
 import { hit, hitIp, longestWindowMs, rateKey } from '@/lib/ratelimit';
 import { createSession, type RequestMeta } from '@/lib/sessions';
 import { hashToken, newToken } from '@/lib/tokens';
-import { findUserByEmail, getUser, isLastAdmin } from '@/lib/users';
+import { findUserByEmail, getUser, isLastAdmin, STAFF_ONLY, siteAdmits } from '@/lib/users';
 import { emailSchema, firstError, nameSchema } from '@/lib/validation';
 
 export type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
@@ -111,6 +111,8 @@ export async function signUp(
   input: { name: unknown; email: unknown; altcha: unknown },
   meta: RequestMeta,
 ): Promise<Result> {
+  // The NOC's site has no sign-up: the admin CLI adds its accounts (NOC design §N1.5).
+  if (ctx.config.site !== 'portal') return { ok: false, error: 'Sign-up is not open on this site.' };
   const p = signUpSchema.safeParse(input);
   if (!p.success) return { ok: false, error: firstError(p.error) };
   const { name, email, altcha } = p.data;
@@ -203,6 +205,8 @@ export async function consumeEmailToken(
   if (claimed.changes !== 1) return { ok: false, error: TOKEN_ERRORS.used };
   const u = getUser(ctx, row.userId);
   if (!u) return { ok: false, error: TOKEN_ERRORS.unknown };
+  // The NOC's site signs in staff only, and an added account until its first passkey (NOC design §N1.5).
+  if (!siteAdmits(ctx, u.id)) return { ok: false, error: STAFF_ONLY };
 
   if (row.purpose === 'email_change') {
     const newEmail = row.newEmail!;

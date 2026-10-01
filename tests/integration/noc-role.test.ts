@@ -85,6 +85,11 @@ describe('the NOC operator role', () => {
 });
 
 describe('oc-portal-admin noc-grant / noc-revoke', () => {
+  // The role is given on the NOC's own site (NOC design §N1.5).
+  beforeEach(() => {
+    ctx.config = { ...ctx.config, site: 'noc' };
+  });
+
   it('grants and revokes by email, and says so when there is nothing to do', () => {
     addPasskeyRow(uid);
     expect(runAdmin(ctx, ['noc-grant', 'NIA@example.org'])).toEqual({ code: 0, out: 'nia@example.org is now a NOC operator' });

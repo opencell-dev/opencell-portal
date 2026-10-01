@@ -37,6 +37,8 @@ const demoSchema = z.discriminatedUnion('op', [
 export async function demoAction(input: unknown): Promise<DemoResult> {
   const { user } = await requireAdmin();
   const ctx = appCtx();
+  // NOC design §N1.5: an admin of the subscriber portal is not one here.
+  if (ctx.config.site !== 'noc') return { ok: false, message: 'The demo controls are on the NOC site only.' };
   if (ctx.config.core !== 'fake') return { ok: false, message: 'The demo controls work only with the fake core.' };
   const p = demoSchema.safeParse(input);
   if (!p.success) return { ok: false, message: 'Not a demo control.' };

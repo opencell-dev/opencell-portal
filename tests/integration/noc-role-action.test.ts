@@ -26,7 +26,7 @@ function addPasskeyRow(userId: number) {
 }
 
 beforeEach(() => {
-  ctx = testCtx();
+  ctx = testCtx({ OC_SITE: 'noc' });
   state.ctx = ctx;
   state.fresh = true;
   state.adminId = ctx.db.insert(users).values({ name: 'Root', email: 'root@example.org', emailVerifiedAt: 1, createdAt: 1 }).returning().get().id;
@@ -67,5 +67,12 @@ describe('nocRoleAction', () => {
     expect(rolesOf(ctx, nia)).toEqual(['subscriber']);
     addPasskeyRow(nia);
     expect(await nocRoleAction('nia@example.org', true)).toEqual({ ok: true, message: 'nia@example.org is now a NOC operator.' });
+  });
+
+  it('is refused on the subscriber portal, where the NOC role means nothing (NOC design §N1.5)', async () => {
+    addPasskeyRow(nia);
+    state.ctx = { ...ctx, config: { ...ctx.config, site: 'portal' } };
+    expect(await nocRoleAction('nia@example.org', true)).toEqual({ ok: false, message: 'NOC roles are given on the NOC site.' });
+    expect(rolesOf(ctx, nia)).toEqual(['subscriber']);
   });
 });

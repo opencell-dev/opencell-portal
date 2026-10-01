@@ -63,3 +63,15 @@ export function siteRoute(site: Site, method: string, pathname: string): SiteRou
 export function siteHome(site: Site): string {
   return site === 'noc' ? '/noc' : '/numbers';
 }
+
+/**
+ * The actor a site names when it calls a core for an account (NOC design
+ * §N1.5). The two sites have their own account databases, so their ids
+ * overlap; the NOC's are offset, so the cores' audit (a<actor>) tells them
+ * apart. 0, the site itself (the NOC's shared polls), stays 0.
+ */
+export const NOC_ACTOR_BASE = 1_000_000;
+
+export function coreActor(site: Site, userId: number): number {
+  return site === 'noc' && userId > 0 ? NOC_ACTOR_BASE + userId : userId;
+}

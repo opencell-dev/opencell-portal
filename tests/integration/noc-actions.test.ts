@@ -34,7 +34,7 @@ const N = '+883171746412345';
 let ctx: TestCtx;
 
 beforeEach(() => {
-  ctx = testCtx();
+  ctx = testCtx({ OC_SITE: 'noc' });
   state.ctx = ctx;
   state.admin = true;
   state.noc = true;
@@ -59,8 +59,9 @@ describe('number lookup', () => {
     if (!r.ok) throw new Error(r.message);
     expect(r.cdrs.map((c) => c.result)).toEqual(['no_answer', 'answered']);
     expect(ctx.core.audit.filter((a) => a.op === 'sub.status' || a.op === 'cdr.list').map((a) => [a.actor, a.op])).toEqual([
-      [42, 'sub.status'],
-      [42, 'cdr.list'],
+      // On the NOC site, the core is told the account id offset (NOC design §N1.5).
+      [1_000_042, 'sub.status'],
+      [1_000_042, 'cdr.list'],
     ]);
     expect(listAudit(ctx, 1)[0]).toMatchObject({
       actorId: 42,
@@ -156,6 +157,7 @@ describe('the demo controls', () => {
     state.ctx = {
       ...ctx,
       config: parseConfig({
+        OC_SITE: 'noc',
         OC_ORIGIN: 'https://portal.test',
         OC_RP_ID: 'portal.test',
         OC_SECRET: 'x'.repeat(64),
@@ -168,6 +170,12 @@ describe('the demo controls', () => {
     };
     expect(await demoAction({ op: 'load' })).toEqual({ ok: false, message: 'The demo controls work only with the fake core.' });
     expect(ctx.core).toBeInstanceOf(FakeCore);
+  });
+
+  it('are refused on the subscriber portal, even to an admin with the fake core (NOC design §N1.5)', async () => {
+    state.ctx = { ...ctx, config: { ...ctx.config, site: 'portal' } };
+    expect(await demoAction({ op: 'load' })).toEqual({ ok: false, message: 'The demo controls are on the NOC site only.' });
+    expect(ctx.core.simCells()).toEqual([]);
   });
 
   it('are refused to anyone the guard refuses', async () => {

@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { sessions, userRoles, users } from '@/db/schema';
+import { passkeys, sessions, userRoles, users } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
 
@@ -39,6 +39,22 @@ export function isAdmin(ctx: Ctx, userId: number): boolean {
 export function isStaff(ctx: Ctx, userId: number): boolean {
   const r = rolesOf(ctx, userId);
   return r.includes('admin') || r.includes('noc');
+}
+
+/** What an account the NOC's site does not admit is told (NOC design §N1.5). */
+export const STAFF_ONLY = 'This site is for OpenCell staff only, and this account has no staff role here.';
+
+/**
+ * Whether this site lets the account sign in and keep a session (NOC design
+ * §N1.5). The subscriber portal: every account. The NOC's site: staff, and
+ * an account that has no passkey yet — one the admin CLI added, so that it
+ * can sign in by email link once to add its passkey (it sees only Account
+ * until it is given a role; with a passkey and no role it is signed out).
+ */
+export function siteAdmits(ctx: Ctx, userId: number): boolean {
+  if (ctx.config.site !== 'noc') return true;
+  if (isStaff(ctx, userId)) return true;
+  return ctx.db.select({ id: passkeys.id }).from(passkeys).where(eq(passkeys.userId, userId)).limit(1).all().length === 0;
 }
 
 /**

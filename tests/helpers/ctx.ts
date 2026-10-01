@@ -9,8 +9,12 @@ export const TEST_ORIGIN = 'https://portal.test';
 
 export type TestCtx = Ctx & { mailer: MemoryMailer; core: FakeCore; clock: { t: number } };
 
-/** A context with an in-memory database, a memory mailer, a fake core and a hand-moved clock. */
-export function testCtx(): TestCtx {
+/**
+ * A context with an in-memory database, a memory mailer, a fake core and a
+ * hand-moved clock. `env` adds to or overrides the test configuration, e.g.
+ * `{ OC_SITE: 'noc' }` for the NOC's own site.
+ */
+export function testCtx(env: Record<string, string> = {}): TestCtx {
   const clock = { t: 1_790_000_000_000 };
   const now = () => clock.t;
   const mailer = new MemoryMailer();
@@ -22,6 +26,7 @@ export function testCtx(): TestCtx {
       OC_SECRET: 'test-secret-test-secret-test-secret-0123',
       OC_ALTCHA_COST: '1',
       OC_ALTCHA_COUNTER_MAX: '20',
+      ...env,
     }),
     db: openDb(':memory:'),
     mailer,

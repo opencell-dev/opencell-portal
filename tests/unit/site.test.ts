@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SITE_NOT_FOUND, siteHome, siteRoute } from '@/lib/site';
+import { coreActor, NOC_ACTOR_BASE, SITE_NOT_FOUND, siteHome, siteRoute } from '@/lib/site';
 
 // NOC design §N1.5: one build, two sites. The public portal never serves the
 // NOC; the NOC's own site serves sign-in, accounts, the NOC and the admin
@@ -58,5 +58,13 @@ describe('what each site serves', () => {
   it("has a home page per site: the subscriber's numbers, the operator's NOC", () => {
     expect(siteHome('portal')).toBe('/numbers');
     expect(siteHome('noc')).toBe('/noc');
+  });
+
+  it("offsets the NOC's account ids in what it sends a core; 0 (the site itself) stays 0", () => {
+    expect(NOC_ACTOR_BASE).toBe(1_000_000);
+    expect(coreActor('portal', 42)).toBe(42);
+    expect(coreActor('noc', 42)).toBe(1_000_042);
+    expect(coreActor('portal', 0)).toBe(0);
+    expect(coreActor('noc', 0)).toBe(0);
   });
 });

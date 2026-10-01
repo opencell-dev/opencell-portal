@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { sessions } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 import { hashToken, newToken } from '@/lib/tokens';
-import { ADMIN_SESSION_MS, getUser, isAdmin, isStaff, type User } from '@/lib/users';
+import { ADMIN_SESSION_MS, getUser, isAdmin, isStaff, siteAdmits, type User } from '@/lib/users';
 
 export const SESSION_MS = 30 * 24 * 3600_000;
 export const REAUTH_MS = 5 * 60_000;
@@ -53,7 +53,14 @@ export function sessionFromToken(ctx: Ctx, token: string | undefined): { session
     return null;
   }
   const user = getUser(ctx, session.userId);
-  return user ? { session, user } : null;
+  if (!user) return null;
+  // The NOC's site (NOC design §N1.5): an account it no longer admits (its
+  // staff role was taken away) is signed out here, session by session.
+  if (!siteAdmits(ctx, user.id)) {
+    ctx.db.delete(sessions).where(eq(sessions.id, session.id)).run();
+    return null;
+  }
+  return { session, user };
 }
 
 export function endSession(ctx: Ctx, token: string): void {

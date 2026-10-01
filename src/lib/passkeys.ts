@@ -17,7 +17,7 @@ import type { Ctx } from '@/lib/ctx';
 import { hitIp } from '@/lib/ratelimit';
 import { createSession, isFresh, markReauth, type RequestMeta, type Session } from '@/lib/sessions';
 import { newToken } from '@/lib/tokens';
-import { getUser, isAdmin, isStaff } from '@/lib/users';
+import { getUser, isAdmin, isStaff, STAFF_ONLY, siteAdmits } from '@/lib/users';
 import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
 
 // Passkeys (spec §3) with SimpleWebAuthn: discoverable credentials, so sign-in
@@ -58,8 +58,22 @@ function takeChallenge(ctx: Ctx, id: string, purpose: Purpose, userId: number | 
 }
 
 /** A stable, opaque WebAuthn user handle (no email or id in it). */
+/**
+ * The WebAuthn user handle for an account. Both sites use the RP ID
+ * opencell.k4ozi.com (NOC design §N1.5), and an authenticator replaces a
+ * passkey whose RP ID and user handle match a new one: the NOC's handles
+ * are derived apart, so registering on one site never replaces the
+ * person's passkey for the other, even if the two shared OC_SECRET. The
+ * portal's derivation is unchanged (its passkeys check against it).
+ */
 function userHandle(ctx: Ctx, userId: number): Uint8Array<ArrayBuffer> {
-  return new Uint8Array(createHmac('sha256', ctx.config.secret).update(`user-handle:${userId}`).digest().subarray(0, 16));
+  const label = ctx.config.site === 'noc' ? `user-handle:noc:${userId}` : `user-handle:${userId}`;
+  return new Uint8Array(createHmac('sha256', ctx.config.secret).update(label).digest().subarray(0, 16));
+}
+
+/** Staff passkeys need user verification; on the NOC's site, every passkey does (canUseNoc needs a UV session). */
+function needsUv(ctx: Ctx, userId: number): boolean {
+  return ctx.config.site === 'noc' || isStaff(ctx, userId);
 }
 
 function userHandleB64(ctx: Ctx, userId: number): string {
@@ -111,16 +125,17 @@ export async function registrationOptions(ctx: Ctx, s: Session) {
   if (!u?.emailVerifiedAt) throw new UserError('Only a verified account can add a passkey.');
   const refusal = passkeyChangeRefusal(ctx, s);
   if (refusal) throw 'reauth' in refusal ? new NeedsReauth(refusal.error) : new UserError(refusal.error);
-  const admin = isStaff(ctx, u.id);
+  const uv = needsUv(ctx, u.id);
   const options = await generateRegistrationOptions({
     rpName: 'OpenCell',
     rpID: ctx.config.rpId,
-    userName: u.email,
-    userDisplayName: u.name,
+    // Both sites share the RP ID (NOC design §N1.5): the NOC's passkey says so, for the browser's picker.
+    userName: ctx.config.site === 'noc' ? `${u.email} (OpenCell NOC)` : u.email,
+    userDisplayName: ctx.config.site === 'noc' ? `${u.name} (OpenCell NOC)` : u.name,
     userID: userHandle(ctx, u.id),
     attestationType: 'none',
     excludeCredentials: listPasskeys(ctx, u.id).map((p) => ({ id: p.id, transports: transportsOf(p) })),
-    authenticatorSelection: { residentKey: 'required', userVerification: admin ? 'required' : 'preferred' },
+    authenticatorSelection: { residentKey: 'required', userVerification: uv ? 'required' : 'preferred' },
   });
   return { challengeId: saveChallenge(ctx, 'register', options.challenge, u.id, s.id), options };
 }
@@ -150,7 +165,7 @@ export async function finishRegistration(
   if (!live) return { ok: false, error: 'The passkey request expired. Please try again.' };
   const refusal = passkeyChangeRefusal(ctx, live);
   if (refusal) return refusal;
-  const admin = isStaff(ctx, s.userId);
+  const uv = needsUv(ctx, s.userId);
   let v: Awaited<ReturnType<typeof verifyRegistrationResponse>>;
   try {
     v = await verifyRegistrationResponse({
@@ -158,7 +173,7 @@ export async function finishRegistration(
       expectedChallenge,
       expectedOrigin: ctx.config.origin,
       expectedRPID: ctx.config.rpId,
-      requireUserVerification: admin,
+      requireUserVerification: uv,
     });
   } catch {
     return { ok: false, error: 'The passkey could not be checked. Please try again.' };
@@ -284,6 +299,8 @@ export async function finishSignIn(
   // admin session from a non-UV assertion is simply not admin-capable (see sessions.ts).
   const check = await checkAssertion(ctx, p, response, expectedChallenge, false, meta);
   if (!check) return { ok: false, error: 'The passkey could not be checked. Please try again.' };
+  // The NOC's site signs in staff only (NOC design §N1.5).
+  if (!siteAdmits(ctx, p.userId)) return { ok: false, error: STAFF_ONLY };
   const { token } = createSession(ctx, p.userId, 'passkey', meta, { uv: check.userVerified, credentialId: p.id });
   writeAudit(ctx, { actorId: p.userId, action: 'session.passkey', target: `user:${p.userId}`, ip: meta.ip });
   return { ok: true, userId: p.userId, sessionToken: token };

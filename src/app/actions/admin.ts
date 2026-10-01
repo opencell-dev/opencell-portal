@@ -38,9 +38,11 @@ export async function promoteAction(email: string): Promise<AdminResult> {
 export async function nocRoleAction(email: string, grant: boolean): Promise<AdminResult> {
   const f = await freshAdmin();
   if (!f.ok) return f;
+  const ctx = appCtx();
+  // NOC design §N1.5: the NOC has its own site and accounts.
+  if (ctx.config.site !== 'noc') return { ok: false, message: 'NOC roles are given on the NOC site.' };
   const p = z.object({ email: emailSchema, grant: z.boolean() }).safeParse({ email, grant });
   if (!p.success) return { ok: false, message: 'Please enter a valid email address.' };
-  const ctx = appCtx();
   const u = findUserByEmail(ctx, p.data.email);
   if (!u?.emailVerifiedAt) return { ok: false, message: 'No verified account has that address.' };
   if (!p.data.grant) {

@@ -4,6 +4,7 @@ import { CoreCards } from '@/components/core-cards';
 import { listAudit } from '@/lib/audit';
 import { coreStatuses } from '@/lib/core-status';
 import { appCtx } from '@/lib/ctx';
+import { coreActor } from '@/lib/site';
 import { requireAdmin } from '@/server/request';
 
 export const metadata: Metadata = { title: 'Admin' };
@@ -11,7 +12,7 @@ export const metadata: Metadata = { title: 'Admin' };
 export default async function Admin() {
   const { user } = await requireAdmin();
   const ctx = appCtx();
-  const cores = await coreStatuses(ctx, user.id);
+  const cores = await coreStatuses(ctx, coreActor(ctx.config.site, user.id));
   const audit = listAudit(ctx, 20);
   return (
     <div className="space-y-8">
