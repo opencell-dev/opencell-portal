@@ -95,6 +95,8 @@ export interface NetworkSummary {
   calls: number;
   /** Activated subscribers (core.status). */
   subscribers: number;
+  /** Review M5: true when at least one core's cell list did not come, so cellsEnabled/cellsOnline are incomplete, not "all accounted for". */
+  cellsUnknown: boolean;
   /** Most severe first. */
   attention: Attention[];
 }
@@ -117,6 +119,7 @@ export function summarize(s: NetworkSnapshot): NetworkSummary {
     terminals: 0,
     calls: 0,
     subscribers: 0,
+    cellsUnknown: false,
     attention: [],
   };
   for (const c of s.cores) {
@@ -128,6 +131,7 @@ export function summarize(s: NetworkSnapshot): NetworkSummary {
       out.subscribers += c.status.subscribers;
     }
     if (!c.cells) {
+      out.cellsUnknown = true;
       if (c.status) out.attention.push({ severity: 'warning', core: c.id, text: `${c.id}'s cell list did not come within ${s.deadlineMs / 1000} s` });
       continue;
     }

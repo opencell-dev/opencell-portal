@@ -165,6 +165,31 @@ describe('route guards', () => {
     expect(functions).toBeGreaterThan(0);
   });
 
+  it('pins the exact guard per export in admin-noc.ts (review M1): only lookupNumberAction may use requireNoc', () => {
+    const src = readFileSync(join(ACTIONS, 'admin-noc.ts'), 'utf8');
+    const sf = parse(src, 'admin-noc.ts');
+    const imported = requestImports(sf);
+    const want: Record<string, readonly string[]> = {
+      lookupNumberAction: ['requireNoc'],
+      demoAction: ['requireAdmin'],
+    };
+    const seen = new Set<string>();
+    for (const st of sf.statements) {
+      if (!ts.isFunctionDeclaration(st) || !st.name || !hasModifier(st, ts.SyntaxKind.AsyncKeyword) || !hasModifier(st, ts.SyntaxKind.ExportKeyword)) {
+        continue;
+      }
+      const name = st.name.text;
+      const guards = want[name];
+      if (!guards) continue; // an export the test above already covers generally
+      seen.add(name);
+      expect(bodyProblem(st.body, guards, imported), name).toBeUndefined();
+      // And the other guard must NOT satisfy it: demoAction must not accept requireNoc, nor lookupNumberAction requireAdmin.
+      const other = guards[0] === 'requireNoc' ? 'requireAdmin' : 'requireNoc';
+      expect(bodyProblem(st.body, [other], imported), `${name} must not also accept ${other}`).not.toBeUndefined();
+    }
+    expect([...seen].sort()).toEqual(Object.keys(want).sort());
+  });
+
   it('every account action checks for a signed-in user first', () => {
     const r = actionProblems(readFileSync(join(ACTIONS, 'account.ts'), 'utf8'), ['requireUser'], 'account.ts');
     expect(r.problems).toEqual([]);

@@ -14,6 +14,9 @@ describe('the overview (NOC design §9.1)', () => {
     for (const t of ['Cores answering', '1 / 2', 'Cells online', '1 / 2', 'Terminals registered', '7', 'Calls now', '2', 'Subscribers', '12']) {
       expect(tiles).toContain(t);
     }
+    // Review M5: core2 is Unreachable, so its cells are unknown — the cells
+    // tile must say so, not read as "all accounted for".
+    expect(tiles).toContain('cells unknown for some cores');
     const table = renderToStaticMarkup(createElement(CoreTable, { cores: snap.cores }));
     expect(table).toMatch(/core1.*Answering.*oc-core-1.*v0\.3\.1.*3 h 2 min.*1 \/ 2/s);
     expect(table).toMatch(/core2.*Unreachable/s);

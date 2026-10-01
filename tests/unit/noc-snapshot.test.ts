@@ -102,6 +102,19 @@ describe('the summary and its "needs attention" list', () => {
     );
     expect(s).toMatchObject({ coresUp: 2, coresTotal: 3, cellsEnabled: 2, cellsOnline: 2, cellsRevoked: 1, terminals: 5, calls: 3, subscribers: 5 });
     expect(s.attention).toEqual([{ severity: 'critical', core: 'core3', text: 'core3 did not answer within 3 s' }]);
+    // Review M5: core3's cells are unknown (it is unreachable), so the cells
+    // tile must not read as "all is well" just because the others are.
+    expect(s.cellsUnknown).toBe(true);
+  });
+
+  it('keeps cellsUnknown false when every core that answered also gave its cell list', () => {
+    const s = summarize(
+      snap([
+        { id: 'core1', where: 'x', status, cells: [cell({})] },
+        { id: 'core2', where: 'y', status, cells: [] },
+      ]),
+    );
+    expect(s.cellsUnknown).toBe(false);
   });
 
   it(
@@ -141,6 +154,7 @@ describe('the summary and its "needs attention" list', () => {
     );
     expect(s.attention).toEqual([{ severity: 'warning', core: 'core1', text: "core1's cell list did not come within 3 s" }]);
     expect(s.cellsRevoked).toBe(1);
+    expect(s.cellsUnknown).toBe(true);
   });
 
   it('lists every cell with its core, cores in config order', () => {

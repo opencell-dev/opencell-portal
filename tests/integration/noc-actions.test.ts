@@ -94,21 +94,23 @@ describe('number lookup', () => {
     expect(ctx.core.audit.length).toBe(before);
   });
 
-  it('gives a plain message when the core fails or limits, never the error itself', async () => {
+  it('gives a plain message when the core fails or limits, never the error itself, and never logs the number (review M2)', async () => {
     vi.spyOn(ctx.core, 'subStatus').mockRejectedValueOnce(new CoreError('unavailable', 'connect ECONNREFUSED 10.0.0.60:7444'));
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     expect(await lookupNumberAction(N)).toEqual({ ok: false, message: 'fake did not answer; try again.' });
-    expect(log).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('fake failed: CoreError unavailable'));
+    expect(log.mock.calls.flat().some((a) => String(a).includes(N))).toBe(false);
     vi.spyOn(ctx.core, 'subStatus').mockRejectedValueOnce(new CoreError('rate_limited'));
     expect(await lookupNumberAction(N)).toEqual({ ok: false, message: 'fake is limiting these requests; try again in a minute.' });
     log.mockRestore();
   });
 
-  it('is rate-limited per admin (noc_lookup)', async () => {
+  it('is rate-limited per admin (noc_lookup), and audits a limited refusal (review M3)', async () => {
     setLimit(ctx, 'noc_lookup', 2);
     await lookupNumberAction(N);
     await lookupNumberAction(N);
     expect(await lookupNumberAction(N)).toEqual({ ok: false, message: 'Too many number lookups this hour. Please try again later.' });
+    expect(listAudit(ctx, 1)[0]).toMatchObject({ actorId: 42, action: 'noc.lookup.limited', target: `number:${N}` });
   });
 
   it('lets a NOC operator look up a number too (ruling 2026-10-01 #8/#9), but not the demo controls', async () => {

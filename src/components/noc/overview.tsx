@@ -17,16 +17,16 @@ function Tile({ label, value, sub, tone }: { label: string; value: string; sub?:
 /** The overview's headline numbers (NOC design §9.1), all live from the cores that answered. */
 export function KpiTiles({ s }: { s: NetworkSummary }) {
   const coresTone: Tone = s.coresUp === s.coresTotal ? 'ok' : s.coresUp === 0 ? 'bad' : 'warn';
-  const cellsTone: Tone = s.cellsOnline === s.cellsEnabled ? 'ok' : 'warn';
+  // Review M5: a core whose cell list did not come is not "all is well" just
+  // because the cells that did come are all online.
+  const cellsTone: Tone = s.cellsOnline === s.cellsEnabled && !s.cellsUnknown ? 'ok' : 'warn';
+  const cellsSub = [s.cellsRevoked > 0 ? `${s.cellsRevoked} revoked, not counted` : null, s.cellsUnknown ? 'cells unknown for some cores' : null]
+    .filter((x): x is string => x !== null)
+    .join('; ');
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
       <Tile label="Cores answering" value={`${s.coresUp} / ${s.coresTotal}`} tone={coresTone} />
-      <Tile
-        label="Cells online"
-        value={`${s.cellsOnline} / ${s.cellsEnabled}`}
-        sub={s.cellsRevoked > 0 ? `${s.cellsRevoked} revoked, not counted` : undefined}
-        tone={cellsTone}
-      />
+      <Tile label="Cells online" value={`${s.cellsOnline} / ${s.cellsEnabled}`} sub={cellsSub || undefined} tone={cellsTone} />
       <Tile label="Terminals registered" value={String(s.terminals)} />
       <Tile label="Calls now" value={String(s.calls)} />
       <Tile label="Subscribers" value={String(s.subscribers)} sub="activated numbers" />
