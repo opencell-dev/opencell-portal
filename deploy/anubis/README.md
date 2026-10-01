@@ -49,7 +49,31 @@ The portal side (`deploy/portal.env.example`) has `PORT=3001`,
 Because it reads the port from the file, deploys work both before and after
 the switch.
 
-## The policy (rules in order; the first match decides)
+## The NOC's site (NOC design §N1.5)
+
+The NOC runs the same build on its own guest (LXC 118 `oc-noc`, 10.0.0.63,
+`OC_SITE=noc`, `deploy/noc.env.example`) behind its own Anubis, set up by
+`lxc-bootstrap.sh NGINX_PROXY_IP noc`, which runs `install-anubis.sh noc`.
+That installs `oc-noc.env` and `oc-noc.botPolicies.yaml` under the usual
+instance name (`/etc/anubis/oc-portal.env`, `anubis@oc-portal`), so the unit,
+its drop-in and `oc-portal-deploy status` are the same on both guests.
+
+- `oc-noc.env` is `oc-portal.env` with `COOKIE_DOMAIN` and
+  `REDIRECT_DOMAINS` set to `noc.opencell.k4ozi.com`. The portal's pass
+  cookie (`Domain=opencell.k4ozi.com`) also reaches the NOC's host, but
+  Anubis names its cookie after its settings, so the two never mix.
+- `oc-noc.botPolicies.yaml` is the portal's policy without rule 4 (no public
+  pages: the NOC's front page is the NOC) and without the ALTCHA worker (no
+  sign-up). `tests/anubis/anubis-noc.test.ts` checks both against the
+  portal's and runs them in front of an `OC_SITE=noc` build.
+- nginx-proxy: the NOC's proxy host gets `npm-proxy-host.advanced.conf` as its
+  advanced config (NPM's default `location /` with X-Forwarded-For
+  `$remote_addr` only, the text applied to the portal's host 3 on
+  2026-09-30; see "Client addresses" for why the `more_clear_input_headers`
+  one-liner does not apply to the live nginx), and a custom location
+  `/auth/email/` with the access log off, as host 3 has.
+
+
 
 | # | rule | matches | action | why |
 | --- | --- | --- | --- | --- |

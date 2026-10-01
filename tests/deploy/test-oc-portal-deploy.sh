@@ -21,6 +21,18 @@ check 2 "a tag without v is not deployed" $D deploy 1.2.3
 check 2 "a missing tag is refused" $D deploy v99.99.99
 check 2 "rollback takes no argument" $D rollback v1.0.0
 check 1 "the network step runs through OC_PORTAL_SSH" $D status
+# NOC design §N1.5: OC_PORTAL_HOST names the guest's SSH alias (oc-noc for
+# the NOC's guest); anything that is not an alias is refused before ssh runs.
+check 2 "OC_PORTAL_HOST must be an SSH host alias" env OC_PORTAL_HOST='oc-noc;id' $D status
+check 2 "...not an option either" env OC_PORTAL_HOST='-oProxyCommand=x' $D status
+h_bin="$(mktemp -d)" || exit 1
+printf '#!/bin/bash\necho "ssh $*" >&2\nexit 255\n' > "$h_bin/ssh"
+chmod +x "$h_bin/ssh"
+h_out="$(env -u OC_PORTAL_SSH PATH="$h_bin:$PATH" XDG_RUNTIME_DIR="$h_bin" OC_PORTAL_HOST=oc-noc $D status 2>&1)"
+if grep -q ' oc-noc bash -s' <<<"$h_out"; then echo "ok   OC_PORTAL_HOST=oc-noc: the deploy's ssh goes to the oc-noc alias"; else echo "FAIL OC_PORTAL_HOST=oc-noc: $h_out"; fail=1; fi
+h_out="$(env -u OC_PORTAL_SSH -u OC_PORTAL_HOST PATH="$h_bin:$PATH" XDG_RUNTIME_DIR="$h_bin" $D status 2>&1)"
+if grep -q ' oc-portal bash -s' <<<"$h_out"; then echo "ok   without OC_PORTAL_HOST: the oc-portal alias, as before"; else echo "FAIL the default alias: $h_out"; fail=1; fi
+rm -rf "$h_bin"
 bash -n $D deploy/lxc-bootstrap.sh deploy/oc-portal-admin deploy/oc-portal-backup deploy/anubis/install-anubis.sh && echo "ok   bash -n" || fail=1
 
 # --- fake-root simulation of the remote script ------------------------------
@@ -726,6 +738,23 @@ echo "# another edit" >> "$a_src/anubis/oc-portal.botPolicies.yaml"
 a_check 0 "anubis: with port 3000 still taken (the portal not yet moved to 3001)"
 simassert "anubis: ...neither enables nor starts it (a reboot must not race the portal for 3000), and says why" bash -c "! grep -qE '^(enable|(re)?start) ' '$st/systemctl.log' && grep -q 'port 3000' <<<\"\$1\" && grep -q 'enable --now' <<<\"\$1\"" _ "$a_out"
 rm -f "$st/port-busy"
+
+# NOC design §N1.5: the NOC's guest gets its own settings and policy, under the same instance name.
+a_noc() { env PATH="$a_bin:$PATH" OC_PORTAL_ROOT="$a_root" A_DL="$a_src/dl" GNUPGHOME=/nonexistent bash "$A" "$@" 2>&1; }
+a_out="$(a_noc admin)"; got=$?
+if [ "$got" -eq 2 ]; then echo "ok   anubis: refuses a site that is neither portal nor noc"; else echo "FAIL anubis: site 'admin' (exit $got): $a_out"; fail=1; fi
+a_out="$(a_noc noc extra)"; got=$?
+if [ "$got" -eq 2 ]; then echo "ok   anubis: refuses a second argument"; else echo "FAIL anubis: two arguments (exit $got): $a_out"; fail=1; fi
+touch "$st/active"; : > "$st/systemctl.log"
+a_out="$(a_noc noc)"; got=$?
+if [ "$got" -eq 0 ]; then echo "ok   anubis: the NOC's site (install-anubis.sh noc)"; else echo "FAIL anubis: noc (exit $got): $a_out"; fail=1; fi
+simassert "anubis: ...places the NOC's environment as the instance's" cmp -s "$a_src/anubis/oc-noc.env" "$a_root/etc/anubis/oc-portal.env"
+simassert "anubis: ...and the NOC's policy" cmp -s "$a_src/anubis/oc-noc.botPolicies.yaml" "$a_root/etc/anubis/oc-portal.botPolicies.yaml"
+simassert "anubis: ...keeps the signing key" [ "$(cat "$a_root/etc/anubis/oc-portal.key.env")" = "$key_before" ]
+simassert "anubis: ...and restarts the running instance for the change" grep -qx 'restart anubis@oc-portal.service' "$st/systemctl.log"
+simassert "anubis: lxc-bootstrap passes its site to install-anubis.sh" grep -q 'anubis/install-anubis.sh" "$SITE"' deploy/lxc-bootstrap.sh
+# (With the fakes first on PATH, so even a broken check could install nothing here.)
+simassert "anubis: lxc-bootstrap refuses a site that is neither portal nor noc, before installing anything" bash -c "env PATH='$a_bin:$PATH' OC_PORTAL_ROOT='$a_root' bash deploy/lxc-bootstrap.sh 10.0.0.100 admin >/dev/null 2>&1; [ \$? -eq 2 ] && [ \"\$(wc -l < '$st/apt.log')\" = 1 ]"
 
 fi
 

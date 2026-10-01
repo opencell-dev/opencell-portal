@@ -1,8 +1,13 @@
 #!/bin/bash
 # Install or update Anubis in front of the portal, on the portal guest
-# (LXC 116), as root. lxc-bootstrap.sh runs it; it can also be run on its own
-# from a copy of deploy/ (see deploy/anubis/README.md):
-#   bash deploy/anubis/install-anubis.sh
+# (LXC 116) or the NOC's guest (LXC 118, NOC design §N1.5), as root.
+# lxc-bootstrap.sh runs it; it can also be run on its own from a copy of
+# deploy/ (see deploy/anubis/README.md):
+#   bash deploy/anubis/install-anubis.sh [portal|noc]
+# The site (default portal) picks the settings and the policy: oc-portal.env
+# and oc-portal.botPolicies.yaml, or oc-noc.env and oc-noc.botPolicies.yaml.
+# Either is installed under the one instance name, anubis@oc-portal, so the
+# unit, its drop-in and oc-portal-deploy's status line are the same on both.
 # Idempotent: it installs the pinned .deb (release.env) only when that exact
 # version is not already installed, after checking its SHA-256 and its
 # signature by the pinned key; it puts the instance's environment, policy and
@@ -16,6 +21,12 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${OC_PORTAL_ROOT:-}"
+SITE="${1:-portal}"
+case "$SITE" in
+  portal | noc) ;;
+  *) echo "usage: install-anubis.sh [portal|noc] (got '$SITE')" >&2; exit 2 ;;
+esac
+[ $# -le 1 ] || { echo "usage: install-anubis.sh [portal|noc]" >&2; exit 2; }
 INSTANCE=oc-portal
 UNIT="anubis@$INSTANCE.service"
 PORT=3000
@@ -70,8 +81,8 @@ place() { # mode source destination
   chmod "$1" "$3"
 }
 install -d -m 0755 "$ROOT/etc/anubis" "$ROOT/etc/systemd/system/$UNIT.d"
-place 0644 "$HERE/oc-portal.env" "$ROOT/etc/anubis/$INSTANCE.env"
-place 0644 "$HERE/oc-portal.botPolicies.yaml" "$ROOT/etc/anubis/$INSTANCE.botPolicies.yaml"
+place 0644 "$HERE/oc-$SITE.env" "$ROOT/etc/anubis/$INSTANCE.env"
+place 0644 "$HERE/oc-$SITE.botPolicies.yaml" "$ROOT/etc/anubis/$INSTANCE.botPolicies.yaml"
 place 0644 "$HERE/opencell.conf" "$ROOT/etc/systemd/system/$UNIT.d/opencell.conf"
 
 key="$ROOT/etc/anubis/$INSTANCE.key.env"

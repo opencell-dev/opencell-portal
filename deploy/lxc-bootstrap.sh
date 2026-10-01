@@ -1,14 +1,20 @@
 #!/bin/bash
-# First setup of the portal guest (LXC 116), run once inside it as root:
-#   bash lxc-bootstrap.sh NGINX_PROXY_IP
+# First setup of the portal guest (LXC 116) or the NOC's guest (LXC 118,
+# NOC design §N1.5), run once inside it as root:
+#   bash lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc]
+# The two differ only in Anubis's settings and policy (the site argument,
+# default portal) and in what portal.env says (portal.env.example or
+# noc.env.example).
 # Installs Node.js 22 (NodeSource), sqlite3 and the build tools, creates the
 # oc-portal user and directories, the firewall, the backup timer, and Anubis
 # in front of the portal (anubis/install-anubis.sh: nginx-proxy -> :3000
 # Anubis -> 127.0.0.1:3001 the portal). The deploy script (oc-portal-deploy)
 # does the rest. Safe to re-run: every step checks before it changes.
 set -euo pipefail
-PROXY_IP="${1:?usage: lxc-bootstrap.sh NGINX_PROXY_IP}"
+PROXY_IP="${1:?usage: lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc]}"
+SITE="${2:-portal}"
 [[ "$PROXY_IP" =~ ^10\.0\.0\.[0-9]{1,3}$ ]] || { echo "expected an address on internal (10.0.0.x)" >&2; exit 2; }
+[[ "$SITE" =~ ^(portal|noc)$ ]] || { echo "usage: lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc] (got '$SITE')" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -58,8 +64,10 @@ if [ "$UNITS_CHANGED" -eq 1 ]; then
 fi
 
 # Anubis, the pinned release, verified; its instance anubis@oc-portal on :3000.
-bash "$HERE/anubis/install-anubis.sh"
+bash "$HERE/anubis/install-anubis.sh" "$SITE"
 
 echo "bootstrap done: node $(node --version), $(anubis --version 2>/dev/null || echo 'anubis ?')"
-echo "now write /etc/opencell/portal.env (from portal.env.example: PORT=3001, OC_LISTEN=127.0.0.1,"
+example=portal.env.example
+if [ "$SITE" = noc ]; then example=noc.env.example; fi
+echo "now write /etc/opencell/portal.env (from $example: PORT=3001, OC_LISTEN=127.0.0.1,"
 echo "OC_TRUSTED_PROXY=127.0.0.1) and portal-smtp.env, then deploy"

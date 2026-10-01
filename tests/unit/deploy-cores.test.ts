@@ -29,6 +29,18 @@ describe('the deploy files for two cores', () => {
     for (const e of c.cores) expect([e.ca, e.cert, e.key]).toEqual(['core-ca.crt', 'core-client.crt', 'core-client.key']);
   });
 
+  it('noc.env.example is the NOC site on its own name, with the same cores, files and listeners (NOC design §N1.5)', () => {
+    const portal = envFile('portal.env.example');
+    const noc = envFile('noc.env.example');
+    const c = parseConfig({ ...noc, OC_SECRET: 'x'.repeat(64), OC_MAIL: 'outbox' });
+    expect([c.site, c.origin, c.rpId]).toEqual(['noc', 'https://noc.opencell.k4ozi.com', 'opencell.k4ozi.com']);
+    expect(parseConfig({ ...portal, OC_SECRET: 'x'.repeat(64), OC_MAIL: 'outbox' }).site).toBe('portal');
+    const differ = Object.keys({ ...portal, ...noc })
+      .filter((k) => portal[k] !== noc[k])
+      .sort();
+    expect(differ).toEqual(['OC_ORIGIN', 'OC_SITE']);
+  });
+
   it("oc-cores-route.service routes the cores' WireGuard network through oc-core-1", () => {
     const unit = readFileSync(join(DEPLOY, 'oc-cores-route.service'), 'utf8');
     expect(unit).toMatch(/^ExecStart=\/usr\/bin\/ip route replace 10\.99\.0\.0\/24 via 10\.0\.0\.60 dev eth0$/m);

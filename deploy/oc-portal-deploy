@@ -4,8 +4,10 @@
 #   deploy/oc-portal-deploy deploy vX.Y.Z
 #   deploy/oc-portal-deploy rollback
 #   deploy/oc-portal-deploy status
-# OC_PORTAL_SSH overrides how to reach the guest (default: through the
-# Proxmox host as jump host). OC_PORTAL_ROOT is a guest-side-only override
+# OC_PORTAL_HOST names the guest: an SSH host alias in the operator's SSH
+# config (default oc-portal, the portal guest; oc-noc for the NOC's guest,
+# NOC design §N1.5). OC_PORTAL_SSH overrides how to reach the guest outright
+# (default: that alias, through the Proxmox host as jump host). OC_PORTAL_ROOT is a guest-side-only override
 # (read by the remote script, never set here): tests use it to point every
 # absolute path below at a scratch tree instead of the real guest; it is
 # unset in production, so the paths below are the real absolute ones.
@@ -71,15 +73,20 @@ usage() {
 }
 
 # Builds $SSH. OC_PORTAL_SSH (split on whitespace) replaces it outright.
-# Otherwise: the `oc-portal` host from the operator's own SSH config
-# (OC_SSH_CONFIG, default ~/.ssh/cm/oc-portal.conf -- not in this repo; it
-# defines `oc-portal` and its jump host), multiplexed over one master
+# Otherwise: the OC_PORTAL_HOST host (default `oc-portal`) from the
+# operator's own SSH config (OC_SSH_CONFIG, default ~/.ssh/cm/oc-portal.conf
+# -- not in this repo; it defines `oc-portal`, `oc-noc` and their jump host), multiplexed over one master
 # connection whose socket lives in a private directory we own (refusing a
 # symlink or someone else's directory rather than trusting it). ssh refuses
 # to run at all when a ControlPath reaches 108 bytes, and the master binds
 # a temporary name 17 bytes longer than the path while it starts, so a
 # directory that would push the socket past that is refused up front.
 setup_ssh() {
+  local host="${OC_PORTAL_HOST:-oc-portal}"
+  if ! [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+    echo "refusing: OC_PORTAL_HOST '$host' is not an SSH host alias" >&2
+    exit 2
+  fi
   if [ -n "${OC_PORTAL_SSH:-}" ]; then
     read -r -a SSH <<<"$OC_PORTAL_SSH"
     return 0
@@ -102,7 +109,7 @@ setup_ssh() {
   SSH=(ssh -F "${OC_SSH_CONFIG:-$HOME/.ssh/cm/oc-portal.conf}"
     -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
     -o ControlMaster=auto -o "ControlPath=$dir/%C" -o ControlPersist=60
-    oc-portal)
+    "$host")
 }
 
 remote() { "${SSH[@]}" "bash -s" -- "$@"; }
