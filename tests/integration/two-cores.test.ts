@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TlsCore } from '@/core/tls-client';
 import type { Ctx } from '@/lib/ctx';
 import { coreStatuses } from '@/lib/core-status';
+import { networkSnapshot, summarize } from '@/lib/noc/snapshot';
 import { CORE_DIR, makeTestPki, type RealCore, startRealCore, type TestPki } from '../helpers/real-core';
 
 // Plan P4b: the portal and two real oc-core processes, configured as
@@ -73,6 +74,20 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     expect(s1.status).not.toBeNull();
   });
 
+  it("gives the NOC both cores' status and cells, asked as the portal itself (NOC design §5)", async () => {
+    const id = await ctx.core.cellAdd(7, 'NOC test 1', 'part97', 3);
+    const snap = await networkSnapshot(ctx);
+    expect(snap.cores.map((c) => [c.id, c.status?.name])).toEqual([
+      ['core1', 'oc-core-t1'],
+      ['core2', 'oc-core-t2'],
+    ]);
+    expect(snap.cores[0].cells?.find((c) => c.cellId === id)).toMatchObject({ name: 'NOC test 1', mode: 'part97', group: 3, online: false });
+    expect(snap.cores[1].cells).toEqual([]);
+    expect(summarize(snap)).toMatchObject({ coresUp: 2, coresTotal: 2 });
+    expect(audit(c1)).toContain('a0 core.status ok');
+    expect(audit(c1)).toContain('a0 cell.status ok');
+  });
+
   it('shows a core that stopped as unreachable, and the other as before', async () => {
     await c2.done();
     const t0 = Date.now();
@@ -80,5 +95,10 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     expect(Date.now() - t0).toBeLessThan(6000);
     expect(rows[0].status?.name).toBe('oc-core-t1');
     expect(rows[1].status).toBeNull();
+    const t1 = Date.now();
+    const snap = await networkSnapshot(ctx);
+    expect(Date.now() - t1).toBeLessThan(6000);
+    expect(snap.cores[1]).toMatchObject({ id: 'core2', status: null, cells: null });
+    expect(summarize(snap).attention[0]).toMatchObject({ severity: 'critical', core: 'core2' });
   });
 });

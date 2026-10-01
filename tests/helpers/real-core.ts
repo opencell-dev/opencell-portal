@@ -93,6 +93,9 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
       'key_id = 1',
       `name = ${opts.name ?? 'oc-core-test'}`,
       `block = ${opts.block ?? '8831717 1'}`,
+      // Core v0.3 (network-core §22) wants its service numbers in a block it is
+      // home for; v0.2 takes the line too. The echo is NPA-555-00100 of the block.
+      `echo = +${(opts.block ?? '8831717 1').split(' ')[0]}55500100`,
       `cell_socket = ${t}/core.sock`,
       `admin_socket = ${t}/admin.sock`,
       `api_listen = 127.0.0.1:${port}`,
