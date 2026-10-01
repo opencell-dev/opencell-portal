@@ -17,9 +17,12 @@ export default async function Admin() {
     <div className="space-y-8">
       <h1 className="text-2xl font-semibold">Admin</h1>
       <CoreCards rows={cores} />
-      <p>
+      <p className="flex flex-wrap gap-x-6">
         <Link href="/admin/users" className="text-brand underline">
           Accounts and admins
+        </Link>
+        <Link href="/noc" prefetch={false} className="text-brand underline">
+          Network operations (NOC)
         </Link>
       </p>
       <section className="space-y-2">

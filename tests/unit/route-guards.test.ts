@@ -123,6 +123,9 @@ function pageProblems(src: string, guards: readonly string[], file = 'page.tsx')
 const APP = 'src/app/(app)';
 const ACTIONS = 'src/app/actions';
 const ADMIN_GUARDS = ['freshAdmin', 'requireAdmin'] as const;
+// admin-noc.ts (ruling 2026-10-01 #8/#9): the number lookup is open to staff
+// (requireNoc), while the demo controls stay admin-only (requireAdmin).
+const STAFF_ACTION_GUARDS = ['freshAdmin', 'requireAdmin', 'requireNoc'] as const;
 
 describe('route guards', () => {
   it('every admin page calls requireAdmin first', () => {
@@ -133,8 +136,13 @@ describe('route guards', () => {
 
   it('every NOC page calls requireNoc or requireAdmin first (NOC design §4)', () => {
     const noc = pages(join(APP, 'noc'));
-    expect(noc.length).toBeGreaterThanOrEqual(1);
+    expect(noc.length).toBeGreaterThanOrEqual(7);
     for (const p of noc) expect(pageProblems(readFileSync(p, 'utf8'), ['requireNoc', 'requireAdmin'], p)).toEqual([]);
+  });
+
+  it('the NOC demo page is admin-only; the lookup page is open to staff (ruling 2026-10-01 #8/#9)', () => {
+    expect(pageProblems(readFileSync(join(APP, 'noc/demo/page.tsx'), 'utf8'), ['requireAdmin'], 'noc/demo/page.tsx')).toEqual([]);
+    expect(pageProblems(readFileSync(join(APP, 'noc/lookup/page.tsx'), 'utf8'), ['requireNoc'], 'noc/lookup/page.tsx')).toEqual([]);
   });
 
   it('every signed-in page calls requireUser, requireNoc or requireAdmin first', () => {
@@ -144,9 +152,13 @@ describe('route guards', () => {
   it('every admin action checks for a (fresh) admin first', () => {
     const files = readdirSync(ACTIONS).filter((f) => /^admin.*\.tsx?$/.test(f));
     expect(files).toContain('admin.ts');
+    expect(files).toContain('admin-noc.ts');
     let functions = 0;
     for (const f of files) {
-      const r = actionProblems(readFileSync(join(ACTIONS, f), 'utf8'), ADMIN_GUARDS, f);
+      // admin-noc.ts (ruling 2026-10-01 #8/#9): its number lookup may use
+      // requireNoc; every other admin action file stays admin-only.
+      const guards = f === 'admin-noc.ts' ? STAFF_ACTION_GUARDS : ADMIN_GUARDS;
+      const r = actionProblems(readFileSync(join(ACTIONS, f), 'utf8'), guards, f);
       expect(r.problems).toEqual([]);
       functions += r.functions;
     }

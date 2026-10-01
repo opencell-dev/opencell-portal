@@ -36,9 +36,10 @@ describe('the overview (NOC design §9.1)', () => {
     expect(renderToStaticMarkup(createElement(DemoBanner, { fake: false }))).toBe('');
   });
 
-  it('offers the admin-only sections to an admin only, and the demo only on the fake core', () => {
-    expect(nocLinks(false, true).map((l) => l.href)).toEqual(['/noc', '/noc/cells', '/noc/topology']);
+  it('offers number lookup to any staff viewer (ruling 2026-10-01 #8/#9), and the demo only to an admin on the fake core', () => {
+    expect(nocLinks(false, true).map((l) => l.href)).toEqual(['/noc', '/noc/cells', '/noc/topology', '/noc/lookup']);
     expect(nocLinks(true, false).map((l) => l.href)).toEqual(['/noc', '/noc/cells', '/noc/topology', '/noc/lookup']);
     expect(nocLinks(true, true).map((l) => l.href)).toContain('/noc/demo');
+    expect(nocLinks(false, true).map((l) => l.href)).not.toContain('/noc/demo');
   });
 });

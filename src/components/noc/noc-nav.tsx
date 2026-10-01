@@ -5,13 +5,17 @@ export interface NocLink {
   label: string;
 }
 
-/** The NOC's sections (NOC design §9); the admin-only ones only for an admin. */
+/**
+ * The NOC's sections (NOC design §9). Number lookup is open to any staff
+ * viewer, admin or NOC operator (ruling 2026-10-01 #8/#9, overriding portal
+ * spec §10); the demo controls stay admin-only.
+ */
 export function nocLinks(admin: boolean, fake: boolean): NocLink[] {
   return [
     { href: '/noc', label: 'Overview' },
     { href: '/noc/cells', label: 'Cells' },
     { href: '/noc/topology', label: 'Topology' },
-    ...(admin ? [{ href: '/noc/lookup', label: 'Number lookup' }] : []),
+    { href: '/noc/lookup', label: 'Number lookup' },
     ...(admin && fake ? [{ href: '/noc/demo', label: 'Demo controls' }] : []),
   ];
 }
