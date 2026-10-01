@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { Site } from '@/lib/site';
 
 /** HOST:PORT, the port 1–65535 (no IPv6 literal). */
 function addrOk(v: string): boolean {
@@ -11,6 +12,9 @@ const envSchema = z
     OC_ORIGIN: z.url({ protocol: /^https?$/ }),
     OC_RP_ID: z.string().min(1),
     OC_SECRET: z.string().min(32, 'OC_SECRET must be at least 32 characters'),
+    // Which site this process is (NOC design §N1.5): the subscriber portal,
+    // or the operators' NOC on its own guest (src/lib/site.ts).
+    OC_SITE: z.enum(['portal', 'noc'], { error: 'OC_SITE is "portal" or "noc"' }).default('portal'),
     OC_DB_PATH: z.string().min(1).default('./data/portal.db'),
     OC_CORE: z.enum(['fake', 'tls'], { error: 'OC_CORE is "fake" or "tls"' }).default('fake'),
     // OC_CORE=tls: the cores' admin API (portal spec §7). One core:
@@ -146,6 +150,8 @@ function readCores(e: Env, env: Record<string, string | undefined>, issues: stri
 }
 
 export type Config = {
+  /** The subscriber portal or the NOC's own site (NOC design §N1.5). */
+  site: Site;
   origin: string;
   rpId: string;
   secret: string;
@@ -177,6 +183,7 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
   const origin = new URL(e.OC_ORIGIN).origin;
   const secure = origin.startsWith('https:');
   return {
+    site: e.OC_SITE,
     origin,
     rpId: e.OC_RP_ID,
     secret: e.OC_SECRET,

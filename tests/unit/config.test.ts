@@ -154,3 +154,24 @@ describe('parseConfig: several cores (OC_CORES, plan P4b)', () => {
     expect(() => parseConfig({ ...base, OC_CORES: 'core1' })).toThrow(/OC_CORES.*OC_CORE=tls/);
   });
 });
+
+describe('OC_SITE (NOC design §N1.5)', () => {
+  it('is the subscriber portal unless set', () => {
+    expect(parseConfig(base).site).toBe('portal');
+    expect(parseConfig({ ...base, OC_SITE: 'portal' }).site).toBe('portal');
+  });
+
+  it("is the NOC's own site, on its own name under the shared passkey RP ID", () => {
+    const c = parseConfig({ ...base, OC_SITE: 'noc', OC_ORIGIN: 'https://noc.opencell.k4ozi.com' });
+    expect(c.site).toBe('noc');
+    expect(c.origin).toBe('https://noc.opencell.k4ozi.com');
+    expect(c.rpId).toBe('opencell.k4ozi.com');
+    expect(c.sessionCookie).toBe('__Host-oc_session');
+  });
+
+  it('takes nothing else', () => {
+    expect(() => parseConfig({ ...base, OC_SITE: 'admin' })).toThrow(/OC_SITE is "portal" or "noc"/);
+    expect(() => parseConfig({ ...base, OC_SITE: 'NOC' })).toThrow(/OC_SITE/);
+    expect(() => parseConfig({ ...base, OC_SITE: '' })).toThrow(/OC_SITE/);
+  });
+});

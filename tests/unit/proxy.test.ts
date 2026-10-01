@@ -106,3 +106,24 @@ describe('proxy: the emailed-link page takes only its Confirm action (Anubis giv
     expect((await proxy(emailReq('POST', { 'next-action': CONFIRM }))).status).toBe(403);
   });
 });
+
+describe('proxy on the subscriber portal: no NOC (NOC design §N1.5)', () => {
+  it.each(['/noc', '/noc/', '/noc/cells', '/noc/cores/core1', '/noc/lookup', '/noc/demo', '/NOC'])('shows the 404 page for %s', async (path) => {
+    const res = await proxy(req('GET', undefined, {}, path));
+    expect(res.headers.get('x-middleware-rewrite')).toBe(`${ORIGIN}/_oc/not-found`);
+    expect(res.headers.get('content-security-policy')).toMatch(/nonce-/);
+  });
+
+  it('a POST to the NOC is not served either', async () => {
+    const res = await proxy(req('POST', ORIGIN, { 'next-action': 'abc' }, '/noc/lookup'));
+    expect(res.headers.get('x-middleware-rewrite')).toBe(`${ORIGIN}/_oc/not-found`);
+  });
+
+  it('serves the subscriber pages and the front page as before', async () => {
+    for (const path of ['/', '/numbers', '/sign-up', '/admin', '/coverage']) {
+      const res = await proxy(req('GET', undefined, {}, path));
+      expect(res.headers.get('x-middleware-rewrite'), path).toBeNull();
+      expect(res.status, path).toBe(200);
+    }
+  });
+});

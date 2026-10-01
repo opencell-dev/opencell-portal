@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { type NextRequest, NextResponse } from 'next/server';
 import { config as portalConfig } from '@/config';
 import { isConfirmActionRequest, isEmailLinkPath, loadConfirmActionIds } from '@/lib/email-link-guard';
+import { SITE_NOT_FOUND, siteRoute } from '@/lib/site';
 import { buildCsp, originAllowed, securityHeaders } from '@/lib/web-security';
 
 const SAFE = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -27,12 +28,19 @@ export async function proxy(req: NextRequest) {
   if (!SAFE.has(req.method) && isEmailLinkPath(req.nextUrl.pathname) && !(await isConfirmActionRequest(req, loadConfirmActionIds()))) {
     return new NextResponse('Forbidden: this page only confirms its link.', { status: 403 });
   }
+  // One build, two sites (src/lib/site.ts): what this site does not serve
+  // gets the 404 page; the NOC site's front page is the NOC.
+  const route = siteRoute(c.site, req.method, req.nextUrl.pathname);
+  if (route.kind === 'redirect') return NextResponse.redirect(new URL(route.to, c.origin), 307);
   const nonce = randomBytes(16).toString('base64');
   const csp = buildCsp(nonce, { dev: process.env.NODE_ENV === 'development', https });
   const headers = new Headers(req.headers);
   headers.set('x-nonce', nonce);
   headers.set('content-security-policy', csp);
-  const res = NextResponse.next({ request: { headers } });
+  const res =
+    route.kind === 'not-found'
+      ? NextResponse.rewrite(new URL(SITE_NOT_FOUND, req.url), { request: { headers } })
+      : NextResponse.next({ request: { headers } });
   res.headers.set('Content-Security-Policy', csp);
   for (const [k, v] of securityHeaders(https)) res.headers.set(k, v);
   return res;
