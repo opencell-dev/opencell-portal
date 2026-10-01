@@ -5,6 +5,7 @@ import { PasskeyRegister } from '@/components/passkey-register';
 import { appCtx } from '@/lib/ctx';
 import { ownedNumbers } from '@/lib/owned-numbers';
 import { listPasskeys } from '@/lib/passkeys';
+import { isStaff } from '@/lib/users';
 import { requireUser } from '@/server/request';
 
 export const metadata: Metadata = { title: 'Account' };
@@ -12,10 +13,13 @@ export const metadata: Metadata = { title: 'Account' };
 const day = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : 'never');
 
 export default async function Account({ searchParams }: { searchParams: Promise<{ email?: string }> }) {
-  const { user } = await requireUser();
+  const { user, session } = await requireUser();
   const { email } = await searchParams;
   const ctx = appCtx();
   const keys = listPasskeys(ctx, user.id);
+  // The NOC's own site (NOC design §N1.5): no directory; a note for an added account and for an email-link session.
+  const nocSite = ctx.config.site === 'noc';
+  const staff = isStaff(ctx, user.id);
   return (
     <div className="max-w-2xl space-y-10">
       <section className="space-y-2">
@@ -24,6 +28,17 @@ export default async function Account({ searchParams }: { searchParams: Promise<
         <p>
           {user.name} · <span data-testid="account-email">{user.email}</span>
         </p>
+        {nocSite && !staff && (
+          <p role="note" className="rounded border border-amber-500 p-3 text-sm">
+            This account has no staff role yet. Add a passkey below. You are then signed out until an administrator gives you a
+            role; after that, sign in with the passkey.
+          </p>
+        )}
+        {nocSite && staff && session.method !== 'passkey' && (
+          <p role="note" className="rounded border border-amber-500 p-3 text-sm">
+            The NOC needs a sign-in with a passkey: sign out, then sign in with it.
+          </p>
+        )}
       </section>
 
       <section className="space-y-3">
@@ -31,20 +46,22 @@ export default async function Account({ searchParams }: { searchParams: Promise<
         <ChangeEmailForm />
       </section>
 
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Directory</h2>
-        <p>
-          {user.directoryListed
-            ? 'You are listed: signed-in subscribers can find your name and numbers.'
-            : 'You are not listed in the directory.'}
-        </p>
-        <form action={setDirectoryAction}>
-          <input type="hidden" name="listed" value={user.directoryListed ? '0' : '1'} />
-          <button type="submit" className="rounded border border-slate-300 px-4 py-2 dark:border-slate-700">
-            {user.directoryListed ? 'Stop listing me' : 'List me in the directory'}
-          </button>
-        </form>
-      </section>
+      {!nocSite && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">Directory</h2>
+          <p>
+            {user.directoryListed
+              ? 'You are listed: signed-in subscribers can find your name and numbers.'
+              : 'You are not listed in the directory.'}
+          </p>
+          <form action={setDirectoryAction}>
+            <input type="hidden" name="listed" value={user.directoryListed ? '0' : '1'} />
+            <button type="submit" className="rounded border border-slate-300 px-4 py-2 dark:border-slate-700">
+              {user.directoryListed ? 'Stop listing me' : 'List me in the directory'}
+            </button>
+          </form>
+        </section>
+      )}
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Passkeys</h2>

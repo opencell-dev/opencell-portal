@@ -15,7 +15,7 @@ vi.mock('@/server/request', () => ({
   freshAdmin: async () => (state.fresh ? { ok: true, s: { user: { id: state.adminId } } } : { ok: false, reauth: true }),
 }));
 
-const { nocRoleAction } = await import('@/app/actions/admin');
+const { nocRoleAction, promoteAction } = await import('@/app/actions/admin');
 
 let ctx: TestCtx;
 let nia: number;
@@ -74,5 +74,15 @@ describe('nocRoleAction', () => {
     state.ctx = { ...ctx, config: { ...ctx.config, site: 'portal' } };
     expect(await nocRoleAction('nia@example.org', true)).toEqual({ ok: false, message: 'NOC roles are given on the NOC site.' });
     expect(rolesOf(ctx, nia)).toEqual(['subscriber']);
+  });
+
+  it('promoting an admin on the NOC site needs a passkey on the account first, as the role does (review I3)', async () => {
+    expect(await promoteAction('nia@example.org')).toEqual({
+      ok: false,
+      message: 'nia@example.org has no passkey yet: ask them to add one on Account first.',
+    });
+    expect(rolesOf(ctx, nia)).toEqual(['subscriber']);
+    addPasskeyRow(nia);
+    expect(await promoteAction('nia@example.org')).toEqual({ ok: true, message: 'nia@example.org is now an admin.' });
   });
 });

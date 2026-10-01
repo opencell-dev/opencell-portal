@@ -4,6 +4,7 @@ import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { SiteHeader } from '@/components/site-header';
+import { siteRoute } from '@/lib/site';
 
 // Anubis (deploy/anubis) gives each challenge rule its own pass: the pass for
 // the email-link rule is cleared by any request under the proof-of-work rule.
@@ -31,11 +32,30 @@ describe('SiteHeader and Anubis', () => {
   });
 
   it.each([false, true])('does not prefetch a challenged page (signed in: %s)', (signedIn) => {
-    const all = links(SiteHeader({ signedIn }));
+    const all = links(SiteHeader({ signedIn, site: 'portal' }));
     expect(all.length).toBeGreaterThan(3);
     for (const l of all) {
       if (PUBLIC.has(l.props.href)) expect(l.props.prefetch, l.props.href).not.toBe(false);
       else expect(l.props.prefetch, l.props.href).toBe(false);
+    }
+  });
+
+  // NOC design §N1.5: the NOC's site has no public page (its Anubis policy,
+  // deploy/anubis/oc-noc.botPolicies.yaml, has no public-pages rule), so its
+  // header prefetches nothing, and links only to what that site serves.
+  it.each([false, true])('on the NOC site, prefetches nothing and links to no subscriber page (signed in: %s)', (signedIn) => {
+    const all = links(SiteHeader({ signedIn, site: 'noc' }));
+    expect(all.length).toBeGreaterThan(0);
+    for (const l of all) {
+      expect(l.props.prefetch, l.props.href).toBe(false);
+      expect(siteRoute('noc', 'GET', l.props.href).kind, l.props.href).not.toBe('not-found');
+    }
+    expect(all.map((l) => l.props.href)).toEqual(signedIn ? ['/noc', '/account'] : ['/noc', '/sign-in']);
+  });
+
+  it('on the portal, links to no NOC page', () => {
+    for (const signedIn of [false, true]) {
+      for (const l of links(SiteHeader({ signedIn, site: 'portal' }))) expect(siteRoute('portal', 'GET', l.props.href).kind, l.props.href).toBe('serve');
     }
   });
 });

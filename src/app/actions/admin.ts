@@ -20,6 +20,10 @@ export async function promoteAction(email: string): Promise<AdminResult> {
   const ctx = appCtx();
   const u = findUserByEmail(ctx, p.data.email);
   if (!u?.emailVerifiedAt) return { ok: false, message: 'No verified account has that address.' };
+  // The NOC's site (NOC design §N1.5), as for the NOC role (review I3): staff cannot add a first passkey.
+  if (ctx.config.site === 'noc' && listPasskeys(ctx, u.id).length === 0) {
+    return { ok: false, message: `${u.email} has no passkey yet: ask them to add one on Account first.` };
+  }
   let added: boolean;
   try {
     added = grantRole(ctx, u.id, 'admin', f.s.user.id);

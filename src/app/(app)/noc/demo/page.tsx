@@ -7,11 +7,11 @@ import { requireAdmin } from '@/server/request';
 
 export const metadata: Metadata = { title: 'Demo controls · NOC' };
 
-/** Admin only, and only on the fake core (NOC design §10): a 404 in production. */
+/** Admin only, on the NOC's site, and only on the fake core (NOC design §10, §N1.5): a 404 in production. */
 export default async function NocDemo() {
   await requireAdmin();
   const ctx = appCtx();
-  if (ctx.config.core !== 'fake') notFound();
+  if (ctx.config.site !== 'noc' || ctx.config.core !== 'fake') notFound();
   const cores: DemoCore[] = [];
   for (const h of ctx.cores) {
     const fake = asFakeCore(h.core);

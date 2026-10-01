@@ -63,13 +63,16 @@ export async function requireAdmin() {
 
 /**
  * A NOC page (NOC design §4): an admin or a NOC operator on a UV passkey
- * session (canUseNoc). Everyone else as requireAdmin: signed out or not
+ * session (canUseNoc), on the NOC's own site (§N1.5). Everyone else as requireAdmin: signed out or not
  * staff, a 404; staff whose session can't open the NOC, a redirect to
  * /sign-in?noc=1 to sign in with a passkey.
  */
 export async function requireNoc() {
-  const s = await currentSession();
   const ctx = appCtx();
+  // The NOC is on its own site (NOC design §N1.5): a 404 on the subscriber
+  // portal for everyone, whatever page a NOC server action is posted to.
+  if (ctx.config.site !== 'noc') notFound();
+  const s = await currentSession();
   if (s && !canUseNoc(ctx, s.session) && isStaff(ctx, s.user.id)) redirect('/sign-in?noc=1');
   if (!s || !canUseNoc(ctx, s.session)) notFound();
   return s;

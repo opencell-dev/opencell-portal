@@ -42,13 +42,15 @@ export default async function AdminUsers() {
         <h2 className="text-lg font-semibold">Make an admin</h2>
         <PromoteForm />
       </section>
-      <section className="max-w-md space-y-2">
-        <h2 className="text-lg font-semibold">NOC operators</h2>
-        <p className="text-sm text-slate-500">
-          A NOC operator sees the NOC (cores, cells, topology, number lookup) but not the admin pages, accounts or the demo controls.
-        </p>
-        <NocRoleForm />
-      </section>
+      {ctx.config.site === 'noc' && (
+        <section className="max-w-md space-y-2">
+          <h2 className="text-lg font-semibold">NOC operators</h2>
+          <p className="text-sm text-slate-500">
+            A NOC operator sees the NOC (cores, cells, topology, number lookup) but not the admin pages, accounts or the demo controls.
+          </p>
+          <NocRoleForm />
+        </section>
+      )}
     </div>
   );
 }

@@ -22,9 +22,11 @@ export default async function Admin() {
         <Link href="/admin/users" className="text-brand underline">
           Accounts and admins
         </Link>
-        <Link href="/noc" prefetch={false} className="text-brand underline">
-          Network operations (NOC)
-        </Link>
+        {ctx.config.site === 'noc' && (
+          <Link href="/noc" prefetch={false} className="text-brand underline">
+            Network operations (NOC)
+          </Link>
+        )}
       </p>
       <section className="space-y-2">
         <h2 className="text-lg font-semibold">Recent portal actions</h2>

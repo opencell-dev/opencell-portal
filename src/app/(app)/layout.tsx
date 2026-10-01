@@ -13,17 +13,23 @@ const TABS: Tab[] = [
 ];
 
 // Navigation only: each page checks the session itself (src/server/request.ts).
+// The subscriber portal has no NOC tab; the NOC's site (NOC design §N1.5) has
+// only the NOC, the admin pages and Account.
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const { session } = await requireUser();
   const ctx = appCtx();
-  const tabs = [
-    ...TABS,
-    ...(canUseNoc(ctx, session) ? [{ href: '/noc', label: 'NOC' }] : []),
-    ...(canUseAdmin(ctx, session) ? [{ href: '/admin', label: 'Admin' }] : []),
-  ];
+  const site = ctx.config.site;
+  const tabs: Tab[] =
+    site === 'noc'
+      ? [
+          ...(canUseNoc(ctx, session) ? [{ href: '/noc', label: 'NOC' }] : []),
+          ...(canUseAdmin(ctx, session) ? [{ href: '/admin', label: 'Admin' }] : []),
+          { href: '/account', label: 'Account' },
+        ]
+      : [...TABS, ...(canUseAdmin(ctx, session) ? [{ href: '/admin', label: 'Admin' }] : [])];
   return (
     <>
-      <SiteHeader signedIn />
+      <SiteHeader signedIn site={site} />
       <Tabs tabs={tabs} />
       <main className="mx-auto max-w-5xl px-4 py-6 has-[[data-noc]]:max-w-7xl">{children}</main>
     </>
