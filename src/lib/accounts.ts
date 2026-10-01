@@ -9,6 +9,7 @@ import { emailChangedNotice, emailChangeMail, magicLinkMail, type Template, veri
 import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
 import { hit, hitIp, longestWindowMs, rateKey } from '@/lib/ratelimit';
 import { createSession, type RequestMeta } from '@/lib/sessions';
+import { coreActor } from '@/lib/site';
 import { hashToken, newToken } from '@/lib/tokens';
 import { findUserByEmail, getUser, isLastAdmin, STAFF_ONLY, siteAdmits } from '@/lib/users';
 import { emailSchema, firstError, nameSchema } from '@/lib/validation';
@@ -309,14 +310,18 @@ export async function deleteAccount(
   // Only numbers that actually change land in `changed`: a 'keep' choice
   // makes no core call, so there's nothing to report for it, on success or
   // on a later number's failure.
+  // M7 (final review): the core call names the actor the site's account id
+  // maps to (coreActor), as every other core call does — dead code today
+  // (ownedNumbers() returns []), but not once P2 gives it a body.
+  const actor = coreActor(ctx.config.site, userId);
   const changed: Record<string, string> = {};
   for (const n of owned) {
     try {
       if (!n.activated) {
-        await ctx.core.subRelease(userId, n.number);
+        await ctx.core.subRelease(actor, n.number);
         changed[n.number] = 'released';
       } else if (choices[n.number] === 'disable') {
-        await ctx.core.subDisable(userId, n.number);
+        await ctx.core.subDisable(actor, n.number);
         changed[n.number] = 'disabled';
       }
     } catch (e) {

@@ -462,6 +462,28 @@ describe('account page services (spec §3)', () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.ip === null)).toBe(true);
   });
+
+  // M7 (final review): dead code today (ownedNumbers() returns []), but not
+  // once P2 gives it a body -- every core call names the actor the site's
+  // account id maps to, as lookupNumber and coreStatuses already do.
+  it('on the NOC site, tells the core its account id plus the offset, not the raw one', async () => {
+    const noc = testCtx({ OC_SITE: 'noc' });
+    const userId = noc.db.insert(users).values({ name: 'Nia', email: 'nia@example.org', emailVerifiedAt: 1, createdAt: 1 }).returning().get().id;
+    const released = '+883171746412345';
+    const disabled = '+883171746412346';
+    await noc.core.subCreate(userId, released);
+    await noc.core.subCreate(userId, disabled);
+    const owned = [
+      { number: released, activated: false },
+      { number: disabled, activated: true },
+    ];
+    const r = await deleteAccount(noc, userId, { confirmEmail: 'nia@example.org', choices: { [disabled]: 'disable' } }, meta, owned);
+    expect(r).toEqual({ ok: true });
+    expect(noc.core.audit.filter((a) => a.op === 'sub.release' || a.op === 'sub.disable').map((a) => a.actor)).toEqual([
+      1_000_000 + userId,
+      1_000_000 + userId,
+    ]);
+  });
 });
 
 describe('housekeeping (spec §10)', () => {
