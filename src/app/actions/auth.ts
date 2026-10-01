@@ -16,7 +16,7 @@ import {
   signInOptions,
 } from '@/lib/passkeys';
 import { SESSION_MS } from '@/lib/sessions';
-import { ADMIN_SESSION_MS, isAdmin } from '@/lib/users';
+import { ADMIN_SESSION_MS, isStaff } from '@/lib/users';
 import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
 import { currentSession, requestMeta, requireUser, setSessionCookie } from '@/server/request';
 
@@ -41,7 +41,7 @@ const asAttestation = (v: unknown) => attestation.parse(v) as unknown as Registr
 
 function cookieExpiry(userId: number): number {
   const ctx = appCtx();
-  return ctx.now() + (isAdmin(ctx, userId) ? ADMIN_SESSION_MS : SESSION_MS);
+  return ctx.now() + (isStaff(ctx, userId) ? ADMIN_SESSION_MS : SESSION_MS);
 }
 
 export async function signUpAction(_prev: FormState, form: FormData): Promise<FormState> {

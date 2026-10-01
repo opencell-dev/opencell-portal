@@ -3,7 +3,8 @@ import { sessions, userRoles, users } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
 
-export type Role = 'subscriber' | 'operator' | 'admin';
+/** 'noc': a NOC operator (NOC design §4): the network views, read-only in N1. */
+export type Role = 'subscriber' | 'operator' | 'noc' | 'admin';
 export type GrantedRole = Exclude<Role, 'subscriber'>;
 export type User = typeof users.$inferSelect;
 
@@ -23,7 +24,7 @@ export function rolesOf(ctx: Ctx, userId: number): Role[] {
   if (!u) return [];
   const granted = ctx.db.select().from(userRoles).where(eq(userRoles.userId, userId)).all().map((r) => r.role);
   const out: Role[] = u.emailVerifiedAt ? ['subscriber'] : [];
-  for (const r of ['operator', 'admin'] as const) if (granted.includes(r)) out.push(r);
+  for (const r of ['operator', 'noc', 'admin'] as const) if (granted.includes(r)) out.push(r);
   return out;
 }
 
@@ -32,8 +33,17 @@ export function isAdmin(ctx: Ctx, userId: number): boolean {
 }
 
 /**
+ * Staff: an admin or a NOC operator (NOC design §4). Staff sessions last
+ * 12 h, staff passkeys need user verification, and only staff open the NOC.
+ */
+export function isStaff(ctx: Ctx, userId: number): boolean {
+  const r = rolesOf(ctx, userId);
+  return r.includes('admin') || r.includes('noc');
+}
+
+/**
  * Grant a role; true when it was added, false when the account already had it
- * (then nothing is audited). Admin sessions last 12 h, so open sessions are shortened to that.
+ * (then nothing is audited). Staff sessions (admin, noc) last 12 h, so open sessions are shortened to that.
  */
 export function grantRole(ctx: Ctx, userId: number, role: GrantedRole, byId: number | null): boolean {
   const u = getUser(ctx, userId);
@@ -42,7 +52,7 @@ export function grantRole(ctx: Ctx, userId: number, role: GrantedRole, byId: num
   const now = ctx.now();
   const added = ctx.db.transaction((tx) => {
     const ins = tx.insert(userRoles).values({ userId, role, grantedAt: now, grantedBy: byId }).onConflictDoNothing().run();
-    if (role === 'admin') {
+    if (role === 'admin' || role === 'noc') {
       tx.update(sessions)
         .set({ expiresAt: sql`min(${sessions.expiresAt}, ${now + ADMIN_SESSION_MS})` })
         .where(eq(sessions.userId, userId))

@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { sessions } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 import { hashToken, newToken } from '@/lib/tokens';
-import { ADMIN_SESSION_MS, getUser, isAdmin, type User } from '@/lib/users';
+import { ADMIN_SESSION_MS, getUser, isAdmin, isStaff, type User } from '@/lib/users';
 
 export const SESSION_MS = 30 * 24 * 3600_000;
 export const REAUTH_MS = 5 * 60_000;
@@ -25,7 +25,7 @@ export interface SessionOpts {
 export function createSession(ctx: Ctx, userId: number, method: SessionMethod, meta: RequestMeta, opts: SessionOpts = {}) {
   const token = newToken();
   const now = ctx.now();
-  const expiresAt = now + (isAdmin(ctx, userId) ? ADMIN_SESSION_MS : SESSION_MS);
+  const expiresAt = now + (isStaff(ctx, userId) ? ADMIN_SESSION_MS : SESSION_MS);
   ctx.db
     .insert(sessions)
     .values({
@@ -78,4 +78,13 @@ export function isFresh(ctx: Ctx, s: Session): boolean {
  */
 export function canUseAdmin(ctx: Ctx, s: Session): boolean {
   return s.method === 'passkey' && s.uv && isAdmin(ctx, s.userId) && ctx.now() - s.createdAt < ADMIN_SESSION_MS;
+}
+
+/**
+ * NOC pages (NOC design §4) need staff (an admin or a NOC operator) on a
+ * UV-verified passkey session no older than the 12 h staff window: the same
+ * bar as canUseAdmin, with the NOC role admitted too.
+ */
+export function canUseNoc(ctx: Ctx, s: Session): boolean {
+  return s.method === 'passkey' && s.uv && isStaff(ctx, s.userId) && ctx.now() - s.createdAt < ADMIN_SESSION_MS;
 }

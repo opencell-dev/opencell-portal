@@ -17,7 +17,7 @@ import type { Ctx } from '@/lib/ctx';
 import { hitIp } from '@/lib/ratelimit';
 import { createSession, isFresh, markReauth, type RequestMeta, type Session } from '@/lib/sessions';
 import { newToken } from '@/lib/tokens';
-import { getUser, isAdmin } from '@/lib/users';
+import { getUser, isAdmin, isStaff } from '@/lib/users';
 import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
 
 // Passkeys (spec §3) with SimpleWebAuthn: discoverable credentials, so sign-in
@@ -94,13 +94,13 @@ const SIGN_IN_WITH_PASSKEY = 'Admins sign in with a passkey, not an email link, 
 const CONFIRM_FRESH = 'Admins confirm with a fresh passkey before changing passkeys.';
 
 /**
- * Admins change passkeys only from a passkey session confirmed (with UV) in
+ * Staff (admins, NOC operators) change passkeys only from a passkey session confirmed (with UV) in
  * the last 5 minutes. Null when this session may; otherwise why not. Only a
  * passkey session can be confirmed again (finishReauth refuses the others),
  * so only that refusal carries `reauth`.
  */
 function passkeyChangeRefusal(ctx: Ctx, s: Session): NeedsFreshPasskey | { ok: false; error: string } | null {
-  if (!isAdmin(ctx, s.userId)) return null;
+  if (!isStaff(ctx, s.userId)) return null;
   if (s.method !== 'passkey') return { ok: false, error: SIGN_IN_WITH_PASSKEY };
   if (!isFresh(ctx, s)) return { ok: false, reauth: true, error: CONFIRM_FRESH };
   return null;
@@ -111,7 +111,7 @@ export async function registrationOptions(ctx: Ctx, s: Session) {
   if (!u?.emailVerifiedAt) throw new UserError('Only a verified account can add a passkey.');
   const refusal = passkeyChangeRefusal(ctx, s);
   if (refusal) throw 'reauth' in refusal ? new NeedsReauth(refusal.error) : new UserError(refusal.error);
-  const admin = isAdmin(ctx, u.id);
+  const admin = isStaff(ctx, u.id);
   const options = await generateRegistrationOptions({
     rpName: 'OpenCell',
     rpID: ctx.config.rpId,
@@ -150,7 +150,7 @@ export async function finishRegistration(
   if (!live) return { ok: false, error: 'The passkey request expired. Please try again.' };
   const refusal = passkeyChangeRefusal(ctx, live);
   if (refusal) return refusal;
-  const admin = isAdmin(ctx, s.userId);
+  const admin = isStaff(ctx, s.userId);
   let v: Awaited<ReturnType<typeof verifyRegistrationResponse>>;
   try {
     v = await verifyRegistrationResponse({
@@ -328,7 +328,9 @@ export function removePasskey(ctx: Ctx, s: Session, passkeyId: string, meta: Req
   const own = listPasskeys(ctx, s.userId);
   const target = own.find((p) => p.id === passkeyId);
   if (!target) return { ok: false, error: 'No such passkey.' };
-  if (isAdmin(ctx, s.userId) && own.length <= 1) return { ok: false, error: 'Admins need at least one passkey.' };
+  if (isStaff(ctx, s.userId) && own.length <= 1) {
+    return { ok: false, error: isAdmin(ctx, s.userId) ? 'Admins need at least one passkey.' : 'NOC operators need at least one passkey.' };
+  }
   ctx.db.delete(passkeys).where(and(eq(passkeys.id, passkeyId), eq(passkeys.userId, s.userId))).run();
   // The credential is gone: any session it opened is no longer backed by anything real.
   ctx.db.delete(sessions).where(eq(sessions.credentialId, passkeyId)).run();

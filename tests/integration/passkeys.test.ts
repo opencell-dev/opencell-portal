@@ -452,6 +452,20 @@ describe('admins (spec §3)', () => {
     expect((await finishRegistration(ctx, fresh2, good.challengeId, auth.create(good.options), undefined, meta)).ok).toBe(true);
   });
 
+  it('holds a NOC operator to the staff passkey rules: UV to register, a fresh session to change, one passkey kept (NOC design §4)', async () => {
+    const uid = addUser('nia@example.org');
+    await register(uid);
+    grantRole(ctx, uid, 'noc', null);
+    await expect(registrationOptions(ctx, emailSession(uid))).rejects.toBeInstanceOf(UserError);
+    const { session: fresh } = await freshAdminSession(uid);
+    const { options } = await registrationOptions(ctx, fresh);
+    expect(options.authenticatorSelection).toMatchObject({ userVerification: 'required' });
+    expect(removePasskey(ctx, fresh, listPasskeys(ctx, uid)[0].id, meta)).toEqual({
+      ok: false,
+      error: 'NOC operators need at least one passkey.',
+    });
+  });
+
   it('re-checks freshness for an admin at registration finish time', async () => {
     const uid = addUser('root@example.org');
     await register(uid);

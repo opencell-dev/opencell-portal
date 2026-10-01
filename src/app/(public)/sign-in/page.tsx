@@ -5,8 +5,8 @@ import { PasskeySignIn } from '@/components/passkey-sign-in';
 
 export const metadata: Metadata = { title: 'Sign in' };
 
-export default async function SignIn({ searchParams }: { searchParams: Promise<{ admin?: string }> }) {
-  const { admin } = await searchParams;
+export default async function SignIn({ searchParams }: { searchParams: Promise<{ admin?: string; noc?: string }> }) {
+  const { admin, noc } = await searchParams;
   return (
     <div className="max-w-md space-y-8">
       <h1 className="text-2xl font-semibold">Sign in</h1>
@@ -15,8 +15,13 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<{
           Admin pages need a sign-in with a passkey. An email link is not enough.
         </p>
       )}
+      {!admin && noc && (
+        <p role="status" className="rounded border border-amber-500 p-3 text-sm">
+          NOC pages need a sign-in with a passkey. An email link is not enough.
+        </p>
+      )}
       <section className="space-y-2">
-        <PasskeySignIn next={admin ? '/admin' : '/numbers'} />
+        <PasskeySignIn next={admin ? '/admin' : noc ? '/noc' : '/numbers'} />
       </section>
       <section className="space-y-2">
         <h2 className="font-medium">No passkey on this device?</h2>

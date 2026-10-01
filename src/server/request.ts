@@ -1,8 +1,8 @@
 import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import { appCtx } from '@/lib/ctx';
-import { canUseAdmin, isFresh, type RequestMeta, sessionFromToken } from '@/lib/sessions';
-import { isAdmin } from '@/lib/users';
+import { canUseAdmin, canUseNoc, isFresh, type RequestMeta, sessionFromToken } from '@/lib/sessions';
+import { isAdmin, isStaff } from '@/lib/users';
 
 // Request-level helpers for pages and server actions. Every page and every
 // action that needs an account calls one of the require* functions itself:
@@ -58,6 +58,20 @@ export async function requireAdmin() {
   const ctx = appCtx();
   if (s && !canUseAdmin(ctx, s.session) && isAdmin(ctx, s.user.id)) redirect('/sign-in?admin=1');
   if (!s || !canUseAdmin(ctx, s.session)) notFound();
+  return s;
+}
+
+/**
+ * A NOC page (NOC design §4): an admin or a NOC operator on a UV passkey
+ * session (canUseNoc). Everyone else as requireAdmin: signed out or not
+ * staff, a 404; staff whose session can't open the NOC, a redirect to
+ * /sign-in?noc=1 to sign in with a passkey.
+ */
+export async function requireNoc() {
+  const s = await currentSession();
+  const ctx = appCtx();
+  if (s && !canUseNoc(ctx, s.session) && isStaff(ctx, s.user.id)) redirect('/sign-in?noc=1');
+  if (!s || !canUseNoc(ctx, s.session)) notFound();
   return s;
 }
 

@@ -18,7 +18,9 @@ export const userRoles = sqliteTable(
   'user_roles',
   {
     userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-    role: text('role', { enum: ['operator', 'admin'] }).notNull(),
+    // 'noc' (NOC design §4): a value, not a schema change: SQLite keeps the
+    // column a plain TEXT with no CHECK, so no migration (drizzle-kit agrees).
+    role: text('role', { enum: ['operator', 'noc', 'admin'] }).notNull(),
     grantedAt: integer('granted_at').notNull(),
     grantedBy: integer('granted_by'),
   },
