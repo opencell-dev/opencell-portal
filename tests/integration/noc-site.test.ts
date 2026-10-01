@@ -106,10 +106,12 @@ describe('only staff sign in, after the first passkey', () => {
     // Its passkey does not sign it in either, and opens no session.
     expect(await passkeySignIn()).toEqual({ ok: false, error: STAFF_ONLY });
     expect(sessionCount(userId)).toBe(0);
-    // Nor does an email link now.
-    await requestMagicLink(ctx, { email: 'nia@example.org' }, meta);
+    // Nor does an email link now -- and asking for one mails nothing (M5,
+    // final review): confirming it would only spend the token on the same refusal.
+    const sentBefore = ctx.mailer.sent.length;
+    expect(await requestMagicLink(ctx, { email: 'nia@example.org' }, meta)).toEqual({ ok: true });
     await ctx.mailQueue.drain();
-    expect(await consumeEmailToken(ctx, tokenOf(ctx.mailer.lastLink('nia@example.org')), meta)).toEqual({ ok: false, error: STAFF_ONLY });
+    expect(ctx.mailer.sent).toHaveLength(sentBefore);
     expect(sessionCount(userId)).toBe(0);
   });
 

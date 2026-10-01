@@ -156,6 +156,11 @@ export async function requestMagicLink(ctx: Ctx, input: { email: unknown }, meta
   if (!lim.ok) return { ok: false, error: lim.message };
   const u = findUserByEmail(ctx, email);
   if (!u) return { ok: true };
+  // M5 (final review): an account this site would refuse at sign-in anyway
+  // (a passkey, no staff role) gets no mail either — the token would only
+  // be used up for a STAFF_ONLY refusal. The answer is the same either way,
+  // so this leaks nothing about which accounts exist.
+  if (!siteAdmits(ctx, u.id)) return { ok: true };
   if (!u.emailVerifiedAt) {
     mail(ctx, email, verifyMail(linkFor(ctx, issueEmailToken(ctx, u.id, 'verify')), ctx.config.origin, ctx.config.site));
   } else {

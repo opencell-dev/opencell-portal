@@ -1,5 +1,16 @@
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { expect, type Page, test } from '@playwright/test';
 import { addPasskey, addPasskeyDevice, liftLimits, mailedLink, NOC_DIR, NOC_URL, nocAdmin, signInWithPasskey, uniqueEmail, watchCsp } from './helpers';
+
+/** How many messages are in the NOC server's outbox right now. */
+function outboxCount(): number {
+  try {
+    return readdirSync(join(NOC_DIR, 'outbox')).length;
+  } catch {
+    return 0;
+  }
+}
 
 // NOC design §4, §9, §10 (plan N1), on the NOC's own site (§N1.5): who opens
 // the NOC, what it shows, and the 3 s "Unreachable" on the fake core's
@@ -65,15 +76,20 @@ test('the NOC site has no sign-up and no subscriber pages; its front page is the
   await expect(page.getByRole('link', { name: 'Sign up' })).toHaveCount(0);
 });
 
-test('an account with no staff role is refused at sign-in, and told why', async ({ page }, info) => {
-  const { email, link } = await addedWithPasskey(page, info, 'norole');
+test('an account with no staff role is refused at sign-in, and told why; a repeat link request mails nothing', async ({ page }, info) => {
+  const { email } = await addedWithPasskey(page, info, 'norole');
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   // (Next's route announcer is an alert too: pick ours by its text.)
   await expect(page.getByRole('alert').filter({ hasText: STAFF_ONLY })).toBeVisible();
-  await page.goto(await emailLink(page, email, link));
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await expect(page).toHaveURL(/\/sign-in\?staff=1$/);
-  await expect(page.getByRole('status')).toHaveText(STAFF_ONLY);
+  // M5 (final review): no mail to an account this site would refuse at
+  // sign-in anyway -- confirming it would only spend the token on the same
+  // refusal, so the answer here is the same as for an unknown address.
+  const before = outboxCount();
+  await page.goto('/sign-in');
+  await page.getByLabel('Email').fill(email);
+  await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
+  await expect(page.getByRole('status')).toContainText('If that address has an account');
+  expect(outboxCount()).toBe(before);
   const res = await page.goto('/noc');
   await expect(page).toHaveURL(/\/sign-in$/);
   expect(res?.status()).toBe(200);
