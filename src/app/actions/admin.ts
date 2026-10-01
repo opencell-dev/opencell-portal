@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { appCtx } from '@/lib/ctx';
 import { publicMessage } from '@/lib/errors';
-import { findUserByEmail, grantRole } from '@/lib/users';
+import { findUserByEmail, grantRole, revokeRole, rolesOf } from '@/lib/users';
 import { emailSchema } from '@/lib/validation';
 import { freshAdmin } from '@/server/request';
 
@@ -28,4 +28,33 @@ export async function promoteAction(email: string): Promise<AdminResult> {
   if (!added) return { ok: true, message: `${u.email} is already an admin.` };
   revalidatePath('/admin/users');
   return { ok: true, message: `${u.email} is now an admin.` };
+}
+
+/**
+ * Make an account a NOC operator, or take the role away (NOC design §4): a
+ * role change, so it needs a fresh passkey, like promoting an admin.
+ */
+export async function nocRoleAction(email: string, grant: boolean): Promise<AdminResult> {
+  const f = await freshAdmin();
+  if (!f.ok) return f;
+  const p = z.object({ email: emailSchema, grant: z.boolean() }).safeParse({ email, grant });
+  if (!p.success) return { ok: false, message: 'Please enter a valid email address.' };
+  const ctx = appCtx();
+  const u = findUserByEmail(ctx, p.data.email);
+  if (!u?.emailVerifiedAt) return { ok: false, message: 'No verified account has that address.' };
+  if (!p.data.grant) {
+    if (!rolesOf(ctx, u.id).includes('noc')) return { ok: true, message: `${u.email} is not a NOC operator.` };
+    revokeRole(ctx, u.id, 'noc', f.s.user.id);
+    revalidatePath('/admin/users');
+    return { ok: true, message: `${u.email} is no longer a NOC operator.` };
+  }
+  let added: boolean;
+  try {
+    added = grantRole(ctx, u.id, 'noc', f.s.user.id);
+  } catch (e) {
+    return { ok: false, message: publicMessage(e, 'That account could not be made a NOC operator. Please try again.') };
+  }
+  if (!added) return { ok: true, message: `${u.email} is already a NOC operator.` };
+  revalidatePath('/admin/users');
+  return { ok: true, message: `${u.email} is now a NOC operator.` };
 }
