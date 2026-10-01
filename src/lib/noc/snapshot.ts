@@ -8,7 +8,15 @@ import type { Ctx } from '@/lib/ctx';
 
 /** The portal itself, as the actor of the NOC's shared status polls (NOC design §8). */
 export const NOC_ACTOR = 0;
-/** P4 rule (the P3 alert rule, portal spec §6.3): a cell offline this long needs attention. */
+/**
+ * P4 rule (the P3 alert rule, portal spec §6.3): a cell offline this long
+ * needs attention. Not used to grade a cell's severity in `summarize`
+ * (review I2): a real core's `lastHeardAt` is the time of the cell's last
+ * HELLO (network-core `on_hello`), not its last traffic, so the gap since
+ * it cannot be trusted to time how long a cell has actually been offline.
+ * Kept for a future duration-based rule once the core reports a reliable
+ * last-traffic time (core telemetry plan).
+ */
 export const OFFLINE_ALERT_MS = 10 * 60_000;
 
 export interface CoreView {
@@ -136,12 +144,16 @@ export function summarize(s: NetworkSnapshot): NetworkSummary {
       } else if (cell.lastHeardAt === null) {
         out.attention.push({ severity: 'info', core: c.id, cellId: cell.cellId, text: `${who} has never connected` });
       } else {
-        const down = s.at - cell.lastHeardAt;
+        // Review I2: lastHeardAt is the last HELLO, not the last traffic, so
+        // the gap since it cannot time how long the cell has been offline
+        // (a cell can look "just went offline" when it in fact dropped much
+        // earlier, or vice versa). Any offline, previously-connected cell is
+        // a warning regardless of that gap; the time is shown as what it is.
         out.attention.push({
-          severity: down >= OFFLINE_ALERT_MS ? 'warning' : 'info',
+          severity: 'warning',
           core: c.id,
           cellId: cell.cellId,
-          text: `${who} offline for ${minutes(down)}`,
+          text: `${who} offline (last HELLO ${minutes(s.at - cell.lastHeardAt)} ago)`,
         });
       }
       if (cell.certFpr === null) {

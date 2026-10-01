@@ -15,7 +15,7 @@ export function CellTable({ cells, now }: { cells: CellRow[]; now: number }) {
             <th className="py-1 pr-4">Cell</th>
             <th className="py-1 pr-4">Name</th>
             <th className="py-1 pr-4">State</th>
-            <th className="py-1 pr-4">Last heard</th>
+            <th className="py-1 pr-4">Last HELLO</th>
             <th className="py-1 pr-4">Mode</th>
             <th className="py-1 pr-4 text-right">List</th>
             <th className="py-1 pr-4 text-right">Terminals</th>

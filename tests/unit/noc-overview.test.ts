@@ -19,7 +19,7 @@ describe('the overview (NOC design §9.1)', () => {
     expect(table).toMatch(/core2.*Unreachable/s);
     expect(table).toContain('href="/noc/cores/core2"');
     const att = renderToStaticMarkup(createElement(AttentionList, { items: s.attention }));
-    expect(att).toMatch(/Critical.*core2 did not answer within 3 s.*Warning.*Cell 2 &quot;Lancaster 2&quot; on core1 offline for 20 min/s);
+    expect(att).toMatch(/Critical.*core2 did not answer within 3 s.*Warning.*Cell 2 &quot;Lancaster 2&quot; on core1 offline \(last HELLO 20 min ago\)/s);
     expect(att).toContain('href="/noc/cells/core1/2"');
     expect(renderToStaticMarkup(createElement(AttentionList, { items: [] }))).toContain('Nothing needs attention.');
   });

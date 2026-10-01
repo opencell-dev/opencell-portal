@@ -104,28 +104,33 @@ describe('the summary and its "needs attention" list', () => {
     expect(s.attention).toEqual([{ severity: 'critical', core: 'core3', text: 'core3 did not answer within 3 s' }]);
   });
 
-  it('flags offline cells: a warning from 10 min (the P3 alert rule), info before, info for one never connected', () => {
-    const s = summarize(
-      snap([
-        {
-          id: 'core1',
-          where: 'x',
-          status,
-          cells: [
-            cell({ cellId: 1, name: 'A', online: false, lastHeardAt: at - 10 * 60_000 }),
-            cell({ cellId: 2, name: 'B', online: false, lastHeardAt: at - 3 * 60_000 }),
-            cell({ cellId: 3, name: 'C', online: false, lastHeardAt: null, certFpr: null }),
-          ],
-        },
-      ]),
-    );
-    expect(s.attention).toEqual([
-      { severity: 'warning', core: 'core1', cellId: 1, text: 'Cell 1 "A" on core1 offline for 10 min' },
-      { severity: 'info', core: 'core1', cellId: 2, text: 'Cell 2 "B" on core1 offline for 3 min' },
-      { severity: 'info', core: 'core1', cellId: 3, text: 'Cell 3 "C" on core1 has never connected' },
-      { severity: 'info', core: 'core1', cellId: 3, text: 'Cell 3 "C" on core1 has no certificate pinned' },
-    ]);
-  });
+  it(
+    'flags an offline cell as a warning regardless of its last-HELLO age (review I2: a real core only updates ' +
+      'this on HELLO, not on every packet, so a duration computed from it cannot be trusted as "how long offline"), ' +
+      'and never claims a specific offline duration; a never-connected cell stays info',
+    () => {
+      const s = summarize(
+        snap([
+          {
+            id: 'core1',
+            where: 'x',
+            status,
+            cells: [
+              cell({ cellId: 1, name: 'A', online: false, lastHeardAt: at - 10 * 60_000 }),
+              cell({ cellId: 2, name: 'B', online: false, lastHeardAt: at - 3 * 60_000 }),
+              cell({ cellId: 3, name: 'C', online: false, lastHeardAt: null, certFpr: null }),
+            ],
+          },
+        ]),
+      );
+      expect(s.attention).toEqual([
+        { severity: 'warning', core: 'core1', cellId: 1, text: 'Cell 1 "A" on core1 offline (last HELLO 10 min ago)' },
+        { severity: 'warning', core: 'core1', cellId: 2, text: 'Cell 2 "B" on core1 offline (last HELLO 3 min ago)' },
+        { severity: 'info', core: 'core1', cellId: 3, text: 'Cell 3 "C" on core1 has never connected' },
+        { severity: 'info', core: 'core1', cellId: 3, text: 'Cell 3 "C" on core1 has no certificate pinned' },
+      ]);
+    },
+  );
 
   it('warns when a core answered its status but not its cell list, and never flags a revoked cell', () => {
     const s = summarize(

@@ -53,7 +53,7 @@ export default async function NocCell({ params }: { params: Promise<{ core: stri
         <dd>{modeLabel(c.mode)}</dd>
         <dt className="text-slate-500">Channel-list group</dt>
         <dd className="font-mono">{c.group}</dd>
-        <dt className="text-slate-500">Last heard (HELLO)</dt>
+        <dt className="text-slate-500">Last HELLO</dt>
         <dd>
           <When t={c.lastHeardAt} now={now} />
         </dd>

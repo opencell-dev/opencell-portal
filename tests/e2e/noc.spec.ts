@@ -74,7 +74,7 @@ test('an admin sees the demo network, a core that stops answering as Unreachable
     await page.getByRole('link', { name: 'NOC', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Network overview' })).toBeVisible();
     await expect(page.getByRole('note')).toContainText('Fake core: demo data');
-    await expect(page.getByText('Cell 4 "Harrisburg 1" on fake offline for 4 min')).toBeVisible();
+    await expect(page.getByText('Cell 4 "Harrisburg 1" on fake offline (last HELLO 4 min ago)')).toBeVisible();
     await expect(page.getByText('Cell 5 "Reading 1" on fake has never connected')).toBeVisible();
 
     await page.goto('/noc/cells?state=online');
