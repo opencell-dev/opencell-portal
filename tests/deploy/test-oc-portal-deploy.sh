@@ -94,7 +94,7 @@ rsync -a --exclude='.git' --exclude='node_modules' --exclude='.next' ./ "$sim_re
 git -C "$sim_repo" init -q
 git -C "$sim_repo" -c user.email=t@t -c user.name=t add -A
 git -C "$sim_repo" -c user.email=t@t -c user.name=t commit -q -m base
-for t in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4 v1.0.5 v1.0.6 v1.0.7 v1.0.8 v1.0.9 v1.0.10 v1.0.11; do git -C "$sim_repo" tag "$t"; done
+for t in v1.0.0 v1.0.1 v1.0.2 v1.0.3 v1.0.4 v1.0.5 v1.0.6 v1.0.7 v1.0.8 v1.0.9 v1.0.10 v1.0.11 v1.0.12; do git -C "$sim_repo" tag "$t"; done
 
 cat > "$sim_bin/systemctl" <<'SH'
 #!/bin/bash
@@ -119,12 +119,16 @@ SH
 
 cat > "$sim_bin/curl" <<'SH'
 #!/bin/bash
+# M1 (final review): the real /healthz also reports "site"; fake-systemd/site
+# stands in for it (default portal, as the route's own default), so a test
+# can simulate a guest that answers as the wrong one.
 state="${OC_PORTAL_ROOT:-}/fake-systemd"
 echo "${@: -1}" >> "$state/curl-urls.log" 2>/dev/null || true
 [ -f "$state/unhealthy" ] && exit 7
 ver="$(cat "$state/serving-version" 2>/dev/null)"
 [ -n "$ver" ] || exit 7
-printf '{"ok":true,"version":"%s"}' "$ver"
+site="$(cat "$state/site" 2>/dev/null || echo portal)"
+printf '{"ok":true,"version":"%s","site":"%s"}' "$ver" "$site"
 SH
 
 cat > "$sim_bin/runuser" <<'SH'
@@ -542,6 +546,29 @@ simassert "sim: status asks the portal on 3001 too (got $(last_health_url))" [ "
 simcheck 0 "sim: rollback with the portal on 3001" "$D_SIM" rollback
 simassert "sim: ...health-checks 127.0.0.1:3001 (got $(last_health_url))" [ "$(last_health_url)" = http://127.0.0.1:3001/healthz ]
 rm -f "$sim_root/etc/opencell/portal.env"
+
+# M1 (final review): a deploy must check the guest answers as the site it
+# meant to reach -- OC_PORTAL_HOST=oc-noc expects "noc", not "portal". The
+# fake healthz response's site comes from fake-systemd/site (default portal
+# when unset, as the real route's own default).
+before_tag="$(current_tag)"
+echo portal > "$sim_root/fake-systemd/site"
+m1_out="$(env PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim" OC_PORTAL_HOST=oc-noc "$D_SIM" deploy v1.0.12 2>&1)"; m1_rc=$?
+if [ "$m1_rc" -ne 0 ] && grep -q "not healthy" <<<"$m1_out"; then
+  echo "ok   M1: a deploy to oc-noc refuses a guest that still answers as the portal"
+else
+  echo "FAIL M1: deploy to oc-noc with site=portal (exit $m1_rc): $m1_out"; fail=1
+fi
+simassert "M1: ...current is unchanged" [ "$(current_tag)" = "$before_tag" ]
+echo noc > "$sim_root/fake-systemd/site"
+m1_out="$(env PATH="$sim_bin:$PATH" OC_PORTAL_ROOT="$sim_root" OC_PORTAL_SSH="$sim_bin/oc-ssh-shim" OC_PORTAL_HOST=oc-noc "$D_SIM" deploy v1.0.12 2>&1)"; m1_rc=$?
+if [ "$m1_rc" -eq 0 ]; then
+  echo "ok   M1: ...and succeeds once the guest answers as noc"
+else
+  echo "FAIL M1: deploy to oc-noc with site=noc (exit $m1_rc): $m1_out"; fail=1
+fi
+simassert "M1: ...current is now v1.0.12" [ "$(current_tag)" = v1.0.12 ]
+rm -f "$sim_root/fake-systemd/site"
 
 # The default SSH command (no OC_PORTAL_SSH): the `oc-portal` host from the
 # operator's own SSH config (OC_SSH_CONFIG, default ~/.ssh/cm/oc-portal.conf
