@@ -71,7 +71,10 @@ export type CoreErrorCode =
   /** The core doesn't do this yet: route.offer until P5. */
   | 'unsupported';
 
+const CORE_ERROR = Symbol.for('opencell.CoreError');
+
 export class CoreError extends Error {
+  readonly [CORE_ERROR] = true;
   constructor(
     readonly code: CoreErrorCode,
     message: string = code,
@@ -79,6 +82,21 @@ export class CoreError extends Error {
     super(message);
     this.name = 'CoreError';
   }
+}
+
+/**
+ * Whether `e` is a CoreError, by a `Symbol.for` brand rather than
+ * `instanceof` (review I1, the same fix as `asFakeCore` in `core/fake.ts`):
+ * Next's production build can load this module more than once (one copy
+ * per server bundle). The cores are made once per process
+ * (`globalThis.__ocCores`) by whichever copy came first, so a CoreError it
+ * throws can belong to a different module copy than the one a later
+ * request's code checks `instanceof` against, and the check silently fails.
+ * The `Symbol.for` brand is the same object in every copy, so this holds
+ * even when the thrower and the catcher are different copies of this class.
+ */
+export function isCoreError(e: unknown): e is CoreError {
+  return typeof e === 'object' && e !== null && (e as Record<symbol, unknown>)[CORE_ERROR] === true;
 }
 
 /**

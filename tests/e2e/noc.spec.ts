@@ -96,6 +96,13 @@ test('an admin sees the demo network, a core that stops answering as Unreachable
     await expect(page.getByRole('status')).toContainText('activated');
     await expect(page.getByRole('heading', { name: 'Calls, last 30 days' })).toBeVisible();
 
+    // Review I1: a not-found lookup must say so, not "did not answer" — a
+    // number whose exchange (Boise's, site index 2) is never seeded on this
+    // single-core demo, so it is always unassigned here, not a core outage.
+    await page.getByLabel('Number').fill('+883-1-208-345-12345');
+    await page.getByRole('button', { name: 'Look up' }).click();
+    await expect(page.getByText('No subscriber has +883120834512345 on fake.')).toBeVisible();
+
     // A core that never answers: the overview gives up on it at the 3 s deadline.
     await demo(page, 'Stop answering (fake)', 'fake now hangs every call.');
     const t0 = Date.now();

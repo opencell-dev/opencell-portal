@@ -1,4 +1,4 @@
-import { type Cdr, CoreError, type SubStatus } from '@/core/types';
+import { type Cdr, isCoreError, type SubStatus } from '@/core/types';
 import { isFullNumber } from '@/core/numbers';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
@@ -40,8 +40,8 @@ export async function lookupNumber(ctx: Ctx, actor: number, typed: string, ip: s
     const cdrs = all.slice().sort((a, b) => b.at - a.at);
     return { ok: true, number, core: h.id, status, cdrs: cdrs.slice(0, LOOKUP_CDRS), more: cdrs.length > LOOKUP_CDRS, since };
   } catch (e) {
-    if (e instanceof CoreError && e.code === 'not_found') return { ok: false, message: `No subscriber has ${number} on ${h.id}.` };
-    if (e instanceof CoreError && e.code === 'rate_limited') return { ok: false, message: `${h.id} is limiting these requests; try again in a minute.` };
+    if (isCoreError(e) && e.code === 'not_found') return { ok: false, message: `No subscriber has ${number} on ${h.id}.` };
+    if (isCoreError(e) && e.code === 'rate_limited') return { ok: false, message: `${h.id} is limiting these requests; try again in a minute.` };
     console.error(`oc-portal: lookup of ${number} on ${h.id} failed:`, e);
     return { ok: false, message: `${h.id} did not answer; try again.` };
   } finally {
