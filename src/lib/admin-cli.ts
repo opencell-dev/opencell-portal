@@ -82,8 +82,14 @@ export function runAdmin(ctx: Ctx, argv: string[]): Out {
     case 'noc-grant':
     case 'noc-revoke': {
       if (args.length !== 1) return { code: 2, out: USAGE };
-      // NOC design §N1.5: the NOC has its own site and accounts.
-      if (ctx.config.site !== 'noc') return { code: 1, out: 'the NOC role is given on the NOC site (OC_SITE=noc), with its own accounts' };
+      // NOC design §N1.5: the NOC has its own site and accounts, so the
+      // role is granted there. It can still be revoked on the portal (M6,
+      // final review): isStaff() would count a stray `noc` row there too
+      // (12 h sessions, UV-required passkeys), and SQL would be the only
+      // other way to remove one.
+      if (cmd === 'noc-grant' && ctx.config.site !== 'noc') {
+        return { code: 1, out: 'the NOC role is given on the NOC site (OC_SITE=noc), with its own accounts' };
+      }
       const u = findUserByEmail(ctx, args[0]);
       if (!u) return { code: 1, out: `no account with email ${args[0]}` };
       if (cmd === 'noc-grant') {

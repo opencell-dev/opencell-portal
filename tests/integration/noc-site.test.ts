@@ -7,7 +7,7 @@ import { runAdmin } from '@/lib/admin-cli';
 import { listAudit } from '@/lib/audit';
 import { finishRegistration, finishSignIn, registrationOptions, signInOptions } from '@/lib/passkeys';
 import { canUseAdmin, canUseNoc, createSession, sessionFromToken } from '@/lib/sessions';
-import { findUserByEmail, rolesOf, STAFF_ONLY, siteAdmits } from '@/lib/users';
+import { findUserByEmail, grantRole, rolesOf, STAFF_ONLY, siteAdmits } from '@/lib/users';
 import { TEST_ORIGIN, type TestCtx, testCtx } from '../helpers/ctx';
 import { SoftAuthenticator } from '../helpers/soft-authenticator';
 
@@ -227,11 +227,24 @@ describe('what the NOC site tells a core about its accounts', () => {
 });
 
 describe('the NOC role on the subscriber portal', () => {
-  it('is not given there: the CLI says where it is', () => {
+  it('is not granted there: the CLI says where it is', () => {
     const portal = testCtx();
     portal.db.insert(users).values({ name: 'Nia', email: 'nia@example.org', emailVerifiedAt: 1, createdAt: 1 }).run();
-    const out = 'the NOC role is given on the NOC site (OC_SITE=noc), with its own accounts';
-    expect(runAdmin(portal, ['noc-grant', 'nia@example.org'])).toEqual({ code: 1, out });
-    expect(runAdmin(portal, ['noc-revoke', 'nia@example.org'])).toEqual({ code: 1, out });
+    expect(runAdmin(portal, ['noc-grant', 'nia@example.org'])).toEqual({
+      code: 1,
+      out: 'the NOC role is given on the NOC site (OC_SITE=noc), with its own accounts',
+    });
+  });
+
+  // M6 (final review): isStaff() still counts a stray `noc` row on the
+  // portal (12 h sessions, UV-required passkeys); without noc-revoke there,
+  // raw SQL would be the only way to remove one.
+  it('can still be revoked there, so a stray role can be removed', () => {
+    const portal = testCtx();
+    const id = portal.db.insert(users).values({ name: 'Nia', email: 'nia@example.org', emailVerifiedAt: 1, createdAt: 1 }).returning().get().id;
+    grantRole(portal, id, 'noc', null);
+    expect(runAdmin(portal, ['noc-revoke', 'nia@example.org'])).toEqual({ code: 0, out: 'nia@example.org is no longer a NOC operator' });
+    expect(rolesOf(portal, id)).toEqual(['subscriber']);
+    expect(runAdmin(portal, ['noc-revoke', 'nia@example.org'])).toEqual({ code: 1, out: 'nia@example.org is not a NOC operator' });
   });
 });
