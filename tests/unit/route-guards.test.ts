@@ -131,8 +131,14 @@ describe('route guards', () => {
     for (const p of admin) expect(pageProblems(readFileSync(p, 'utf8'), ['requireAdmin'], p)).toEqual([]);
   });
 
-  it('every signed-in page calls requireUser or requireAdmin first', () => {
-    for (const p of pages(APP)) expect(pageProblems(readFileSync(p, 'utf8'), ['requireUser', 'requireAdmin'], p)).toEqual([]);
+  it('every NOC page calls requireNoc or requireAdmin first (NOC design §4)', () => {
+    const noc = pages(join(APP, 'noc'));
+    expect(noc.length).toBeGreaterThanOrEqual(1);
+    for (const p of noc) expect(pageProblems(readFileSync(p, 'utf8'), ['requireNoc', 'requireAdmin'], p)).toEqual([]);
+  });
+
+  it('every signed-in page calls requireUser, requireNoc or requireAdmin first', () => {
+    for (const p of pages(APP)) expect(pageProblems(readFileSync(p, 'utf8'), ['requireUser', 'requireNoc', 'requireAdmin'], p)).toEqual([]);
   });
 
   it('every admin action checks for a (fresh) admin first', () => {
