@@ -67,7 +67,7 @@ export interface RealCoreOptions {
   block?: string;
 }
 
-export type RealCore = ContractCore & { adminSocket: string; port: number; pid: number; log: () => string };
+export type RealCore = ContractCore & { adminSocket: string; cellSocket: string; port: number; pid: number; log: () => string };
 
 /**
  * oc-core on 127.0.0.1 with its admin API on, in a temp directory: the
@@ -152,5 +152,5 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
       await new Promise((r) => setTimeout(r, 100));
     }
   }
-  return { core, done, log, port, pid: proc.pid!, adminSocket: join(t, 'admin.sock') };
+  return { core, done, log, port, pid: proc.pid!, adminSocket: join(t, 'admin.sock'), cellSocket: join(t, 'core.sock') };
 }
