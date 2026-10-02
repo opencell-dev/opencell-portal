@@ -20,10 +20,20 @@ export type LookupResult =
   | { ok: true; number: string; core: string; status: SubStatus; cdrs: Cdr[]; more: boolean; since: number }
   | { ok: false; message: string };
 
-/** A number as typed ("+883-1-717-464-12345", spaces, dots, brackets) in the full form, or null. */
+/**
+ * A number as typed ("+883-1-717-464-12345", spaces, dots, brackets) in the
+ * full form, or null. A paste or an IME can carry far more than that:
+ * NFKC first maps fullwidth digits and the fullwidth plus sign (U+FF10-19,
+ * U+FF0B) to their ASCII forms; then only ASCII digits survive at all --
+ * every Unicode space, every dash (not just the ASCII hyphen-minus), dots,
+ * brackets, and invisible formatting characters (zero-width space/joiners
+ * U+200B-200D, the word joiner U+2060, a stray BOM U+FEFF) are dropped
+ * outright, rather than special-cased one at a time. Exactly one leading
+ * '+' is then put back, wherever (if anywhere) the typed one was.
+ */
 export function normalizeNumber(s: string): string | null {
-  const n = s.trim().replace(/[\s\-.()]/g, '');
-  const full = n.startsWith('+') ? n : `+${n}`;
+  const digits = s.normalize('NFKC').replace(/[^0-9]/g, '');
+  const full = `+${digits}`;
   return isFullNumber(full) ? full : null;
 }
 
