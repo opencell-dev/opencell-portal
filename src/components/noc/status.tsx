@@ -1,4 +1,4 @@
-import { ago, exact } from '@/lib/noc/format';
+import { ago, exact, until } from '@/lib/noc/format';
 
 // The NOC's status vocabulary (NOC design §9): green ok, amber warning,
 // red down, blue information, grey off. Colour is never the only signal:
@@ -31,12 +31,12 @@ export function StatusDot({ tone, label }: { tone: Tone; label: string }) {
   );
 }
 
-/** A relative time with the exact UTC time as its title; "never" for none. */
-export function When({ t, now }: { t: number | null; now: number }) {
+/** A relative time with the exact UTC time as its title; "never" for none. `future`: a time to come ("in 5 min"). */
+export function When({ t, now, future = false }: { t: number | null; now: number; future?: boolean }) {
   if (t === null) return <span className="text-slate-500">never</span>;
   return (
     <time dateTime={new Date(t).toISOString()} title={exact(t)}>
-      {ago(t, now)}
+      {future ? until(t, now) : ago(t, now)}
     </time>
   );
 }
