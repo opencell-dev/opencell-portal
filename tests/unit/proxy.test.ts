@@ -108,15 +108,19 @@ describe('proxy: the emailed-link page takes only its Confirm action (Anubis giv
 });
 
 describe('proxy on the subscriber portal: no NOC (NOC design §N1.5)', () => {
+  // The rewrite target is always http (production bug, 2026-10-02 below),
+  // even though ORIGIN (and OC_ORIGIN in production) is https.
+  const HTTP_NOT_FOUND = 'http://portal.test/_oc/not-found';
+
   it.each(['/noc', '/noc/', '/noc/cells', '/noc/cores/core1', '/noc/lookup', '/noc/demo', '/NOC'])('shows the 404 page for %s', async (path) => {
     const res = await proxy(req('GET', undefined, {}, path));
-    expect(res.headers.get('x-middleware-rewrite')).toBe(`${ORIGIN}/_oc/not-found`);
+    expect(res.headers.get('x-middleware-rewrite')).toBe(HTTP_NOT_FOUND);
     expect(res.headers.get('content-security-policy')).toMatch(/nonce-/);
   });
 
   it('a POST to the NOC is not served either', async () => {
     const res = await proxy(req('POST', ORIGIN, { 'next-action': 'abc' }, '/noc/lookup'));
-    expect(res.headers.get('x-middleware-rewrite')).toBe(`${ORIGIN}/_oc/not-found`);
+    expect(res.headers.get('x-middleware-rewrite')).toBe(HTTP_NOT_FOUND);
   });
 
   it('serves the subscriber pages and the front page as before', async () => {
@@ -125,5 +129,23 @@ describe('proxy on the subscriber portal: no NOC (NOC design §N1.5)', () => {
       expect(res.headers.get('x-middleware-rewrite'), path).toBeNull();
       expect(res.status, path).toBe(200);
     }
+  });
+});
+
+// Production bug (2026-10-02): nginx-proxy/Anubis always forward
+// X-Forwarded-Proto: https (TLS is terminated upstream), which Next folds
+// into its own idea of this request's origin. The 404 rewrite used to
+// reuse that origin for a same-process fetch, so the real server (plain
+// HTTP; server.mjs) was asked to speak TLS to itself and failed ("wrong
+// version number"), turning every 404 on the live sites into a 500.
+describe('proxy: the 404 rewrite always targets this server’s own http origin', () => {
+  it('rewrites to http, never to OC_ORIGIN’s https, for an ordinary request', async () => {
+    const res = await proxy(req('GET', undefined, {}, '/noc'));
+    expect(res.headers.get('x-middleware-rewrite')).toBe('http://portal.test/_oc/not-found');
+  });
+
+  it('still rewrites to http when the request carries X-Forwarded-Proto: https (the trusted proxy’s header)', async () => {
+    const res = await proxy(req('GET', undefined, { 'x-forwarded-proto': 'https' }, '/noc'));
+    expect(res.headers.get('x-middleware-rewrite')).toBe('http://portal.test/_oc/not-found');
   });
 });

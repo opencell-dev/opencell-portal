@@ -11,3 +11,7 @@ next-env.d.ts
 !.env.example
 .e2e/
 .e2e-noc/
+.e2e-proto/
+.e2e-proto.log
+.e2e-noc-proto/
+.e2e-noc-proto.log
