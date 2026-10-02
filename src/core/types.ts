@@ -60,6 +60,136 @@ export interface CoreStatus {
   callsNow: number;
 }
 
+/** A board's PPS (GPS time pulse) state as the cell reports it (NOC design §7.1); 'unknown': the board's STATUS is stale or never came. */
+export type PpsState = 'unlocked' | 'locked' | 'holdover';
+
+/**
+ * cell.radio (0x10): one radio of a linked cell, from its latest CELL_STATUS
+ * (NOC design §7.3). Counters are since the cell's (or the board's) boot.
+ */
+export interface RadioStatus {
+  cellId: number;
+  radio: number;
+  /** 1: a base-station board, 2: a bench board (oc-cell's `internal`); 'unknown' for anything else. */
+  role: 'bs' | 'bench' | 'unknown';
+  band: number;
+  /** The board's firmware, "0.0.0" until bs-radio reports one. */
+  fw: string;
+  anchor: number;
+  pps: PpsState;
+  timebase: boolean;
+  /** null: the board did not say (-128 on the wire). */
+  tempC: number | null;
+  boardUptimeS: number;
+  /** When the core got the report (unix ms). */
+  reportedAt: number;
+  schedules: number;
+  rach: number;
+  attach: number;
+  grants: number;
+  ackErrors: number;
+  ackLate: number;
+  lateSlots: number;
+  radioErrors: number;
+  /** The board's last radio error code (int16; 0 none). */
+  lastRadioError: number;
+  scheduleMisses: number;
+  uartCrcErrors: number;
+  terminalsHeard: number;
+}
+
+/** reg.list (0x11): one live registration, with its cell's latest signal for the terminal. */
+export interface Registration {
+  number: string;
+  tmidPrefix: string;
+  cellId: number;
+  /** The newest REGISTER audit record's time (unix ms), or null. */
+  registeredAt: number | null;
+  expiresAt: number;
+  /** null: the cell's report does not name the terminal. */
+  rssiDbm: number | null;
+  /** In dB (the wire carries quarter dB); null as rssiDbm. */
+  snrDb: number | null;
+  heardAt: number | null;
+}
+
+export interface RegListQuery {
+  /** Only this cell's registrations (0 or absent: every cell). */
+  cellId?: number;
+  /** Numbers after this one (a full number); absent: from the start. */
+  after?: string;
+}
+
+/** What a call leg was (NOC design §7.1): a cell's, the echo or playback service, or a peer core's. */
+export type LegKind = 'cell' | 'echo' | 'playback' | 'peer';
+
+/** cdr.recent (0x12): one call record as the core keeps it, by its id. */
+export interface CdrRecord {
+  id: number;
+  setupAt: number;
+  /** null: never answered. */
+  answerAt: number | null;
+  endAt: number;
+  /** oc_sig's release cause: 0 normal, 1 rejected, 2 busy, 3 no answer, 4 unreachable, 5 network failure, 6 link lost. */
+  cause: number;
+  caller: string;
+  called: string;
+  cellA: number | null;
+  cellB: number | null;
+  legA: LegKind;
+  legB: LegKind;
+}
+
+/** audit.list (0x13): one record of the core's own audit. */
+export interface CoreAuditRecord {
+  id: number;
+  at: number;
+  /** oc_core_audit_event_t: 3 REGISTER, 11 API, … (CORE_AUDIT_EVENTS in core/wire-noc.ts). */
+  event: number;
+  number: string | null;
+  tmidPrefix: string | null;
+  cellId: number | null;
+  detail: string;
+}
+
+export interface AuditQuery {
+  /** Records after this id (default 0: from the first). */
+  after?: number;
+  /** Only these events (empty or absent: every event). */
+  events?: number[];
+  /** Only records about this number (a full number). */
+  number?: string;
+  /** 1–500. */
+  limit: number;
+}
+
+export type OcssState = 'down' | 'connecting' | 'handshake' | 'open' | 'up';
+
+/** ocss.status (0x14): one configured OCSS peer, from this core's side. */
+export interface OcssPeer {
+  coreId: number;
+  /** This core dials it (it has the higher core id). */
+  dials: boolean;
+  state: OcssState;
+  since: number | null;
+  lastRxAt: number | null;
+  lastTxAt: number | null;
+  /** Calls with a leg on this peer now. */
+  calls: number;
+  /** Frames from it that did not decode, on its connection. */
+  dropped: number;
+  /** host:port this core dials, or null when the peer dials this core. */
+  address: string | null;
+}
+
+/** core.blocks (0x15): one block of the numbering plan as this core is configured. */
+export interface CoreBlock {
+  index: number;
+  homeCore: number;
+  role: 'none' | 'home' | 'secondary';
+  prefix: string;
+}
+
 export type CoreErrorCode =
   | 'invalid'
   | 'not_found'
