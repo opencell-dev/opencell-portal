@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TlsCore } from '@/core/tls-client';
 import type { Ctx } from '@/lib/ctx';
 import { coreStatuses } from '@/lib/core-status';
+import { auditEnd, networkActivity } from '@/lib/noc/activity';
 import { networkSnapshot, summarize } from '@/lib/noc/snapshot';
 import { CORE_DIR, type CoreCert, freePort, makeCoreCert, makeTestPki, type RealCore, startRealCore, type TestPki } from '../helpers/real-core';
 
@@ -143,6 +144,23 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     expect(snap.cores[1].blocks).toMatchObject({ state: 'ok', value: [{ prefix: '8831503', role: 'home' }, { prefix: '8831717', role: 'none' }] });
     expect(summarize(snap).attention.filter((a) => a.text.startsWith('OCSS'))).toEqual([]);
     for (const op of ['cell.radio', 'ocss.status', 'core.blocks']) expect(audit(c1)).toContain(`a0 ${op} ok`);
+  });
+
+  it("reads both cores' calls and audit as the portal itself, and finds where each audit ends (plan N2a)", async () => {
+    const snap = await networkSnapshot(ctx);
+    const a = await networkActivity(ctx, snap);
+    expect(a.cores.map((c) => [c.id, c.calls.state, c.registrations.state])).toEqual([
+      ['core1', 'ok', 'ok'],
+      ['core2', 'ok', 'ok'],
+    ]);
+    expect(a.cores[0].calls).toMatchObject({ value: { total: 0 }, complete: true });
+    expect(a.cores[0].registrations).toMatchObject({ value: { total: 0 } });
+    const end = auditEnd(ctx, 'core1');
+    expect(end).toBeGreaterThan(0);
+    const newest = await c1.core.auditList(7, { after: end! - 1, limit: 5 });
+    expect(newest[0].id).toBe(end);
+    expect(audit(c1)).toContain('a0 cdr.recent ok');
+    expect(audit(c1)).toContain('a0 audit.list ok');
   });
 
   it('shows a core that stopped as unreachable, and the other as before', async () => {

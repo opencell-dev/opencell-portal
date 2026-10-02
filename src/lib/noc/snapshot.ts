@@ -44,8 +44,8 @@ export const UNSUPPORTED_RETRY_MS = 10 * 60_000;
 const unsupportedUntil = new WeakMap<CoreHandle, Map<string, number>>();
 const blocksCache = new WeakMap<CoreHandle, { at: number; blocks: Reported<CoreBlock[]> }>();
 
-/** askReported, but an operation the core said it lacks is not asked again for UNSUPPORTED_RETRY_MS. */
-async function askNoc<T>(h: CoreHandle, what: string, ask: () => Promise<T>, deadlineMs: number, now: number): Promise<Reported<T>> {
+/** askReported, but an operation the core said it lacks is not asked again for UNSUPPORTED_RETRY_MS (per core handle and `what`). */
+export async function askNoc<T>(h: CoreHandle, what: string, ask: () => Promise<T>, deadlineMs: number, now: number): Promise<Reported<T>> {
   const memo = unsupportedUntil.get(h) ?? new Map<string, number>();
   unsupportedUntil.set(h, memo);
   if ((memo.get(what) ?? 0) > now) return { state: 'unsupported' };

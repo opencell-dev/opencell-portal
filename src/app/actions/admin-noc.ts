@@ -6,6 +6,7 @@ import { seedDemo } from '@/core/fake-demo';
 import { writeAudit } from '@/lib/audit';
 import { appCtx } from '@/lib/ctx';
 import { type LookupResult, lookupNumber } from '@/lib/noc/lookup';
+import { forgetActivity } from '@/lib/noc/activity';
 import { forgetSnapshot } from '@/lib/noc/snapshot';
 import { requestMeta, requireAdmin, requireNoc } from '@/server/request';
 
@@ -78,6 +79,7 @@ export async function demoAction(input: unknown): Promise<DemoResult> {
     }
   }
   forgetSnapshot(ctx);
+  forgetActivity(ctx);
   writeAudit(ctx, { actorId: user.id, action: `demo.${d.op}`, detail: d, ip: (await requestMeta()).ip });
   return { ok: true, message };
 }
