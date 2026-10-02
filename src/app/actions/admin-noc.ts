@@ -58,7 +58,7 @@ export async function demoAction(input: unknown): Promise<DemoResult> {
   if (d.op === 'load') {
     fakes.forEach((h, i) => {
       h.core.simReset();
-      seedDemo(h.core, i, ctx.now());
+      seedDemo(h.core, i, ctx.now(), fakes.length);
     });
     message = `The demo network is loaded on ${fakes.map((h) => h.id).join(', ')}.`;
   } else {
