@@ -124,6 +124,67 @@ export function coreContract(name: string, make: () => Promise<ContractCore>) {
       await expect(c.core.cellSetCert(7, id, 'nothex')).rejects.toMatchObject({ code: 'invalid' });
     });
 
+    // ---- the NOC's operations (core v0.4.0, NOC design §7.1)
+
+    it('reports no radios for a cell that is not linked, and not_found for no such cell', async () => {
+      const id = await c.core.cellAdd(7, 'Radio test', 'part15', 1);
+      expect(await c.core.cellRadio(7, id)).toEqual([]);
+      expect((await c.core.cellRadio(7)).filter((r) => r.cellId === id)).toEqual([]);
+      await expect(c.core.cellRadio(7, 999_999)).rejects.toMatchObject({ code: 'not_found' });
+    });
+
+    it('lists registrations by number: none for numbers that never registered; refuses a bad cursor or cell', async () => {
+      const n = fresh();
+      await c.core.subCreate(7, n);
+      expect((await c.core.regList(7)).map((r) => r.number)).not.toContain(n);
+      expect(await c.core.regList(7, { after: '+883199999999998' })).toEqual([]);
+      await expect(c.core.regList(7, { after: 'garbage' })).rejects.toMatchObject({ code: 'invalid' });
+      await expect(c.core.regList(7, { cellId: 999_999 })).rejects.toMatchObject({ code: 'not_found' });
+    });
+
+    it('lists call records after an id; refuses a limit out of 1-1000', async () => {
+      const all = await c.core.cdrRecent(7, 0, 1000);
+      for (let i = 1; i < all.length; i++) expect(all[i].id).toBeGreaterThan(all[i - 1].id);
+      expect(await c.core.cdrRecent(7, 2 ** 31, 10)).toEqual([]);
+      await expect(c.core.cdrRecent(7, 0, 0)).rejects.toMatchObject({ code: 'invalid' });
+      await expect(c.core.cdrRecent(7, 0, 1001)).rejects.toMatchObject({ code: 'invalid' });
+    });
+
+    it("reads back its own audit: each call with its account, by number; refuses a limit out of 1-500", async () => {
+      const n = fresh();
+      await c.core.subCreate(31, n);
+      const about = await c.core.auditList(7, { number: n, limit: 50 });
+      const api = about.filter((r) => r.event === 11);
+      expect(api.map((r) => r.detail)).toContainEqual(expect.stringMatching(/^a31 sub\.create ok/));
+      expect(api.every((r) => r.number === n)).toBe(true);
+      for (let i = 1; i < about.length; i++) expect(about[i].id).toBeGreaterThan(about[i - 1].id);
+      const after = await c.core.auditList(7, { after: about[about.length - 1].id, number: n, limit: 50 });
+      expect(after.map((r) => r.detail)).not.toContainEqual(expect.stringMatching(/^a31 sub\.create/));
+      expect((await c.core.auditList(7, { events: [3], limit: 500 })).every((r) => r.event === 3)).toBe(true);
+      await expect(c.core.auditList(7, { limit: 0 })).rejects.toMatchObject({ code: 'invalid' });
+      await expect(c.core.auditList(7, { limit: 501 })).rejects.toMatchObject({ code: 'invalid' });
+      await expect(c.core.auditList(7, { limit: 5, number: '+1717' })).rejects.toMatchObject({ code: 'invalid' });
+    });
+
+    it('has no OCSS peers when none is configured, and is home for its block', async () => {
+      expect(await c.core.ocssStatus(7)).toEqual([]);
+      expect(await c.core.coreBlocks(7)).toContainEqual({ index: 1, homeCore: 1, role: 'home', prefix: '8831717' });
+    });
+
+    it('switches a cell between Part 15 and Part 97, idempotently; refuses a revoked or unknown cell', async () => {
+      const id = await c.core.cellAdd(7, 'Mode test', 'part15', 1);
+      await c.core.cellMode(7, id, 'part97');
+      expect((await c.core.cellStatus(7, id))[0].mode).toBe('part97');
+      await c.core.cellMode(7, id, 'part97'); // already: ok, nothing changes
+      expect((await c.core.cellStatus(7, id))[0].mode).toBe('part97');
+      await c.core.cellMode(7, id, 'part15');
+      expect((await c.core.cellStatus(7, id))[0].mode).toBe('part15');
+      await expect(c.core.cellMode(7, 999_999, 'part97')).rejects.toMatchObject({ code: 'not_found' });
+      await c.core.cellRevoke(7, id);
+      await expect(c.core.cellMode(7, id, 'part97')).rejects.toMatchObject({ code: 'invalid' });
+      expect((await c.core.cellStatus(7, id))[0].mode).toBe('part15');
+    });
+
     it('reports its status', async () => {
       const st = await c.core.coreStatus(7);
       expect(st.coreId).toBe(1);

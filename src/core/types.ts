@@ -264,4 +264,18 @@ export interface CoreAdmin {
   cellStatus(actor: number, cellId?: number): Promise<CellStatus[]>;
   coreStatus(actor: number): Promise<CoreStatus>;
   routeOffer(actor: number, tableVersion: number, blob: Uint8Array, sig: Uint8Array): Promise<void>;
+  // ---- the NOC's operations (core v0.4.0; NOC design §7.1). An older core
+  // answers each with CoreError 'unsupported'.
+  /** Each radio of each linked cell that has reported (one cell, or every cell). */
+  cellRadio(actor: number, cellId?: number): Promise<RadioStatus[]>;
+  /** Live registrations by number, at most 1000 a call (page with `after`). */
+  regList(actor: number, q?: RegListQuery): Promise<Registration[]>;
+  /** Call records with id > after, by id, at most `limit` (1–1000). */
+  cdrRecent(actor: number, after: number, limit: number): Promise<CdrRecord[]>;
+  /** The core's audit records with id > after, by id. */
+  auditList(actor: number, q: AuditQuery): Promise<CoreAuditRecord[]>;
+  ocssStatus(actor: number): Promise<OcssPeer[]>;
+  coreBlocks(actor: number): Promise<CoreBlock[]>;
+  /** The mode switch: the cell reconnects in `mode` and its calls end. Idempotent; a revoked cell is 'invalid'. */
+  cellMode(actor: number, cellId: number, mode: CellMode): Promise<void>;
 }
