@@ -145,10 +145,17 @@ export class Tail<R extends TailRow> {
     if (this.cursor === null) this.cursor = await this.resumeSeek(page, t0, this.limit);
     this.complete = false;
     for (let n = 0; n < this.maxPages; n++) {
-      const got = await page(this.cursor, this.limit);
-      for (const r of got) if (r.t >= t0 && this.keep(r)) this.rows.push(r);
-      if (got.length > 0) this.cursor = got[got.length - 1].id;
-      if (got.length < this.limit) {
+      // Review M1: never trust a page past `limit` rows, or a row that does not advance past the cursor (a buggy or malicious
+      // core repeating or reordering ids) -- either stalls or double-counts a tail that otherwise keeps no number to re-check.
+      const got = (await page(this.cursor, this.limit)).slice(0, this.limit);
+      let advanced = false;
+      for (const r of got) {
+        if (r.id <= this.cursor) continue;
+        this.cursor = r.id;
+        advanced = true;
+        if (r.t >= t0 && this.keep(r)) this.rows.push(r);
+      }
+      if (!advanced || got.length < this.limit) {
         this.complete = true;
         break;
       }

@@ -169,3 +169,28 @@ describe('Tail: resuming a rate-limited seek (review I2)', () => {
     expect(calls).toBeLessThan(100);
   });
 });
+
+describe('Tail: a misbehaving core cannot stall it or double-count rows (review M1)', () => {
+  it('does not add the same row twice when a page repeats a row instead of advancing past the cursor', async () => {
+    const base = 1_000_000;
+    const bogus: TailRow = { id: 5, t: base };
+    const page: PageFn<TailRow> = async () => [bogus, bogus]; // never advances past id 5, whatever `after` it is asked from
+    const tail = new Tail<TailRow>(10_000_000, 500);
+    await tail.refresh(page, base, 1);
+    const once = tail.rows.length;
+    await tail.refresh(page, base, 1);
+    expect(tail.rows.length).toBe(once);
+  });
+
+  it('never keeps more than `limit` rows from one answer, even if the core sends more', async () => {
+    const base = 1_000_000;
+    const page: PageFn<TailRow> = async (after) => {
+      const rows: TailRow[] = [];
+      for (let i = 1; i <= 30; i++) rows.push({ id: after + i, t: base + i * 1000 }); // the limit below is 10; this "core" sends 30
+      return rows;
+    };
+    const tail = new Tail<TailRow>(10_000_000, 10, 1);
+    await tail.refresh(page, base + 30_000, 1);
+    expect(tail.rows.length).toBeLessThanOrEqual(10);
+  });
+});
