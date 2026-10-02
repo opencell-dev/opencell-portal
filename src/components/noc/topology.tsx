@@ -32,22 +32,35 @@ export function Topology({ t }: { t: TopologyLayout }) {
         className="max-w-none font-sans"
       >
         <title id="topo-title">
-          {`OpenCell topology: ${t.cores.length} cores, ${t.cells.length} cells. Lines from a cell to its core are IP backhaul; the dashed line between cores is OCSS.`}
+          {`OpenCell topology: ${t.cores.length} cores, ${t.cells.length} cells. Lines from a cell to its core are IP backhaul; lines between cores are OCSS (solid: up).`}
         </title>
-        {t.edges.map((e) => (
-          <line
-            key={`${e.kind}-${e.x1}-${e.y1}-${e.x2}-${e.y2}`}
-            x1={e.x1}
-            y1={e.y1}
-            x2={e.x2}
-            y2={e.y2}
-            strokeWidth={e.kind === 'ocss' ? 2 : 1.5}
-            strokeDasharray={e.kind === 'ocss' ? '6 4' : e.state === 'ok' ? undefined : '3 3'}
-            className={STROKE[e.state]}
-          >
-            <title>{e.title}</title>
-          </line>
-        ))}
+        {t.edges.map((e) =>
+          e.bend !== undefined ? (
+            <path
+              key={`${e.kind}-${e.x1}-${e.y1}-${e.x2}-${e.y2}`}
+              d={`M ${e.x1} ${e.y1 - 20} Q ${(e.x1 + e.x2) / 2} ${Math.max(2, e.y1 - 20 - e.bend)} ${e.x2} ${e.y2 - 20}`}
+              fill="none"
+              strokeWidth={2}
+              strokeDasharray={e.state === 'ok' ? undefined : '6 4'}
+              className={STROKE[e.state]}
+            >
+              <title>{e.title}</title>
+            </path>
+          ) : (
+            <line
+              key={`${e.kind}-${e.x1}-${e.y1}-${e.x2}-${e.y2}`}
+              x1={e.x1}
+              y1={e.y1}
+              x2={e.x2}
+              y2={e.y2}
+              strokeWidth={e.kind === 'ocss' ? 2 : 1.5}
+              strokeDasharray={e.kind === 'ocss' ? (e.state === 'ok' ? undefined : '6 4') : e.state === 'ok' ? undefined : '3 3'}
+              className={STROKE[e.state]}
+            >
+              <title>{e.title}</title>
+            </line>
+          ),
+        )}
         {t.cores.map((c) => (
           <a key={c.id} href={c.href} aria-label={`${c.label}, ${c.sub}`}>
             <rect x={c.x - 80} y={c.y - 25} width={160} height={50} rx={6} strokeWidth={2} className={`fill-white dark:fill-slate-900 ${STROKE[c.state]}`} />

@@ -31,12 +31,12 @@ export default async function NocTopology() {
         <StatusDot tone="bad" label="Unreachable" />
         <StatusDot tone="info" label="Never connected" />
         <StatusDot tone="off" label="Revoked, or not reported" />
-        <span className="text-slate-500">Number in a cell: terminals registered. Dashed grey between cores: OCSS, not reported yet.</span>
+        <span className="text-slate-500">
+          Number in a cell: terminals registered. Between cores: OCSS (solid green up; dashed amber connecting; dashed grey not reported). Under a core&apos;s name: the block it is home for.
+        </span>
       </p>
       <Topology t={layoutTopology(snap)} />
-      <p className="text-xs text-slate-500">
-        Radios per cell and the database layer join this view when the cores report them (cell.radio; plan N4).
-      </p>
+      <p className="text-xs text-slate-500">The database layer joins this view with plan N4.</p>
     </div>
   );
 }

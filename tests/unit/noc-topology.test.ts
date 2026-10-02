@@ -44,4 +44,49 @@ describe('the topology (NOC design §9.2)', () => {
     expect(out).toContain('Lancaster 1');
     expect(out).not.toContain('style=');
   });
+
+  describe('OCSS and blocks (plan N2a)', () => {
+    const peer = (coreId: number, state: 'up' | 'connecting' | 'down', dials: boolean) => ({
+      coreId,
+      dials,
+      state,
+      since: 0,
+      lastRxAt: null,
+      lastTxAt: null,
+      calls: 0,
+      dropped: 0,
+      address: dials ? 'x:7443' : null,
+    });
+    const core = (n: number, peers: ReturnType<typeof peer>[] | null) => ({
+      id: `core${n}`,
+      where: 'x',
+      status: st({ coreId: n }),
+      cells: [],
+      ...(peers === null ? {} : { ocss: { state: 'ok' as const, value: peers } }),
+      blocks: { state: 'ok' as const, value: [{ index: n, homeCore: n, role: 'home' as const, prefix: `88317${n}7` }] },
+    });
+    const ocss = (cores: ReturnType<typeof core>[]) => layoutTopology({ ...snap, cores }).edges.filter((e) => e.kind === 'ocss');
+
+    it('draws the link as either side reports it, the worse of the two, and who dials', () => {
+      expect(ocss([core(1, [peer(2, 'up', true)]), core(2, [peer(1, 'up', false)])])).toEqual([
+        expect.objectContaining({ state: 'ok', title: 'OCSS core1 – core2: up / up (core1 dials)' }),
+      ]);
+      expect(ocss([core(1, [peer(2, 'up', true)]), core(2, [peer(1, 'connecting', false)])])[0].state).toBe('warn');
+      expect(ocss([core(1, [peer(2, 'down', true)]), core(2, null)])[0]).toMatchObject({ state: 'bad', title: 'OCSS core1 – core2: down (core1 dials)' });
+    });
+
+    it('draws no edge between cores that both report and are not peers; arcs between cores that are not neighbours', () => {
+      expect(ocss([core(1, []), core(2, [])])).toEqual([]);
+      const three = ocss([core(1, [peer(3, 'up', true)]), core(2, []), core(3, [peer(1, 'up', false)])]);
+      expect(three).toEqual([expect.objectContaining({ state: 'ok', bend: 40 })]);
+      const out = renderToStaticMarkup(createElement(Topology, { t: layoutTopology({ ...snap, cores: [core(1, [peer(3, 'up', true)]), core(2, []), core(3, [peer(1, 'up', false)])] }) }));
+      expect(out).toMatch(/<path d="M [\d.]+ 30 Q [\d.]+ 2 [\d.]+ 30"/);
+      expect(out).not.toContain('style=');
+    });
+
+    it("names the block a core is home for under it", () => {
+      const t = layoutTopology({ ...snap, cores: [core(1, [])] });
+      expect(t.cores[0].sub).toBe('core1 · v0.3.1 · +8831717');
+    });
+  });
 });
