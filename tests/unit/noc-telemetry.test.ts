@@ -67,6 +67,20 @@ describe('the snapshot with telemetry (plan N2a)', () => {
     expect(blocks).toHaveBeenCalledTimes(3);
   });
 
+  it('backs off core.blocks after a rate-limited answer, instead of asking again on every snapshot (review M9)', async () => {
+    const { ctx, core2 } = twoCores();
+    const blocks = vi.spyOn(core2, 'coreBlocks');
+    await networkSnapshot(ctx); // the first ask, cached for BLOCKS_TTL_MS
+    ctx.clock.t += BLOCKS_TTL_MS;
+    blocks.mockRejectedValueOnce(new CoreError('rate_limited'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect((await networkSnapshot(ctx)).cores[1].blocks).toEqual({ state: 'unreachable' });
+    expect(blocks).toHaveBeenCalledTimes(2);
+    ctx.clock.t += 10_000; // the next 10 s snapshot: inside the rate-limit backoff, not just BLOCKS_TTL_MS's own cache
+    expect((await networkSnapshot(ctx)).cores[1].blocks).toEqual({ state: 'unreachable' });
+    expect(blocks).toHaveBeenCalledTimes(2);
+  });
+
   it(`shows an older core's missing operations as unsupported, and asks again only after ${UNSUPPORTED_RETRY_MS / 60_000} min`, async () => {
     const { ctx, core2 } = twoCores();
     const old = () => Promise.reject(new CoreError('unsupported', 'no such operation'));
