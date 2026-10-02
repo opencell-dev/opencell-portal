@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CoreError } from '@/core/types';
 import { type PageFn, seekAfter, Tail, type TailRow } from '@/lib/noc/tail';
 
 // The tail of an id-ordered list (plan N2a): find where a time window starts
@@ -106,5 +107,44 @@ describe('Tail', () => {
     await tail.refresh(page, rows[99].t, 1);
     expect(tail.afterFor(rows[50].t)).toBe(rows[50].id - 1);
     expect(tail.afterFor(rows[99].t + 1)).toBe(rows[99].id);
+  });
+});
+
+describe('Tail: resuming a rate-limited seek (review I2)', () => {
+  /** A list of `n` rows, ids 1..n, one second apart, built formulaically (no array of n entries: n can be large). */
+  function bigList(n: number, base = 1_000_000) {
+    const page: PageFn<TailRow> = async (after: number, limit: number) => {
+      const rows: TailRow[] = [];
+      for (let id = after + 1; id <= n && rows.length < limit; id++) rows.push({ id, t: base + (id - 1) * 1000 });
+      return rows;
+    };
+    return { page, base };
+  }
+
+  it('keeps its seek progress across a rate-limited attempt instead of restarting at id 0', async () => {
+    const n = 2_000_000;
+    const { page, base } = bigList(n);
+    let tokens = 15;
+    let calls = 0;
+    const limited: PageFn<TailRow> = async (after, limit) => {
+      calls++;
+      if (tokens < 1) throw new CoreError('rate_limited', 'audit.list: too many calls this minute');
+      tokens--;
+      return page(after, limit);
+    };
+    // The window covers only the newest ~10,000 rows: the seek must walk the
+    // whole 2,000,000-row id space to find where it starts (review: "about
+    // 24 probes at 2M"), which this token bucket cannot afford in one go.
+    const tail = new Tail<TailRow>(10_000_000, 500);
+    const now = base + (n - 1) * 1000;
+    for (let minute = 0; minute < 40 && tail.after === null; minute++) {
+      await tail.refresh(limited, now, 1).catch(() => {});
+      tokens += 10; // refill for the next minute
+    }
+    expect(tail.after).not.toBeNull();
+    // A pre-fix seek restarts at id 0 every attempt and never converges (the
+    // review's probe: "every attempt failed for 30 simulated minutes, 335
+    // calls made"). Resuming converges in a small, bounded number of calls.
+    expect(calls).toBeLessThan(100);
   });
 });
