@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { pct } from '@/components/noc/activity';
+import { ModeSwitch } from '@/components/noc/mode-switch';
 import { RadioPanel } from '@/components/noc/radio-panel';
 import { cellTone, StatusDot, When } from '@/components/noc/status';
 import { TerminalTable } from '@/components/noc/terminal-table';
@@ -10,6 +11,7 @@ import { cachedActivity, callRows, callStats } from '@/lib/noc/activity';
 import { modeLabel } from '@/lib/noc/format';
 import { registrationsPage } from '@/lib/noc/registrations';
 import { cachedSnapshot } from '@/lib/noc/snapshot';
+import { canUseAdmin } from '@/lib/sessions';
 import { requestMeta, requireNoc } from '@/server/request';
 
 export const metadata: Metadata = { title: 'Cell · NOC' };
@@ -18,10 +20,11 @@ export const metadata: Metadata = { title: 'Cell · NOC' };
  * One cell (NOC design §9.4): what cell.status says; its radio health
  * (cell.radio) and the last day's calls and registrations on it, from the
  * shared snapshot and activity; and its terminals with their signal
- * (reg.list), read as this staff member and audited (plan N2a).
+ * (reg.list), read as this staff member and audited; for admins, the mode
+ * switch (plan N2a).
  */
 export default async function NocCell({ params }: { params: Promise<{ core: string; cell: string }> }) {
-  const { user } = await requireNoc();
+  const { user, session } = await requireNoc();
   const ctx = appCtx();
   const { core, cell } = await params;
   if (!/^[1-9]\d{0,9}$/.test(cell)) notFound();
@@ -96,6 +99,7 @@ export default async function NocCell({ params }: { params: Promise<{ core: stri
           <dd className="font-mono">{regs?.state === 'ok' ? (regs.value.byCell[c.cellId] ?? 0) : 'not reported'}</dd>
         </dl>
       </section>
+      {canUseAdmin(ctx, session) && !c.revoked && <ModeSwitch core={core} cellId={c.cellId} name={c.name} mode={c.mode} calls={c.calls} />}
       <section className="space-y-2">
         <h2 className="text-lg font-semibold">Terminals registered here</h2>
         <p className="text-xs text-slate-500">Read under your account; the portal and the core record it.</p>

@@ -36,7 +36,7 @@ vi.mock('@/server/request', () => ({
   requestMeta: async () => ({ ip: '192.0.2.7' }),
 }));
 
-const { demoAction, lookupNumberAction, registrationsAction, subscriberAction } = await import('@/app/actions/admin-noc');
+const { cellModeAction, demoAction, lookupNumberAction, registrationsAction, subscriberAction } = await import('@/app/actions/admin-noc');
 
 const N = '+883171746412345';
 let ctx: TestCtx;
@@ -268,5 +268,74 @@ describe('disable and enable a subscriber (plan N2a; decision 2026-10-01 #10)', 
     state.admin = false;
     state.noc = false;
     await expect(subscriberAction({ number: N, enable: false, reason: 'test' })).rejects.toThrow('NEXT_NOT_FOUND');
+  });
+});
+
+describe('the mode switch (plan N2a; NOC design §4.3)', () => {
+  function lancaster() {
+    const id = ctx.core.simAddCell('Lancaster 1', 'part15', 1);
+    ctx.core.simCellOnline(id, true);
+    ctx.core.simActiveCalls(id, 2);
+    return id;
+  }
+
+  it('switches a cell once its name is typed, ending its calls, under the admin account, audited with the impact and reason', async () => {
+    const id = lancaster();
+    await cachedSnapshot(ctx); // cached as Part 15
+    const r = await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'licensed operator on site' });
+    expect(r).toEqual({ ok: true, message: 'Lancaster 1 is switching to Part 97: it reconnects in a few seconds; 2 calls ended.' });
+    expect((await ctx.core.cellStatus(0, id))[0]).toMatchObject({ mode: 'part97', calls: 0 });
+    // The shared snapshot is asked again, so the page shows the new mode at once.
+    expect((await cachedSnapshot(ctx)).cores[0].cells?.find((c) => c.cellId === id)?.mode).toBe('part97');
+    expect(ctx.core.audit.filter((a) => a.op === 'cell.mode')).toEqual([expect.objectContaining({ actor: 1_000_042, arg: String(id) })]);
+    expect(listAudit(ctx, 1)[0]).toMatchObject({
+      actorId: 42,
+      action: 'noc.cell.mode',
+      target: `cell:fake/${id}`,
+      detail: JSON.stringify({ core: 'fake', cell: id, from: 'part15', to: 'part97', callsBefore: 2, reason: 'licensed operator on site', outcome: 'ok' }),
+    });
+  });
+
+  it('changes nothing for a wrong name, and says so; already in that mode is fine and changes nothing', async () => {
+    const id = lancaster();
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'lancaster 1', reason: 'test' })).toEqual({
+      ok: false,
+      message: 'Type the cell\'s name exactly ("Lancaster 1") to confirm; nothing was changed.',
+    });
+    expect((await ctx.core.cellStatus(0, id))[0]).toMatchObject({ mode: 'part15', calls: 2 });
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part15', confirmName: 'Lancaster 1', reason: 'test' })).toEqual({
+      ok: true,
+      message: 'Lancaster 1 is already Part 15; nothing was changed.',
+    });
+    expect(ctx.core.audit.some((a) => a.op === 'cell.mode')).toBe(false);
+    expect(JSON.parse(listAudit(ctx, 1)[0].detail ?? '{}')).toMatchObject({ outcome: 'unchanged' });
+  });
+
+  it('refuses a revoked cell, an unknown cell or core, and a missing reason', async () => {
+    const id = lancaster();
+    await ctx.core.cellRevoke(0, id);
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'test' })).toEqual({
+      ok: false,
+      message: `Cell ${id} is revoked; its mode can't change.`,
+    });
+    expect(await cellModeAction({ core: 'fake', cellId: 99, mode: 'part97', confirmName: 'x', reason: 'test' })).toEqual({ ok: false, message: 'No cell 99 on fake.' });
+    expect(await cellModeAction({ core: 'nope', cellId: id, mode: 'part97', confirmName: 'x', reason: 'test' })).toEqual({ ok: false, message: 'No core nope.' });
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: '' })).toMatchObject({ ok: false });
+  });
+
+  it('is for admins only, with a fresh passkey, and on the NOC site only', async () => {
+    const id = lancaster();
+    state.fresh = false;
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'test' })).toEqual({ ok: false, reauth: true });
+    state.fresh = true;
+    state.admin = false; // a NOC operator
+    await expect(cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'test' })).rejects.toThrow('NEXT_NOT_FOUND');
+    state.admin = true;
+    state.ctx = testCtx(); // the subscriber portal
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'test' })).toEqual({
+      ok: false,
+      message: 'The mode switch is on the NOC site only.',
+    });
+    expect((await ctx.core.cellStatus(0, id))[0].mode).toBe('part15');
   });
 });

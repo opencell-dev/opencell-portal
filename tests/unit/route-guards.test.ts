@@ -180,6 +180,7 @@ describe('route guards', () => {
       registrationsAction: 'requireNoc',
       subscriberAction: 'freshNoc',
       demoAction: 'requireAdmin',
+      cellModeAction: 'freshAdmin',
     };
     const seen = new Set<string>();
     for (const st of sf.statements) {

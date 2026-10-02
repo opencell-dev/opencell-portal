@@ -1,10 +1,11 @@
+import type { CellMode } from '@/core/types';
 import { isCoreError } from '@/core/types';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
 import { errorKind } from '@/lib/errors';
 import { hit } from '@/lib/ratelimit';
 import { coreActor } from '@/lib/site';
-import { groupNumber } from './format';
+import { groupNumber, modeLabel } from './format';
 
 // The NOC's first changes to the network (plan N2a), each made under the
 // staff member's own account (the core audits it with that account) and
@@ -53,4 +54,59 @@ export async function changeSubscriber(ctx: Ctx, userId: number, number: string,
   if (outcome === 'rate_limited') return { ok: false, message: `${h.id} is limiting these changes; try again in a few minutes.` };
   console.error(`oc-portal: ${action} on ${h.id} failed: ${outcome}`);
   return { ok: false, message: `${h.id} did not answer; look the number up again to see whether it changed.` };
+}
+
+/**
+ * Switch a cell between Part 15 and Part 97 (cell.mode): the core stores the
+ * mode and drops the cell's link; the cell reconnects in the new mode and
+ * every call on it ends. Idempotent: already in that mode changes nothing.
+ * `confirmName` must be the cell's name exactly, as the person typed it.
+ */
+export async function switchCellMode(
+  ctx: Ctx,
+  userId: number,
+  core: string,
+  cellId: number,
+  mode: CellMode,
+  confirmName: string,
+  reason: string,
+  ip: string,
+): Promise<ChangeResult> {
+  const h = ctx.cores.find((c) => c.id === core);
+  if (!h) return { ok: false, message: `No core ${core}.` };
+  const as = coreActor(ctx.config.site, userId);
+  let cell: Awaited<ReturnType<typeof h.core.cellStatus>>[number] | undefined;
+  try {
+    [cell] = await h.core.cellStatus(as, cellId);
+  } catch (e) {
+    if (isCoreError(e) && e.code === 'not_found') return { ok: false, message: `No cell ${cellId} on ${core}.` };
+    return { ok: false, message: `${core} did not answer; nothing was changed.` };
+  }
+  if (!cell) return { ok: false, message: `No cell ${cellId} on ${core}.` };
+  if (confirmName !== cell.name) return { ok: false, message: `Type the cell's name exactly ("${cell.name}") to confirm; nothing was changed.` };
+  if (cell.revoked) return { ok: false, message: `Cell ${cellId} is revoked; its mode can't change.` };
+  const lim = hit(ctx, 'noc_change', `user:${userId}`);
+  if (!lim.ok) return { ok: false, message: lim.message };
+  const target = `cell:${core}/${cellId}`;
+  const detail = { core, cell: cellId, from: cell.mode, to: mode, callsBefore: cell.calls, reason };
+  if (cell.mode === mode) {
+    writeAudit(ctx, { actorId: userId, action: 'noc.cell.mode', target, detail: { ...detail, outcome: 'unchanged' }, ip });
+    return { ok: true, message: `${cell.name} is already ${modeLabel(mode)}; nothing was changed.` };
+  }
+  let outcome = 'ok';
+  try {
+    await h.core.cellMode(as, cellId, mode);
+  } catch (e) {
+    outcome = outcomeOf(e);
+  } finally {
+    writeAudit(ctx, { actorId: userId, action: 'noc.cell.mode', target, detail: { ...detail, outcome }, ip });
+  }
+  if (outcome === 'ok') {
+    const ended = cell.calls === 0 ? 'no call was up' : `${cell.calls} ${cell.calls === 1 ? 'call' : 'calls'} ended`;
+    return { ok: true, message: `${cell.name} is switching to ${modeLabel(mode)}: it reconnects in a few seconds; ${ended}.` };
+  }
+  if (outcome === 'invalid') return { ok: false, message: `${core} refused: cell ${cellId} is revoked.` };
+  if (outcome === 'rate_limited') return { ok: false, message: `${core} is limiting mode switches; try again later.` };
+  console.error(`oc-portal: noc.cell.mode on ${core} failed: ${outcome}`);
+  return { ok: false, message: `${core} did not answer; check the cell's mode before trying again.` };
 }
