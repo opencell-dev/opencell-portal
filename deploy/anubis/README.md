@@ -25,6 +25,7 @@ unchanged too: only nginx-proxy may reach 3000, and loopback (the portal on
 | `techaro-packages.asc` | (read by the installer) | the release signing key (ed25519 `833F 6416 1167 B501 058C 3947 5637 5DA2 DF02 ABFF`, "Techaro Packages Signatures", published at <https://github.com/Xe.gpg>) |
 | `oc-portal.env` | `/etc/anubis/oc-portal.env` 0644 | the instance's settings (nothing secret) |
 | `oc-portal.botPolicies.yaml` | `/etc/anubis/oc-portal.botPolicies.yaml` 0644 | the policy |
+| `npm-proxy-host.advanced.conf` | (PUT to NPM's `advanced_config` for the portal's proxy host 3, and the NOC's) | X-Forwarded-For fix at nginx-proxy, see "Client addresses" and runbook step 3 |
 | `opencell.conf` | `/etc/systemd/system/anubis@oc-portal.service.d/opencell.conf` | drop-in for the package's `anubis@.service`: signing key, hardening, `LimitNOFILE` a container can grant |
 | (made on the guest) | `/etc/anubis/oc-portal.key.env` 0600 | `ED25519_PRIVATE_KEY_HEX`: signs the pass cookies, so passes survive restarts |
 | (made on the guest) | `/etc/anubis/oc-portal.site` 0644 | `portal` or `noc`: which settings are installed here, written every run (final review I1), so a later run with no argument never has to guess |
@@ -166,25 +167,60 @@ host's default `location /` includes, sets `$proxy_add_x_forwarded_for`:
 the client's own X-Forwarded-For with `$remote_addr` appended. (A custom
 location, such as the portal host's `/auth/email/`, sets `$remote_addr`
 from NPM's `_location.conf`.) The runbook makes the default location send
-just `$remote_addr` too, by clearing the client's header at the server
-level of the proxy host (id 3) with one advanced-config line:
+just `$remote_addr` too.
+
+**The method: replace the default location.** `deploy/anubis/npm-proxy-host.advanced.conf`
+is NPM's own default `location /` for the portal's proxy host (id 3; the
+NOC's host takes the same text, since it names no host),
+copied from its generated `proxy_host/3.conf` plus the lines
+`conf.d/include/proxy.conf` contributes, with one change:
+`proxy_set_header X-Forwarded-For $remote_addr;` in place of the include's
+`$proxy_add_x_forwarded_for`. It goes into that proxy host's
+`advanced_config` (NPM appends `advanced_config` after its own generated
+locations, but drops its own default `location /` whenever
+`advanced_config` matches `/^(?:.*;)?\s*?location\s*?\/\s*?{/im` —
+`/opt/npm/backend/internal/nginx.js:422` — so this block fully replaces it,
+not layers on top of it). Step 3 below applies it.
+
+This works with plain Debian/nginx.org nginx, which is what nginx-proxy
+(LXC 100) actually runs — 1.26.3, no headers-more module. It needs two
+things to stay true about the proxy host, both checked in step 0:
+
+- **No asset caching on host 3.** NPM's "Cache Assets" option adds
+  `include conf.d/include/assets.conf`, a second location (for
+  `*.css|js|ico|…`) that also includes `proxy.conf` and so still appends
+  the client's X-Forwarded-For. `npm-proxy-host.advanced.conf` only
+  replaces `location /`; it has no effect on `assets.conf`'s location. Turn
+  caching off, or refuse to proceed while it's on — a public cache in
+  front of a proof-of-work-protected site is unwanted anyway.
+- **No access-list or HSTS lines in the live default location.** If NPM's
+  current `location /` has `allow`/`deny` or HSTS `add_header` lines (from
+  an access list or "Force SSL"/"HSTS" host settings), they must be copied
+  into `npm-proxy-host.advanced.conf` first, or replacing the location
+  drops them.
+
+**Where headers-more is loaded, the one-liner is equivalent.** Some NPM
+images run on OpenResty, which bundles the headers-more module. There,
+`more_clear_input_headers X-Forwarded-For;` as one line of `advanced_config`
+does the same job without replacing any location:
 
 ```nginx
 more_clear_input_headers X-Forwarded-For;
 ```
 
-This comes from the headers-more module, which OpenResty (NPM's nginx)
-bundles. It runs before the proxy module builds the header and applies to
-every location, so `$proxy_add_x_forwarded_for` becomes exactly
-`$remote_addr`, with no second header. The obvious
-`proxy_set_header X-Forwarded-For $remote_addr;` does not work there. At
-server level, nginx ignores it in any location that sets its own
-`proxy_set_header` lines, and both of NPM's locations do. Inside a location
-it would add a second X-Forwarded-For. This was checked with nginx 1.26
-and headers-more 0.38 against a replica of NPM's generated
-`proxy_host/3.conf`: without the line a forged header arrives as
-`198.51.100.99, …, <client>`; with it, as `<client>` only, on both
-locations.
+It runs before the proxy module builds the header and applies to every
+location, so `$proxy_add_x_forwarded_for` becomes exactly `$remote_addr`,
+with no second header. The obvious `proxy_set_header X-Forwarded-For
+$remote_addr;` does not work there: at server level, nginx ignores it in
+any location that sets its own `proxy_set_header` lines, and both of NPM's
+locations do; inside a location it would add a second X-Forwarded-For.
+This was checked with nginx 1.26 and headers-more 0.38 against a replica of
+NPM's generated `proxy_host/3.conf`: without the line a forged header
+arrives as `198.51.100.99, …, <client>`; with it, as `<client>` only, on
+both locations. Check first with `(openresty -V 2>&1; nginx -V 2>&1) | grep
+headers-more` (step 0) — if it's present, this one-liner is simpler than
+the full-location fallback above and needs no assets.conf/access-list/HSTS
+review, since it applies to every location including `assets.conf`'s.
 
 - **Anubis uses X-Real-IP** for its rules and for binding a pass to an
   address (`JWT_RESTRICTION_HEADER=X-Real-IP`). If a request has no
@@ -206,10 +242,10 @@ locations.
   portal then sees 127.0.0.1, so such clients share one rate-limit bucket
   and the audit shows 127.0.0.1. Anubis itself still has their X-Real-IP.
   `XFF_STRIP_PRIVATE=false` is not the fix: then 10.0.0.100 would be the
-  address kept. Without the `more_clear_input_headers` line, a
-  private-address client could also put a public address of its choosing in
-  its own X-Forwarded-For. Anubis would keep it, because everything to its
-  right is stripped, and the portal would record that address.
+  address kept. Without one of the two fixes above, a private-address
+  client could also put a public address of its choosing in its own
+  X-Forwarded-For. Anubis would keep it, because everything to its right is
+  stripped, and the portal would record that address.
 
 ## Cookies and sessions
 
@@ -310,7 +346,8 @@ undo it.
 # nginx-proxy has no alias of its own, so N jumps through ovh-pve directly.
 TAG=v0.2.1
 G='ssh -F "${OC_SSH_CONFIG:-$HOME/.ssh/cm/oc-portal.conf}" oc-portal'  # the portal guest (LXC 116)
-N='ssh -J ovh-pve root@10.0.0.100'                   # nginx-proxy (LXC 100), or `pct exec 100 --` on the host
+N='ssh -J ovh-pve root@10.0.0.100'                   # nginx-proxy (LXC 100), or from the host:
+                                                      #   ssh ovh-pve 'pct exec 100 -- …'
 NPM_API=http://10.0.0.100:81/api                     # NPM's admin API, however you reach it
 NPM_TOKEN=...                                        # your NPM API token
 H="Authorization: Bearer $NPM_TOKEN"
@@ -321,18 +358,28 @@ H="Authorization: Bearer $NPM_TOKEN"
 ```sh
 # nginx-proxy: the portal's proxy host (id 3) as NPM generated it, and its tools.
 $N 'grep -n -e "set \$server" -e "set \$port" -e "location" -e "include conf.d/include/proxy.conf" \
-            -e X-Forwarded-For -e X-Real-IP -e more_ /data/nginx/proxy_host/3.conf
+            -e "include conf.d/include/assets.conf" -e X-Forwarded-For -e X-Real-IP -e more_ \
+            -e allow -e deny -e Strict-Transport-Security /data/nginx/proxy_host/3.conf
     grep -n -e X-Forwarded-For -e X-Real-IP /etc/nginx/conf.d/include/proxy.conf
     (openresty -V 2>&1; nginx -V 2>&1) | grep -o "headers-more-nginx-module[^ /]*" | sort -u'
 #   expect: $server "10.0.0.61", $port 3000; `location /auth/email/` setting
 #   X-Forwarded-For and X-Real-IP to $remote_addr; `location /` including
 #   proxy.conf; proxy.conf with X-Forwarded-For $proxy_add_x_forwarded_for
-#   and X-Real-IP $remote_addr; headers-more-nginx-module present.
+#   and X-Real-IP $remote_addr.
 #   STOP if X-Real-IP is not $remote_addr in both locations.
-#   STOP if headers-more is missing. Step 3 needs it. The fallback is a full
-#   `location /` in the advanced config (NPM then drops its own), copying
-#   the current one from 3.conf with X-Forwarded-For $remote_addr instead of
-#   the proxy.conf include. Review that by hand before applying it.
+#   If headers-more-nginx-module is present (OpenResty-based NPM images),
+#   step 3 can use the one-line `more_clear_input_headers` fallback instead
+#   of the full-location block; note that instead of continuing below.
+#   If headers-more is absent (the live host: Debian/nginx.org nginx, no
+#   headers-more), step 3 uses `deploy/anubis/npm-proxy-host.advanced.conf`,
+#   which replaces the default `location /`. Before applying it:
+#   STOP if `include conf.d/include/assets.conf` appears in 3.conf (asset
+#   caching is on for this host) — turn it off in NPM first, or that
+#   location still appends the client's X-Forwarded-For.
+#   STOP if the live `location /` has `allow`/`deny` or
+#   `Strict-Transport-Security` lines not already in
+#   `npm-proxy-host.advanced.conf` — copy them into that file first, by
+#   hand, so replacing the location does not drop them.
 curl -fsS -H "$H" "$NPM_API/nginx/proxy-hosts/3" |
   jq '{id, domain_names, forward_host, forward_port, enabled, advanced_config,
        locations: [.locations[]? | {path, forward_host, forward_port, advanced_config}], meta}'
@@ -379,24 +426,39 @@ $G 'readlink /opt/oc-portal/current
 #   which is fine while Anubis is not in front).
 ```
 
-**3. nginx-proxy: X-Forwarded-For from `$remote_addr` only.** This is
-one advanced-config line at the server level of proxy host 3. It is
-appended to whatever is already there (see "Client addresses" above).
+**3. nginx-proxy: X-Forwarded-For from `$remote_addr` only.** This sets
+proxy host 3's whole `advanced_config` to
+`deploy/anubis/npm-proxy-host.advanced.conf`, which replaces NPM's
+default `location /` (see "Client addresses" above). It is not appended:
+NPM drops its own default location whenever `advanced_config` contains a
+`location / { … }` block, so the file already carries everything that
+location needs. If `advanced_config` is already non-empty and does not
+already contain this exact block, STOP and merge it by hand instead of
+running the `curl -X PUT` below — something else is using it (an access
+list, HSTS, or a previous manual edit) and blindly overwriting it would
+drop that.
 
 ```sh
 cur="$(jq -r '.advanced_config // ""' ~/pre-anubis-npm-proxy-host-3.json)"
-if grep -q more_clear_input_headers <<<"$cur"; then echo "already there"; else
-  new="$(printf '%s\n%s\n%s\n' "$cur" \
-    '# OpenCell: drop any client-sent X-Forwarded-For (portal deploy/anubis/README.md)' \
-    'more_clear_input_headers X-Forwarded-For;')"
-  jq -n --arg a "$new" '{advanced_config: $a}' |
+new="$(< deploy/anubis/npm-proxy-host.advanced.conf)"
+if [ -z "$cur" ] || grep -qF "$new" <<<"$cur"; then
+  jq -n --rawfile a deploy/anubis/npm-proxy-host.advanced.conf '{advanced_config: $a}' |
     curl -fsS -X PUT -H "$H" -H 'Content-Type: application/json' --data @- "$NPM_API/nginx/proxy-hosts/3" |
     jq '{id, advanced_config, meta}'
+else
+  echo "advanced_config is already non-empty and does not contain the block: merge by hand, do not overwrite" >&2
 fi
-$N 'grep -n -e more_clear -e X-Forwarded-For /data/nginx/proxy_host/3.conf; nginx -t'
+$N 'grep -c "^location / {" /data/nginx/proxy_host/3.conf; grep -n X-Forwarded-For /data/nginx/proxy_host/3.conf; nginx -t'
 curl -fsS https://opencell.k4ozi.com/healthz; echo
-#   expect: meta.nginx_online true and no nginx_err; the line in 3.conf
-#   above the locations; "syntax is ok"; the site answers.
+#   expect: meta.nginx_online true and no nginx_err; exactly one
+#   `location / {` in 3.conf (NPM's own default dropped, ours in its
+#   place); X-Forwarded-For $remote_addr, not $proxy_add_x_forwarded_for;
+#   "syntax is ok"; the site answers.
+#   Where headers-more is present (see step 0), use its one-line fallback
+#   instead: append (not replace)
+#   `more_clear_input_headers X-Forwarded-For;` to the existing
+#   `advanced_config`, PUT that, and check for the line in 3.conf instead
+#   of the location count.
 #   Undo: jq '{advanced_config}' ~/pre-anubis-npm-proxy-host-3.json |
 #     curl -fsS -X PUT -H "$H" -H 'Content-Type: application/json' --data @- "$NPM_API/nginx/proxy-hosts/3"
 ```
@@ -488,7 +550,7 @@ $G 'set -e; B=<the directory from step 1>
     [ -n "$ok" ] || { echo "portal NOT healthy on 3000"; journalctl -u oc-portal -n 30 --no-pager; exit 1; }'
 ```
 
-- nginx-proxy's forwarding needs no change. The step 3 line can stay: it
+- nginx-proxy's forwarding needs no change. The step 3 block can stay: it
   is right with or without Anubis. Undo it only if it is itself the
   problem.
 - The package, `/etc/anubis` and the key can stay (undo step 5 removes
@@ -497,6 +559,12 @@ $G 'set -e; B=<the directory from step 1>
   `portal.env`.
 - To go back to v0.2.0 as well, do it only after this rollback, never with
   Anubis in front: `../portal-$TAG/deploy/oc-portal-deploy rollback`.
+- **Right after this deploy, `previous` is v0.2.0**, so a bare
+  `../portal-$TAG/deploy/oc-portal-deploy rollback` (no `Anubis in front`
+  qualifier — just running it at all, right after step 2) targets v0.2.0.
+  v0.2.0 has no email-link guard (see "Before you start"). Never run
+  `oc-portal-deploy rollback` while `anubis@oc-portal` is active: roll back
+  the switch first (above), then `rollback` is safe.
 
 **Later changes to the policy or environment:**
 
