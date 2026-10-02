@@ -1,6 +1,7 @@
-import type { CellStatus, CoreStatus } from '@/core/types';
-import { askWithin } from '@/lib/core-ask';
+import type { CellStatus, CoreBlock, CoreHandle, CoreStatus, OcssPeer, RadioStatus } from '@/core/types';
+import { askReported, askWithin, type Reported } from '@/lib/core-ask';
 import type { Ctx } from '@/lib/ctx';
+import { radioView } from './radio';
 
 // The NOC's view of the network right now (NOC design §5, plan N1): every
 // core's core.status and cell.status, asked at once, each within the
@@ -27,6 +28,38 @@ export interface CoreView {
   status: CoreStatus | null;
   /** null: the cell list did not come within the deadline. */
   cells: CellStatus[] | null;
+  /** Plan N2a (core v0.4.0): every linked cell's radios (cell.radio 0). Absent: not asked. */
+  radio?: Reported<RadioStatus[]>;
+  /** The core's OCSS peers (ocss.status). */
+  ocss?: Reported<OcssPeer[]>;
+  /** The core's blocks (core.blocks), asked at most every BLOCKS_TTL_MS. */
+  blocks?: Reported<CoreBlock[]>;
+}
+
+/** core.blocks changes only when a core restarts with a new config, and its rate is 120 an hour: asked this often at most. */
+export const BLOCKS_TTL_MS = 10 * 60_000;
+/** An older core that answered 'unsupported' is not asked that again for this long (its "unknown op" rate is 60 an hour). */
+export const UNSUPPORTED_RETRY_MS = 10 * 60_000;
+
+const unsupportedUntil = new WeakMap<CoreHandle, Map<string, number>>();
+const blocksCache = new WeakMap<CoreHandle, { at: number; blocks: Reported<CoreBlock[]> }>();
+
+/** askReported, but an operation the core said it lacks is not asked again for UNSUPPORTED_RETRY_MS. */
+async function askNoc<T>(h: CoreHandle, what: string, ask: () => Promise<T>, deadlineMs: number, now: number): Promise<Reported<T>> {
+  const memo = unsupportedUntil.get(h) ?? new Map<string, number>();
+  unsupportedUntil.set(h, memo);
+  if ((memo.get(what) ?? 0) > now) return { state: 'unsupported' };
+  const r = await askReported(h, what, ask, deadlineMs);
+  if (r.state === 'unsupported') memo.set(what, now + UNSUPPORTED_RETRY_MS);
+  return r;
+}
+
+async function blocksOf(h: CoreHandle, deadlineMs: number, now: number): Promise<Reported<CoreBlock[]>> {
+  const hit = blocksCache.get(h);
+  if (hit && now - hit.at < BLOCKS_TTL_MS) return hit.blocks;
+  const blocks = await askNoc(h, 'blocks', () => h.core.coreBlocks(NOC_ACTOR), deadlineMs, now);
+  if (blocks.state !== 'unreachable') blocksCache.set(h, { at: now, blocks });
+  return blocks;
 }
 
 export interface NetworkSnapshot {
@@ -41,11 +74,14 @@ export async function networkSnapshot(ctx: Ctx, deadlineMs = 3000): Promise<Netw
   const at = ctx.now();
   const cores = await Promise.all(
     ctx.cores.map(async (h): Promise<CoreView> => {
-      const [status, cells] = await Promise.all([
+      const [status, cells, radio, ocss, blocks] = await Promise.all([
         askWithin(h, 'status', () => h.core.coreStatus(NOC_ACTOR), deadlineMs),
         askWithin(h, 'cells', () => h.core.cellStatus(NOC_ACTOR), deadlineMs),
+        askNoc(h, 'radio', () => h.core.cellRadio(NOC_ACTOR), deadlineMs, at),
+        askNoc(h, 'ocss', () => h.core.ocssStatus(NOC_ACTOR), deadlineMs, at),
+        blocksOf(h, deadlineMs, at),
       ]);
-      return { id: h.id, where: h.where, status, cells: cells?.slice().sort((a, b) => a.cellId - b.cellId) ?? null };
+      return { id: h.id, where: h.where, status, cells: cells?.slice().sort((a, b) => a.cellId - b.cellId) ?? null, radio, ocss, blocks };
     }),
   );
   return { at, deadlineMs, cores };
@@ -102,6 +138,33 @@ export interface NetworkSummary {
 }
 
 const RANK: Record<Severity, number> = { critical: 0, warning: 1, info: 2 };
+
+/** What a linked cell's radio report says needs attention (plan N2a): no report, a stale one, a silent board, PPS or time lost, radio errors. */
+function radioAttention(out: Attention[], core: string, cell: CellStatus, radios: RadioStatus[], now: number): void {
+  const who = `Cell ${cell.cellId} "${cell.name}" on ${core}`;
+  const mine = radios.filter((r) => r.cellId === cell.cellId);
+  if (mine.length === 0) {
+    out.push({ severity: 'info', core, cellId: cell.cellId, text: `${who} has not reported its radio (oc-cell before v0.1.2, or just linked)` });
+    return;
+  }
+  for (const r of mine) {
+    const v = radioView(r, now);
+    const radio = mine.length > 1 ? ` radio ${r.radio}` : '';
+    if (v.stale) {
+      out.push({ severity: 'warning', core, cellId: cell.cellId, text: `${who}${radio}: last radio report ${minutes(v.ageMs)} ago; PPS and time unknown` });
+      continue;
+    }
+    if (v.boardSilent) {
+      out.push({ severity: 'warning', core, cellId: cell.cellId, text: `${who}${radio}: the board is not answering the cell` });
+      continue;
+    }
+    if (v.pps !== 'locked') out.push({ severity: 'warning', core, cellId: cell.cellId, text: `${who}${radio}: PPS ${v.pps}` });
+    if (v.timebase === false) out.push({ severity: 'warning', core, cellId: cell.cellId, text: `${who}${radio}: no timebase` });
+    if (r.radioErrors > 0) {
+      out.push({ severity: 'info', core, cellId: cell.cellId, text: `${who}${radio}: ${r.radioErrors} radio errors since the board started (last ${r.lastRadioError})` });
+    }
+  }
+}
 
 function minutes(ms: number): string {
   const m = Math.floor(ms / 60_000);
@@ -163,6 +226,15 @@ export function summarize(s: NetworkSnapshot): NetworkSummary {
       if (cell.certFpr === null) {
         out.attention.push({ severity: 'info', core: c.id, cellId: cell.cellId, text: `${who} has no certificate pinned` });
       }
+      if (cell.online && c.radio?.state === 'ok') radioAttention(out.attention, c.id, cell, c.radio.value, s.at);
+    }
+  }
+  for (const c of s.cores) {
+    if (c.ocss?.state !== 'ok') continue;
+    for (const p of c.ocss.value) {
+      if (p.state === 'up') continue;
+      const since = p.since === null ? '' : ` for ${minutes(s.at - p.since)}`;
+      out.attention.push({ severity: 'warning', core: c.id, text: `OCSS from ${c.id} to core ${p.coreId}: ${p.state}${since}` });
     }
   }
   out.attention.sort((a, b) => RANK[a.severity] - RANK[b.severity]);

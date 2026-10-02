@@ -1,4 +1,4 @@
-import type { CoreHandle } from '@/core/types';
+import { type CoreHandle, isCoreError } from '@/core/types';
 
 /**
  * One question to one core, answered within deadlineMs or not at all:
@@ -24,6 +24,38 @@ export async function askWithin<T>(h: CoreHandle, what: string, ask: () => Promi
     .catch((e: unknown) => {
       console.error(`oc-portal: core ${h.id} (${h.where}) ${what} failed:`, e);
       return null;
+    });
+  try {
+    return await Promise.race([asked, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * What a core said to one of the NOC's newer questions (core v0.4.0, NOC
+ * design §7.2): the answer; 'unsupported', an older core that does not have
+ * the operation (shown as "not reported by this core", never as an error);
+ * or 'unreachable', no answer within the deadline, or a failure.
+ */
+export type Reported<T> = { state: 'ok'; value: T } | { state: 'unsupported' } | { state: 'unreachable' };
+
+/** As askWithin, but an older core's 'unsupported' is told apart from a failure (and not logged as one). */
+export async function askReported<T>(h: CoreHandle, what: string, ask: () => Promise<T>, deadlineMs: number): Promise<Reported<T>> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<Reported<T>>((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`oc-portal: core ${h.id} (${h.where}) ${what}: no answer within ${deadlineMs} ms`);
+      resolve({ state: 'unreachable' });
+    }, deadlineMs);
+  });
+  const asked = Promise.resolve()
+    .then(ask)
+    .then((value): Reported<T> => ({ state: 'ok', value }))
+    .catch((e: unknown): Reported<T> => {
+      if (isCoreError(e) && e.code === 'unsupported') return { state: 'unsupported' };
+      console.error(`oc-portal: core ${h.id} (${h.where}) ${what} failed:`, e);
+      return { state: 'unreachable' };
     });
   try {
     return await Promise.race([asked, late]);

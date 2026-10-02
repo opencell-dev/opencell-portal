@@ -131,6 +131,20 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     ]);
   });
 
+  it("gives the NOC both cores' radios, OCSS links and blocks, asked as the portal itself (plan N2a)", async () => {
+    await peerState(c1, 2, (s) => s === 'up');
+    const snap = await networkSnapshot(ctx);
+    expect(snap.cores.map((c) => c.radio)).toEqual([
+      { state: 'ok', value: [] },
+      { state: 'ok', value: [] },
+    ]);
+    expect(snap.cores[0].ocss).toMatchObject({ state: 'ok', value: [{ coreId: 2, state: 'up' }] });
+    expect(snap.cores[1].ocss).toMatchObject({ state: 'ok', value: [{ coreId: 1, state: 'up' }] });
+    expect(snap.cores[1].blocks).toMatchObject({ state: 'ok', value: [{ prefix: '8831503', role: 'home' }, { prefix: '8831717', role: 'none' }] });
+    expect(summarize(snap).attention.filter((a) => a.text.startsWith('OCSS'))).toEqual([]);
+    for (const op of ['cell.radio', 'ocss.status', 'core.blocks']) expect(audit(c1)).toContain(`a0 ${op} ok`);
+  });
+
   it('shows a core that stopped as unreachable, and the other as before', async () => {
     await c2.done();
     const t0 = Date.now();
@@ -144,5 +158,7 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     expect(snap.cores[1]).toMatchObject({ id: 'core2', status: null, cells: null });
     expect(summarize(snap).attention[0]).toMatchObject({ severity: 'critical', core: 'core2' });
     expect((await peerState(c1, 2, (s) => s !== 'up'))?.state).not.toBe('up');
+    const after = await networkSnapshot(ctx);
+    expect(summarize(after).attention.map((a) => a.text)).toContainEqual(expect.stringMatching(/^OCSS from core1 to core 2: (down|connecting|handshake|open)/));
   });
 });
