@@ -6,11 +6,37 @@ import { seedDemo } from '@/core/fake-demo';
 import { writeAudit } from '@/lib/audit';
 import { appCtx } from '@/lib/ctx';
 import { type LookupResult, lookupNumber } from '@/lib/noc/lookup';
+import { registrationsPage } from '@/lib/noc/registrations';
+import { isFullNumber } from '@/core/numbers';
+import type { Registration } from '@/core/types';
 import { forgetActivity } from '@/lib/noc/activity';
 import { forgetSnapshot } from '@/lib/noc/snapshot';
 import { requestMeta, requireAdmin, requireNoc } from '@/server/request';
 
 export type DemoResult = { ok: true; message: string } | { ok: false; message: string };
+export type RegPageResult = { ok: true; rows: Registration[]; more: boolean } | { ok: false; message: string };
+
+const regPageSchema = z.object({
+  core: z.string().regex(/^[a-z][a-z0-9]{0,15}$/),
+  cellId: z.number().int().min(1).max(0xffffffff).optional(),
+  after: z.string().max(16).refine(isFullNumber),
+});
+
+/**
+ * The next page of a core's registrations (plan N2a), after the last number
+ * shown: a POST, so the number stays out of URLs and logs, as the lookup's.
+ * Staff (admins and NOC operators); read under the viewer's account and
+ * audited in the portal and the core.
+ */
+export async function registrationsAction(input: unknown): Promise<RegPageResult> {
+  const { user } = await requireNoc();
+  const p = regPageSchema.safeParse(input);
+  const ctx = appCtx();
+  if (!p.success || !ctx.cores.some((c) => c.id === p.data.core)) return { ok: false, message: 'Not a page of registrations.' };
+  const page = await registrationsPage(ctx, p.data, user.id, (await requestMeta()).ip);
+  if (page.rows.state === 'ok') return { ok: true, rows: page.rows.value, more: page.more };
+  return { ok: false, message: page.rows.state === 'unsupported' ? `${p.data.core} does not list registrations (oc-core before v0.4.0).` : `${p.data.core} did not answer in time; try again.` };
+}
 
 /**
  * Staff (an admin or a NOC operator) looks up one number's status and

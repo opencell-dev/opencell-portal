@@ -28,7 +28,7 @@ vi.mock('@/server/request', () => ({
   requestMeta: async () => ({ ip: '192.0.2.7' }),
 }));
 
-const { demoAction, lookupNumberAction } = await import('@/app/actions/admin-noc');
+const { demoAction, lookupNumberAction, registrationsAction } = await import('@/app/actions/admin-noc');
 
 const N = '+883171746412345';
 let ctx: TestCtx;
@@ -183,5 +183,30 @@ describe('the demo controls', () => {
     state.noc = false;
     await expect(demoAction({ op: 'load' })).rejects.toThrow('NEXT_NOT_FOUND');
     await expect(lookupNumberAction(N)).rejects.toThrow('NEXT_NOT_FOUND');
+  });
+});
+
+describe('registrations, the next page (plan N2a)', () => {
+  it('gives the numbers after the last one shown, as the staff member, audited', async () => {
+    const id = ctx.core.simAddCell('A', 'part15', 1);
+    ctx.core.simSubscriber('+883171746410000', 1, id);
+    ctx.core.simSubscriber(N, 2, id);
+    state.admin = false; // a NOC operator
+    const r = await registrationsAction({ core: 'fake', after: '+883171746410000' });
+    expect(r).toMatchObject({ ok: true, more: false, rows: [{ number: N }] });
+    expect(ctx.core.audit.at(-1)).toMatchObject({ actor: 1_000_042, op: 'reg.list' });
+    expect(listAudit(ctx, 1)[0]).toMatchObject({ actorId: 42, action: 'noc.registrations', ip: '192.0.2.7' });
+  });
+
+  it('refuses what is not a page: no cursor, a cursor that is not a number, an unknown core', async () => {
+    for (const bad of [{ core: 'fake' }, { core: 'fake', after: '12345' }, { core: 'nope', after: N }, 'x', null]) {
+      expect(await registrationsAction(bad)).toEqual({ ok: false, message: 'Not a page of registrations.' });
+    }
+  });
+
+  it('is for staff only', async () => {
+    state.admin = false;
+    state.noc = false;
+    await expect(registrationsAction({ core: 'fake', after: N })).rejects.toThrow('NEXT_NOT_FOUND');
   });
 });
