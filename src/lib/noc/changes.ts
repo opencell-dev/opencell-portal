@@ -74,6 +74,14 @@ export async function switchCellMode(
 ): Promise<ChangeResult> {
   const h = ctx.cores.find((c) => c.id === core);
   if (!h) return { ok: false, message: `No core ${core}.` };
+  const target = `cell:${core}/${cellId}`;
+  // Review M5: the rate limit covers every attempt (including a wrong name), not only a completed change -- guessing a
+  // cell's name is itself a change-shaped action and must not be unbounded.
+  const lim = hit(ctx, 'noc_change', `user:${userId}`);
+  if (!lim.ok) {
+    writeAudit(ctx, { actorId: userId, action: 'noc.cell.mode.limited', target, detail: { reason }, ip });
+    return { ok: false, message: lim.message };
+  }
   const as = coreActor(ctx.config.site, userId);
   let cell: Awaited<ReturnType<typeof h.core.cellStatus>>[number] | undefined;
   try {
@@ -83,11 +91,15 @@ export async function switchCellMode(
     return { ok: false, message: `${core} did not answer; nothing was changed.` };
   }
   if (!cell) return { ok: false, message: `No cell ${cellId} on ${core}.` };
-  if (confirmName !== cell.name) return { ok: false, message: `Type the cell's name exactly ("${cell.name}") to confirm; nothing was changed.` };
-  if (cell.revoked) return { ok: false, message: `Cell ${cellId} is revoked; its mode can't change.` };
-  const lim = hit(ctx, 'noc_change', `user:${userId}`);
-  if (!lim.ok) return { ok: false, message: lim.message };
-  const target = `cell:${core}/${cellId}`;
+  // Review M5: a wrong name and a revoked cell leave no trace today; audit both, as every other refusal already is.
+  if (confirmName !== cell.name) {
+    writeAudit(ctx, { actorId: userId, action: 'noc.cell.mode', target, detail: { core, cell: cellId, outcome: 'wrong_name', reason }, ip });
+    return { ok: false, message: `Type the cell's name exactly ("${cell.name}") to confirm; nothing was changed.` };
+  }
+  if (cell.revoked) {
+    writeAudit(ctx, { actorId: userId, action: 'noc.cell.mode', target, detail: { core, cell: cellId, outcome: 'revoked', reason }, ip });
+    return { ok: false, message: `Cell ${cellId} is revoked; its mode can't change.` };
+  }
   const detail = { core, cell: cellId, from: cell.mode, to: mode, callsBefore: cell.calls, reason };
   if (cell.mode === mode) {
     writeAudit(ctx, { actorId: userId, action: 'noc.cell.mode', target, detail: { ...detail, outcome: 'unchanged' }, ip });
@@ -107,6 +119,8 @@ export async function switchCellMode(
   }
   if (outcome === 'invalid') return { ok: false, message: `${core} refused: cell ${cellId} is revoked.` };
   if (outcome === 'rate_limited') return { ok: false, message: `${core} is limiting mode switches; try again later.` };
+  // Review M5: an older core (needs oc-core v0.4.0) is not the same as one that simply did not answer.
+  if (outcome === 'unsupported') return { ok: false, message: `${core} does not support the mode switch yet (needs oc-core v0.4.0); nothing was changed.` };
   console.error(`oc-portal: noc.cell.mode on ${core} failed: ${outcome}`);
   return { ok: false, message: `${core} did not answer; check the cell's mode before trying again.` };
 }

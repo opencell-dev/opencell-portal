@@ -338,4 +338,37 @@ describe('the mode switch (plan N2a; NOC design §4.3)', () => {
     });
     expect((await ctx.core.cellStatus(0, id))[0].mode).toBe('part15');
   });
+
+  it('audits a wrong name, a revoked cell, and a noc_change refusal, none of which it currently does (review M5)', async () => {
+    const id = lancaster();
+    setLimit(ctx, 'noc_change', 2);
+    await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'wrong', reason: 'test' });
+    expect(JSON.parse(listAudit(ctx, 1)[0].detail ?? '{}')).toMatchObject({ outcome: 'wrong_name' });
+    await ctx.core.cellRevoke(0, id);
+    await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'test' });
+    expect(JSON.parse(listAudit(ctx, 1)[0].detail ?? '{}')).toMatchObject({ outcome: 'revoked' });
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'test' })).toMatchObject({ ok: false });
+    expect(listAudit(ctx, 1)[0]).toMatchObject({ action: 'noc.cell.mode.limited' });
+  });
+
+  it('limits wrong-name attempts too, so guessing a cell\'s name cannot be unbounded (review M5)', async () => {
+    const id = lancaster();
+    setLimit(ctx, 'noc_change', 2);
+    await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'wrong', reason: 'test' });
+    await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'wrong', reason: 'test' });
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'test' })).toEqual({
+      ok: false,
+      message: 'Too many changes this hour. Please try again later.',
+    });
+    expect((await ctx.core.cellStatus(0, id))[0].mode).toBe('part15');
+  });
+
+  it('gives a clear message on an older core, distinct from a generic "did not answer" (review M5)', async () => {
+    const id = lancaster();
+    vi.spyOn(ctx.core, 'cellMode').mockRejectedValueOnce(new CoreError('unsupported'));
+    expect(await cellModeAction({ core: 'fake', cellId: id, mode: 'part97', confirmName: 'Lancaster 1', reason: 'test' })).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('oc-core v0.4.0'),
+    });
+  });
 });
