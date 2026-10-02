@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { subscriberAction } from '@/app/actions/admin-noc';
 import { reauthenticate } from '@/components/use-reauth';
+import { afterChange } from '@/lib/noc/change-ui';
 
 /**
  * Disable or enable the looked-up number (plan N2a; decision 2026-10-01
@@ -31,7 +32,8 @@ export function SubscriberControls({ number, disabled, done }: { number: string;
       setMessage('reauth' in r ? 'The passkey confirmation expired; try again.' : r.message);
       if (r.ok) {
         setReason('');
-        await done();
+        // Review M8: the change above already succeeded; a re-read that fails or is refused must not look like it did not.
+        await afterChange(done);
       }
     } catch {
       setMessage("Couldn't reach the portal or your session has ended. Sign in again with your passkey.");
