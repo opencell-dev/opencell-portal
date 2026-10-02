@@ -16,7 +16,7 @@ import {
   signInOptions,
 } from '@/lib/passkeys';
 import { SESSION_MS } from '@/lib/sessions';
-import { ADMIN_SESSION_MS, isAdmin } from '@/lib/users';
+import { ADMIN_SESSION_MS, isStaff, STAFF_ONLY } from '@/lib/users';
 import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
 import { currentSession, requestMeta, requireUser, setSessionCookie } from '@/server/request';
 
@@ -41,7 +41,7 @@ const asAttestation = (v: unknown) => attestation.parse(v) as unknown as Registr
 
 function cookieExpiry(userId: number): number {
   const ctx = appCtx();
-  return ctx.now() + (isAdmin(ctx, userId) ? ADMIN_SESSION_MS : SESSION_MS);
+  return ctx.now() + (isStaff(ctx, userId) ? ADMIN_SESSION_MS : SESSION_MS);
 }
 
 export async function signUpAction(_prev: FormState, form: FormData): Promise<FormState> {
@@ -62,18 +62,26 @@ export async function magicLinkAction(_prev: FormState, form: FormData): Promise
     : { ok: false, message: r.error };
 }
 
-/** The confirm button on /auth/email/[token]: the link is used only when a person clicks. */
+/**
+ * The confirm button on /auth/email/[token]: the link is used only when a
+ * person clicks. On the NOC's site (NOC design §N1.5) every link leads to
+ * Account: an added account adds its passkey there, and staff open the NOC
+ * only with a passkey sign-in anyway.
+ */
 export async function confirmEmailLinkAction(token: string): Promise<void> {
+  const nocSite = appCtx().config.site === 'noc';
   const r = await consumeEmailToken(appCtx(), z.string().max(64).parse(token), await requestMeta());
   if (!r.ok) {
+    if (r.error === STAFF_ONLY) redirect('/sign-in?staff=1');
     // A second press (double click, or a retry after the first went through)
     // finds the link used; if this browser is already signed in, carry on.
-    if (await currentSession()) redirect('/numbers');
+    if (await currentSession()) redirect(nocSite ? '/account' : '/numbers');
     redirect(`/auth/email/${encodeURIComponent(token)}`);
   }
   if (r.sessionToken) await setSessionCookie(r.sessionToken, cookieExpiry(r.userId));
-  if (r.purpose === 'verify') redirect('/welcome');
   if (r.purpose === 'email_change') redirect('/account?email=changed');
+  if (nocSite) redirect('/account');
+  if (r.purpose === 'verify') redirect('/welcome');
   redirect('/numbers');
 }
 

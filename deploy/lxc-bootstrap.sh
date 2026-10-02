@@ -1,17 +1,32 @@
 #!/bin/bash
-# First setup of the portal guest (LXC 116), run once inside it as root:
-#   bash lxc-bootstrap.sh NGINX_PROXY_IP
+# First setup of the portal guest (LXC 116) or the NOC's guest (LXC 118,
+# NOC design §N1.5), run once inside it as root:
+#   bash lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc]
+# The two differ only in Anubis's settings and policy (the site argument,
+# default portal) and in what portal.env says (portal.env.example or
+# noc.env.example).
 # Installs Node.js 22 (NodeSource), sqlite3 and the build tools, creates the
-# oc-portal user and directories, the firewall, and the backup timer. The
-# deploy script (oc-portal-deploy) does the rest.
+# oc-portal user and directories, the firewall, the backup timer, and Anubis
+# in front of the portal (anubis/install-anubis.sh: nginx-proxy -> :3000
+# Anubis -> 127.0.0.1:3001 the portal). The deploy script (oc-portal-deploy)
+# does the rest. Safe to re-run: every step checks before it changes.
 set -euo pipefail
-PROXY_IP="${1:?usage: lxc-bootstrap.sh NGINX_PROXY_IP}"
+PROXY_IP="${1:?usage: lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc]}"
+# No default (final review I1): a missing site is left for
+# anubis/install-anubis.sh to read from what is already on this guest
+# (its own marker, OC_SITE in /etc/opencell/portal.env, or the files
+# already installed), so re-running this script on an upgrade never
+# silently takes a NOC guest back to the portal's settings.
+SITE="${2:-}"
 [[ "$PROXY_IP" =~ ^10\.0\.0\.[0-9]{1,3}$ ]] || { echo "expected an address on internal (10.0.0.x)" >&2; exit 2; }
+if [ -n "$SITE" ]; then
+  [[ "$SITE" =~ ^(portal|noc)$ ]] || { echo "usage: lxc-bootstrap.sh NGINX_PROXY_IP [portal|noc] (got '$SITE')" >&2; exit 2; }
+fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg sqlite3 nftables openssl build-essential python3 unattended-upgrades logrotate
+apt-get install -y ca-certificates curl gnupg gpgv iproute2 sqlite3 nftables openssl build-essential python3 unattended-upgrades logrotate
 
 install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
@@ -54,4 +69,19 @@ if [ "$UNITS_CHANGED" -eq 1 ]; then
   systemctl try-restart oc-portal.service oc-portal-backup.timer
   echo "unit files changed: restarted the affected units"
 fi
-echo "bootstrap done: node $(node --version); now write /etc/opencell/portal.env and portal-smtp.env, then deploy"
+
+# Anubis, the pinned release, verified; its instance anubis@oc-portal on
+# :3000. With no site given, install-anubis.sh reads what is already here
+# (final review I1) instead of defaulting to portal.
+if [ -n "$SITE" ]; then
+  bash "$HERE/anubis/install-anubis.sh" "$SITE"
+else
+  bash "$HERE/anubis/install-anubis.sh"
+fi
+
+site_installed="$(cat "${OC_PORTAL_ROOT:-}/etc/anubis/oc-portal.site" 2>/dev/null || echo "${SITE:-portal}")"
+echo "bootstrap done: node $(node --version), $(anubis --version 2>/dev/null || echo 'anubis ?')"
+example=portal.env.example
+if [ "$site_installed" = noc ]; then example=noc.env.example; fi
+echo "now write /etc/opencell/portal.env (from $example: PORT=3001, OC_LISTEN=127.0.0.1,"
+echo "OC_TRUSTED_PROXY=127.0.0.1) and portal-smtp.env, then deploy"

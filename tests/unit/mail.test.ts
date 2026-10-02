@@ -33,12 +33,27 @@ describe('mail', () => {
   });
 
   it('writes the link and its lifetime into the templates', () => {
-    const v = verifyMail('https://opencell.k4ozi.com/auth/email/abc');
+    const v = verifyMail('https://opencell.k4ozi.com/auth/email/abc', 'https://opencell.k4ozi.com', 'portal');
     expect(v.subject).toBe('Confirm your email for OpenCell');
     expect(v.text).toContain('https://opencell.k4ozi.com/auth/email/abc');
     expect(v.text).toContain('30 minutes');
-    const m = magicLinkMail('Ada', 'https://opencell.k4ozi.com/auth/email/def');
+    expect(v.text).toContain('https://opencell.k4ozi.com\n'); // signed with the mailing site's own origin
+    const m = magicLinkMail('Ada', 'https://opencell.k4ozi.com/auth/email/def', 'https://opencell.k4ozi.com', 'portal');
     expect(m.text).toContain('15 minutes');
     expect(m.text).toContain('only once');
+  });
+
+  // M4 (final review): an account on the NOC's site comes from
+  // oc-portal-admin add, never a sign-up, and its links point at the NOC's
+  // own origin, not the portal's.
+  it("words the NOC site's mail for staff, not a sign-up, and signs with its own origin", () => {
+    const v = verifyMail('https://noc.opencell.k4ozi.com/auth/email/abc', 'https://noc.opencell.k4ozi.com', 'noc');
+    expect(v.subject).not.toContain('Confirm your email for OpenCell');
+    expect(v.text).not.toContain('signed up');
+    expect(v.text).toContain('administrator created a staff account');
+    expect(v.text).toContain('https://noc.opencell.k4ozi.com\n');
+    const m = magicLinkMail('Nia', 'https://noc.opencell.k4ozi.com/auth/email/def', 'https://noc.opencell.k4ozi.com', 'noc');
+    expect(m.text).toContain('sign in to the OpenCell NOC');
+    expect(m.text).toContain('https://noc.opencell.k4ozi.com\n');
   });
 });

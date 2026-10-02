@@ -1,5 +1,5 @@
-// The core admin API as the portal sees it (portal spec §7). P1 implements it
-// with FakeCore (in-process); P4 adds the mTLS client for oc-core's port 7444.
+// The core admin API as the portal sees it (portal spec §7): FakeCore
+// (in-process, OC_CORE=fake) or TlsCore (oc-core's port 7444, OC_CORE=tls).
 // Every operation takes `actor`: the portal account id on whose behalf it
 // acts (0 for the portal itself), which the core writes to its audit.
 
@@ -67,9 +67,14 @@ export type CoreErrorCode =
   | 'not_assignable'
   | 'not_unactivated'
   | 'rate_limited'
-  | 'unavailable';
+  | 'unavailable'
+  /** The core doesn't do this yet: route.offer until P5. */
+  | 'unsupported';
+
+const CORE_ERROR = Symbol.for('opencell.CoreError');
 
 export class CoreError extends Error {
+  readonly [CORE_ERROR] = true;
   constructor(
     readonly code: CoreErrorCode,
     message: string = code,
@@ -77,6 +82,33 @@ export class CoreError extends Error {
     super(message);
     this.name = 'CoreError';
   }
+}
+
+/**
+ * Whether `e` is a CoreError, by a `Symbol.for` brand rather than
+ * `instanceof` (review I1, the same fix as `asFakeCore` in `core/fake.ts`):
+ * Next's production build can load this module more than once (one copy
+ * per server bundle). The cores are made once per process
+ * (`globalThis.__ocCores`) by whichever copy came first, so a CoreError it
+ * throws can belong to a different module copy than the one a later
+ * request's code checks `instanceof` against, and the check silently fails.
+ * The `Symbol.for` brand is the same object in every copy, so this holds
+ * even when the thrower and the catcher are different copies of this class.
+ */
+export function isCoreError(e: unknown): e is CoreError {
+  return typeof e === 'object' && e !== null && (e as Record<symbol, unknown>)[CORE_ERROR] === true;
+}
+
+/**
+ * A core the portal knows (plan P4b): its id in the config (core1, core2;
+ * 'fake' for the fake core), where it listens (for the admin page), and its
+ * client. The admin dashboard shows every core; number and subscriber
+ * operations go to the first until P5.
+ */
+export interface CoreHandle {
+  id: string;
+  where: string;
+  core: CoreAdmin;
 }
 
 export interface CoreAdmin {
@@ -87,7 +119,11 @@ export interface CoreAdmin {
   subCreate(actor: number, number: string): Promise<IssuedToken>;
   subReissue(actor: number, number: string): Promise<IssuedToken>;
   subStatus(actor: number, number: string): Promise<SubStatus>;
-  /** Only an unactivated number can be released (CoreError not_unactivated). */
+  /**
+   * Only an unactivated number can be released (CoreError not_unactivated).
+   * Idempotent: a number that is free already (released by the 72 h job or
+   * an earlier call, or never taken) resolves too.
+   */
   subRelease(actor: number, number: string): Promise<void>;
   subDisable(actor: number, number: string): Promise<void>;
   subEnable(actor: number, number: string): Promise<void>;

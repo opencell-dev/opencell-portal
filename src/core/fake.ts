@@ -37,6 +37,34 @@ interface Cell {
   lastHeardAt: number | null;
 }
 
+/** Which core a FakeCore plays (NOC design §10): core.status's id, name and version. */
+export interface FakeCoreOptions {
+  coreId?: number;
+  name?: string;
+  version?: string;
+}
+
+/**
+ * A simulated outage (NOC design §10): 'refuse' fails every call at once
+ * (connection refused); 'hang' fails it after HANG_MS, as TlsCore's own
+ * timeout does, so a page's 3 s deadline gives up first.
+ */
+export type FakeDown = 'refuse' | 'hang' | null;
+export const HANG_MS = 5000;
+
+const FAKE = Symbol.for('opencell.FakeCore');
+
+/**
+ * The fake core behind a CoreAdmin, or null. Not `instanceof`: Next's
+ * production build can load this module more than once (one copy per server
+ * bundle), and the cores are made once per process (globalThis.__ocCores) by
+ * whichever copy came first, so a class check from another copy fails. A
+ * Symbol.for brand is the same in every copy.
+ */
+export function asFakeCore(c: unknown): FakeCore | null {
+  return typeof c === 'object' && c !== null && (c as Record<symbol, unknown>)[FAKE] === true ? (c as FakeCore) : null;
+}
+
 export interface FakeAuditEntry {
   at: number;
   actor: number;
@@ -62,6 +90,7 @@ export function crc16CcittFalse(data: Uint8Array): number {
  * helpers so tests can play the terminal and cell side.
  */
 export class FakeCore implements CoreAdmin {
+  readonly [FAKE] = true;
   readonly audit: FakeAuditEntry[] = [];
   readonly routes: { tableVersion: number; size: number }[] = [];
   private readonly subs = new Map<string, Sub>();
@@ -70,9 +99,29 @@ export class FakeCore implements CoreAdmin {
   private nextCell = 1;
   private readonly started: number;
   private readonly networkKey = randomBytes(32);
+  private readonly activeCalls = new Map<number, number>();
+  private down: FakeDown = null;
+  readonly coreId: number;
+  readonly name: string;
+  readonly version: string;
 
-  constructor(private readonly now: () => number = Date.now) {
+  constructor(
+    private readonly now: () => number = Date.now,
+    opts: FakeCoreOptions = {},
+  ) {
     this.started = now();
+    this.coreId = opts.coreId ?? 1;
+    this.name = opts.name ?? 'fake-core';
+    this.version = opts.version ?? '0.0.0-fake';
+  }
+
+  /** Every call starts here: a simulated outage fails it before anything is done or audited. */
+  private async gate(): Promise<void> {
+    if (this.down === 'refuse') throw new CoreError('unavailable', 'connect ECONNREFUSED (simulated)');
+    if (this.down === 'hang') {
+      await new Promise((resolve) => setTimeout(resolve, HANG_MS).unref());
+      throw new CoreError('unavailable', 'the core did not answer in time (simulated)');
+    }
   }
 
   private log(actor: number, op: string, arg: unknown) {
@@ -114,6 +163,7 @@ export class FakeCore implements CoreAdmin {
   }
 
   async numFree(actor: number, exchange: string, count: number, pattern?: string): Promise<string[]> {
+    await this.gate();
     this.log(actor, 'num.free', `${exchange} ${count} ${pattern ?? ''}`.trim());
     if (!isExchange(exchange)) throw new CoreError('invalid', 'exchange must be +8831NPANXX');
     if (!Number.isInteger(count) || count < 1 || count > 32) throw new CoreError('invalid', 'count must be 1–32');
@@ -130,6 +180,7 @@ export class FakeCore implements CoreAdmin {
   }
 
   async numCheck(actor: number, number: string): Promise<NumCheck> {
+    await this.gate();
     this.log(actor, 'num.check', number);
     this.releaseExpired();
     if (!isAssignable(number)) return 'not_assignable';
@@ -137,6 +188,7 @@ export class FakeCore implements CoreAdmin {
   }
 
   async subCreate(actor: number, number: string): Promise<IssuedToken> {
+    await this.gate();
     this.log(actor, 'sub.create', number);
     this.releaseExpired();
     if (!isAssignable(number)) throw new CoreError('not_assignable', `${number} is not assignable`);
@@ -147,6 +199,7 @@ export class FakeCore implements CoreAdmin {
   }
 
   async subReissue(actor: number, number: string): Promise<IssuedToken> {
+    await this.gate();
     this.log(actor, 'sub.reissue', number);
     const s = this.sub(number);
     if (s.disabled) throw new CoreError('invalid', `${number} is disabled`);
@@ -154,6 +207,7 @@ export class FakeCore implements CoreAdmin {
   }
 
   async subStatus(actor: number, number: string): Promise<SubStatus> {
+    await this.gate();
     this.log(actor, 'sub.status', number);
     const s = this.sub(number);
     return {
@@ -169,13 +223,17 @@ export class FakeCore implements CoreAdmin {
   }
 
   async subRelease(actor: number, number: string): Promise<void> {
+    await this.gate();
     this.log(actor, 'sub.release', number);
-    const s = this.sub(number);
+    this.releaseExpired();
+    const s = this.subs.get(number);
+    if (!s) return; // free already (the 72 h job, an earlier call): a release is idempotent
     if (s.state !== 'unactivated') throw new CoreError('not_unactivated', `${number} is activated`);
     this.subs.delete(number);
   }
 
   async subDisable(actor: number, number: string): Promise<void> {
+    await this.gate();
     this.log(actor, 'sub.disable', number);
     const s = this.sub(number);
     s.disabled = true;
@@ -183,23 +241,22 @@ export class FakeCore implements CoreAdmin {
   }
 
   async subEnable(actor: number, number: string): Promise<void> {
+    await this.gate();
     this.log(actor, 'sub.enable', number);
     this.sub(number).disabled = false;
   }
 
   async cdrList(actor: number, number: string, since: number): Promise<Cdr[]> {
+    await this.gate();
     this.log(actor, 'cdr.list', number);
     if (!isFullNumber(number)) throw new CoreError('invalid', 'not a full number');
     return this.cdrs.filter((c) => c.number === number && c.at >= since).map((c) => ({ ...c }));
   }
 
   async cellAdd(actor: number, name: string, mode: CellMode, group: number): Promise<number> {
+    await this.gate();
     this.log(actor, 'cell.add', name);
-    if (name.length < 1 || name.length > 32) throw new CoreError('invalid', 'name must be 1–32 characters');
-    if (!Number.isInteger(group) || group < 0 || group > 65535) throw new CoreError('invalid', 'group must be 0–65535');
-    const cellId = this.nextCell++;
-    this.cells.set(cellId, { cellId, name, mode, group, certFpr: null, revoked: false, online: false, lastHeardAt: null });
-    return cellId;
+    return this.simAddCell(name, mode, group);
   }
 
   private cell(cellId: number): Cell {
@@ -209,6 +266,7 @@ export class FakeCore implements CoreAdmin {
   }
 
   async cellSetCert(actor: number, cellId: number, fpr: string): Promise<void> {
+    await this.gate();
     this.log(actor, 'cell.set_cert', cellId);
     const c = this.cell(cellId);
     if (!FPR.test(fpr)) throw new CoreError('invalid', 'fingerprint must be 64 lowercase hex digits');
@@ -216,39 +274,44 @@ export class FakeCore implements CoreAdmin {
   }
 
   async cellRevoke(actor: number, cellId: number): Promise<void> {
+    await this.gate();
     this.log(actor, 'cell.revoke', cellId);
     const c = this.cell(cellId);
     c.revoked = true;
     c.online = false;
     c.certFpr = null;
+    this.activeCalls.delete(cellId); // its link drops, and its calls with it
   }
 
   async cellStatus(actor: number, cellId?: number): Promise<CellStatus[]> {
+    await this.gate();
     this.log(actor, 'cell.status', cellId ?? 'all');
     const list = cellId === undefined ? [...this.cells.values()] : [this.cell(cellId)];
     return list.map((c) => {
       const here = [...this.subs.values()].filter((s) => s.cellId === c.cellId);
-      return { ...c, terminals: here.length, calls: 0 };
+      return { ...c, terminals: here.length, calls: this.activeCalls.get(c.cellId) ?? 0 };
     });
   }
 
   async coreStatus(actor: number): Promise<CoreStatus> {
+    await this.gate();
     this.log(actor, 'core.status', '');
     this.releaseExpired();
     const cells = [...this.cells.values()];
     return {
-      coreId: 1,
-      name: 'fake-core',
-      version: '0.0.0-fake',
+      coreId: this.coreId,
+      name: this.name,
+      version: this.version,
       uptimeS: Math.floor((this.now() - this.started) / 1000),
       cellsTotal: cells.length,
       cellsOnline: cells.filter((c) => c.online).length,
       subscribers: [...this.subs.values()].filter((s) => s.state === 'activated').length,
-      callsNow: 0,
+      callsNow: [...this.activeCalls.values()].reduce((a, b) => a + b, 0),
     };
   }
 
   async routeOffer(actor: number, tableVersion: number, blob: Uint8Array, sig: Uint8Array): Promise<void> {
+    await this.gate();
     this.log(actor, 'route.offer', tableVersion);
     if (blob.length === 0 || sig.length !== 64) throw new CoreError('invalid', 'empty table or bad signature length');
     this.routes.push({ tableVersion, size: blob.length });
@@ -278,14 +341,81 @@ export class FakeCore implements CoreAdmin {
     s.lastSeenAt = this.now();
   }
 
-  simCall(cdr: Omit<Cdr, 'at'>): void {
-    this.cdrs.push({ at: this.now(), ...cdr });
+  /** A finished call's CDR, now or (`at`) at an earlier time. */
+  simCall(cdr: Omit<Cdr, 'at'> & { at?: number }): void {
+    this.cdrs.push({ ...cdr, at: cdr.at ?? this.now() });
+  }
+
+  /** Calls in progress on a cell (cell.status calls, core.status callsNow). */
+  simActiveCalls(cellId: number, n: number): void {
+    this.cell(cellId);
+    if (n > 0) this.activeCalls.set(cellId, n);
+    else this.activeCalls.delete(cellId);
+  }
+
+  /** A simulated outage from now on (null: answering again). */
+  simDown(mode: FakeDown): void {
+    this.down = mode;
+  }
+
+  get isDown(): FakeDown {
+    return this.down;
   }
 
   simCellOnline(cellId: number, online: boolean): void {
     const c = this.cell(cellId);
     c.online = online;
     c.lastHeardAt = this.now();
+    if (!online) this.activeCalls.delete(cellId); // a lost link releases its calls
+  }
+
+  /** cell.add without the call (the demo's seeding): the same checks, nothing audited. */
+  simAddCell(name: string, mode: CellMode, group: number, certFpr: string | null = null): number {
+    if (name.length < 1 || name.length > 32) throw new CoreError('invalid', 'name must be 1–32 characters');
+    if (!Number.isInteger(group) || group < 0 || group > 65535) throw new CoreError('invalid', 'group must be 0–65535');
+    if (certFpr !== null && !FPR.test(certFpr)) throw new CoreError('invalid', 'fingerprint must be 64 lowercase hex digits');
+    const cellId = this.nextCell++;
+    this.cells.set(cellId, { cellId, name, mode, group, certFpr, revoked: false, online: false, lastHeardAt: null });
+    return cellId;
+  }
+
+  /** An activated subscriber bound to `tmid`, registered on `cellId` (or not), with no token ever shown: the demo's seeding. */
+  simSubscriber(number: string, tmid: number, cellId: number | null): void {
+    if (!isAssignable(number)) throw new CoreError('not_assignable', `${number} is not assignable`);
+    if (this.subs.has(number)) throw new CoreError('taken', `${number} is taken`);
+    if (cellId !== null) this.cell(cellId);
+    this.subs.set(number, {
+      number,
+      state: 'activated',
+      disabled: false,
+      token: null,
+      tmid: tmid >>> 0,
+      cellId,
+      lastSeenAt: this.now(),
+    });
+  }
+
+  /** A cell that went quiet at `since` (unix ms): offline, last heard then, its calls released. */
+  simCellOffline(cellId: number, since: number): void {
+    const c = this.cell(cellId);
+    c.online = false;
+    c.lastHeardAt = since;
+    this.activeCalls.delete(cellId);
+  }
+
+  /** Back to empty (the demo's reset): no subscribers, cells, CDRs, calls or outage; the audit is kept. */
+  simReset(): void {
+    this.subs.clear();
+    this.cdrs.length = 0;
+    this.cells.clear();
+    this.activeCalls.clear();
+    this.nextCell = 1;
+    this.down = null;
+  }
+
+  /** The cells as they are, outage or not (the demo controls), without a call or an audit record. */
+  simCells(): { cellId: number; name: string; online: boolean; revoked: boolean }[] {
+    return [...this.cells.values()].map(({ cellId, name, online, revoked }) => ({ cellId, name, online, revoked }));
   }
 
   /** Every number this core holds, for tests. */

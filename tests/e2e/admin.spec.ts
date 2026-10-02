@@ -28,8 +28,9 @@ test('an admin needs a passkey sign-in, and a fresh passkey to promote', async (
   await signOut(page);
   await signInWithPasskey(page);
   await page.getByRole('link', { name: 'Admin' }).click();
-  await expect(page.getByRole('heading', { name: 'Core' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Cores' })).toBeVisible();
   await expect(page.getByText('fake-core')).toBeVisible();
+  await expect(page.getByText('Numbers and subscribers are handled by fake')).toBeVisible();
 
   const other = uniqueEmail(info, 'deputy');
   const db = e2eDb();

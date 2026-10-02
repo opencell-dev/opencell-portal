@@ -16,7 +16,8 @@ const WHAT = {
 // Mail scanners open links; the token is used only by the button's POST.
 export default async function EmailLink({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const { purpose, state } = peekEmailToken(appCtx(), token);
+  const ctx = appCtx();
+  const { purpose, state } = peekEmailToken(ctx, token);
   if (state !== 'ok' || !purpose) {
     const why = state === 'expired' ? 'This link has expired.' : state === 'used' ? 'This link has already been used.' : 'This link is not valid.';
     return (
@@ -25,11 +26,16 @@ export default async function EmailLink({ params }: { params: Promise<{ token: s
         <p>
           <Link href="/sign-in" className="text-brand underline">
             Ask for a new sign-in link
-          </Link>{' '}
-          or{' '}
-          <Link href="/sign-up" className="text-brand underline">
-            sign up again
           </Link>
+          {ctx.config.site === 'portal' && (
+            <>
+              {' '}
+              or{' '}
+              <Link href="/sign-up" className="text-brand underline">
+                sign up again
+              </Link>
+            </>
+          )}
           .
         </p>
       </div>

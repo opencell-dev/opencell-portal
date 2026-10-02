@@ -50,6 +50,13 @@ export const LIMITS = {
     windowS: 86400,
     message: 'You have asked for numbers too often today. Please try again tomorrow.',
   },
+  // NOC design §11: a staff number lookup (a number's status and calls).
+  noc_lookup: {
+    perIp: false,
+    max: 120,
+    windowS: 3600,
+    message: 'Too many number lookups this hour. Please try again later.',
+  },
 } as const;
 
 export type LimitName = keyof typeof LIMITS;

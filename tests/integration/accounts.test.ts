@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { audit, emailTokens, rateEvents, sessions, users } from '@/db/schema';
+import { audit, emailTokens, passkeys, rateEvents, sessions, users } from '@/db/schema';
 import {
   changeEmail,
   consumeEmailToken,
@@ -201,6 +201,18 @@ describe('magic links (spec §3)', () => {
   it('says the same for an unknown address and sends nothing', async () => {
     expect(await requestMagicLink(ctx, { email: 'nobody@example.org' }, meta)).toEqual({ ok: true });
     expect(ctx.mailer.sent).toHaveLength(0);
+  });
+
+  // M5 (final review): no mail to an account the NOC site would refuse at
+  // sign-in anyway (a passkey, no staff role yet) -- confirming it would
+  // only use up the token for a STAFF_ONLY refusal, and the answer is the
+  // same either way, so this leaks nothing.
+  it('on the NOC site, sends no mail to a passkey account with no staff role yet', async () => {
+    const noc = testCtx({ OC_SITE: 'noc' });
+    const id = noc.db.insert(users).values({ name: 'Nia', email: 'nia@example.org', emailVerifiedAt: 1, createdAt: 1 }).returning().get().id;
+    noc.db.insert(passkeys).values({ id: 'cred-1', userId: id, publicKey: Buffer.from([1]), counter: 0, createdAt: 1 }).run();
+    expect(await requestMagicLink(noc, { email: 'nia@example.org' }, meta)).toEqual({ ok: true });
+    expect(noc.mailer.sent).toHaveLength(0);
   });
 
   it('re-sends the verification link to an unverified account', async () => {
@@ -449,6 +461,28 @@ describe('account page services (spec §3)', () => {
     const rows = ctx.db.select().from(audit).where(eq(audit.actorId, userId)).all();
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.ip === null)).toBe(true);
+  });
+
+  // M7 (final review): dead code today (ownedNumbers() returns []), but not
+  // once P2 gives it a body -- every core call names the actor the site's
+  // account id maps to, as lookupNumber and coreStatuses already do.
+  it('on the NOC site, tells the core its account id plus the offset, not the raw one', async () => {
+    const noc = testCtx({ OC_SITE: 'noc' });
+    const userId = noc.db.insert(users).values({ name: 'Nia', email: 'nia@example.org', emailVerifiedAt: 1, createdAt: 1 }).returning().get().id;
+    const released = '+883171746412345';
+    const disabled = '+883171746412346';
+    await noc.core.subCreate(userId, released);
+    await noc.core.subCreate(userId, disabled);
+    const owned = [
+      { number: released, activated: false },
+      { number: disabled, activated: true },
+    ];
+    const r = await deleteAccount(noc, userId, { confirmEmail: 'nia@example.org', choices: { [disabled]: 'disable' } }, meta, owned);
+    expect(r).toEqual({ ok: true });
+    expect(noc.core.audit.filter((a) => a.op === 'sub.release' || a.op === 'sub.disable').map((a) => a.actor)).toEqual([
+      1_000_000 + userId,
+      1_000_000 + userId,
+    ]);
   });
 });
 

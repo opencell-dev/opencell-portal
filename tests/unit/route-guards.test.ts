@@ -123,6 +123,9 @@ function pageProblems(src: string, guards: readonly string[], file = 'page.tsx')
 const APP = 'src/app/(app)';
 const ACTIONS = 'src/app/actions';
 const ADMIN_GUARDS = ['freshAdmin', 'requireAdmin'] as const;
+// admin-noc.ts (ruling 2026-10-01 #8/#9): the number lookup is open to staff
+// (requireNoc), while the demo controls stay admin-only (requireAdmin).
+const STAFF_ACTION_GUARDS = ['freshAdmin', 'requireAdmin', 'requireNoc'] as const;
 
 describe('route guards', () => {
   it('every admin page calls requireAdmin first', () => {
@@ -131,20 +134,60 @@ describe('route guards', () => {
     for (const p of admin) expect(pageProblems(readFileSync(p, 'utf8'), ['requireAdmin'], p)).toEqual([]);
   });
 
-  it('every signed-in page calls requireUser or requireAdmin first', () => {
-    for (const p of pages(APP)) expect(pageProblems(readFileSync(p, 'utf8'), ['requireUser', 'requireAdmin'], p)).toEqual([]);
+  it('every NOC page calls requireNoc or requireAdmin first (NOC design §4)', () => {
+    const noc = pages(join(APP, 'noc'));
+    expect(noc.length).toBeGreaterThanOrEqual(7);
+    for (const p of noc) expect(pageProblems(readFileSync(p, 'utf8'), ['requireNoc', 'requireAdmin'], p)).toEqual([]);
+  });
+
+  it('the NOC demo page is admin-only; the lookup page is open to staff (ruling 2026-10-01 #8/#9)', () => {
+    expect(pageProblems(readFileSync(join(APP, 'noc/demo/page.tsx'), 'utf8'), ['requireAdmin'], 'noc/demo/page.tsx')).toEqual([]);
+    expect(pageProblems(readFileSync(join(APP, 'noc/lookup/page.tsx'), 'utf8'), ['requireNoc'], 'noc/lookup/page.tsx')).toEqual([]);
+  });
+
+  it('every signed-in page calls requireUser, requireNoc or requireAdmin first', () => {
+    for (const p of pages(APP)) expect(pageProblems(readFileSync(p, 'utf8'), ['requireUser', 'requireNoc', 'requireAdmin'], p)).toEqual([]);
   });
 
   it('every admin action checks for a (fresh) admin first', () => {
     const files = readdirSync(ACTIONS).filter((f) => /^admin.*\.tsx?$/.test(f));
     expect(files).toContain('admin.ts');
+    expect(files).toContain('admin-noc.ts');
     let functions = 0;
     for (const f of files) {
-      const r = actionProblems(readFileSync(join(ACTIONS, f), 'utf8'), ADMIN_GUARDS, f);
+      // admin-noc.ts (ruling 2026-10-01 #8/#9): its number lookup may use
+      // requireNoc; every other admin action file stays admin-only.
+      const guards = f === 'admin-noc.ts' ? STAFF_ACTION_GUARDS : ADMIN_GUARDS;
+      const r = actionProblems(readFileSync(join(ACTIONS, f), 'utf8'), guards, f);
       expect(r.problems).toEqual([]);
       functions += r.functions;
     }
     expect(functions).toBeGreaterThan(0);
+  });
+
+  it('pins the exact guard per export in admin-noc.ts (review M1): only lookupNumberAction may use requireNoc', () => {
+    const src = readFileSync(join(ACTIONS, 'admin-noc.ts'), 'utf8');
+    const sf = parse(src, 'admin-noc.ts');
+    const imported = requestImports(sf);
+    const want: Record<string, readonly string[]> = {
+      lookupNumberAction: ['requireNoc'],
+      demoAction: ['requireAdmin'],
+    };
+    const seen = new Set<string>();
+    for (const st of sf.statements) {
+      if (!ts.isFunctionDeclaration(st) || !st.name || !hasModifier(st, ts.SyntaxKind.AsyncKeyword) || !hasModifier(st, ts.SyntaxKind.ExportKeyword)) {
+        continue;
+      }
+      const name = st.name.text;
+      const guards = want[name];
+      if (!guards) continue; // an export the test above already covers generally
+      seen.add(name);
+      expect(bodyProblem(st.body, guards, imported), name).toBeUndefined();
+      // And the other guard must NOT satisfy it: demoAction must not accept requireNoc, nor lookupNumberAction requireAdmin.
+      const other = guards[0] === 'requireNoc' ? 'requireAdmin' : 'requireNoc';
+      expect(bodyProblem(st.body, [other], imported), `${name} must not also accept ${other}`).not.toBeUndefined();
+    }
+    expect([...seen].sort()).toEqual(Object.keys(want).sort());
   });
 
   it('every account action checks for a signed-in user first', () => {

@@ -5,15 +5,18 @@ import { type CDPSession, expect, type Page, type TestInfo } from '@playwright/t
 import Database from 'better-sqlite3';
 
 const DIR = '.e2e';
+/** The NOC site's server (NOC design §N1.5; playwright.config.ts): its address and its own directory. */
+export const NOC_URL = 'http://localhost:3101';
+export const NOC_DIR = '.e2e-noc';
 
-/** The e2e server's database, opened directly (setup and checks only). */
-export function e2eDb() {
-  return new Database(join(DIR, 'portal.db'));
+/** An e2e server's database (the portal's unless `dir` says), opened directly (setup and checks only). */
+export function e2eDb(dir = DIR) {
+  return new Database(join(dir, 'portal.db'));
 }
 
 /** Lift the sign-up, link and passkey sign-in limits: every e2e test comes from 127.0.0.1. */
-export function liftLimits() {
-  const db = e2eDb();
+export function liftLimits(dir = DIR) {
+  const db = e2eDb(dir);
   for (const name of ['signup_ip', 'signup_email', 'magic_email', 'magic_ip', 'signin_ip']) {
     db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(
       `limit.${name}`,
@@ -37,13 +40,28 @@ export function portalAdmin(...args: string[]) {
   });
 }
 
+/** The bootstrap CLI against the NOC site's e2e database (OC_SITE=noc), as on its guest. */
+export function nocAdmin(...args: string[]) {
+  return execFileSync('npx', ['tsx', 'scripts/oc-portal-admin.ts', ...args], {
+    env: {
+      ...process.env,
+      OC_SITE: 'noc',
+      OC_ORIGIN: NOC_URL,
+      OC_RP_ID: 'localhost',
+      OC_SECRET: 'e2e-noc-secret-e2e-noc-secret-e2e-0000',
+      OC_DB_PATH: `${NOC_DIR}/portal.db`,
+    },
+    encoding: 'utf8',
+  });
+}
+
 export function uniqueEmail(info: TestInfo, tag: string) {
   return `${tag}-${info.project.name}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.org`;
 }
 
 /** The links mailed to `to`, oldest first (the outbox transport writes one `<ms>-<rand>.json` file per message). */
-function linksTo(to: string): string[] {
-  const dir = join(DIR, 'outbox');
+function linksTo(to: string, base = DIR): string[] {
+  const dir = join(base, 'outbox');
   if (!existsSync(dir)) return [];
   const links: string[] = [];
   for (const f of readdirSync(dir).sort()) {
@@ -58,12 +76,12 @@ function linksTo(to: string): string[] {
  * for a message that arrived after that one, so a slow mail queue can't hand
  * back the previous link.
  */
-export async function mailedLink(to: string, after?: string): Promise<string> {
+export async function mailedLink(to: string, after?: string, dir = DIR): Promise<string> {
   let link = '';
   await expect
     .poll(
       () => {
-        const links = linksTo(to);
+        const links = linksTo(to, dir);
         const fresh = after === undefined ? links : links.slice(links.lastIndexOf(after) + 1);
         link = fresh.at(-1) ?? '';
         return link;
@@ -124,10 +142,11 @@ export async function signOut(page: Page) {
   await expect(page).toHaveURL(/\/$/);
 }
 
-export async function signInWithPasskey(page: Page) {
+/** Sign in with the page's passkey; it lands on `home` (the portal's numbers, or the NOC on its site). */
+export async function signInWithPasskey(page: Page, home: RegExp = /\/numbers$/) {
   await page.goto('/sign-in');
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
-  await expect(page).toHaveURL(/\/numbers$/);
+  await expect(page).toHaveURL(home);
 }
 
 /** Collect CSP violations the page reports (securitypolicyviolation events), across navigations. */

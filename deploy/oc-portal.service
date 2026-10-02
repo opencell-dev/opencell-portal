@@ -1,5 +1,9 @@
 [Unit]
 Description=OpenCell web portal
+# Behind Anubis (anubis@oc-portal.service, deploy/anubis/): the portal listens
+# where /etc/opencell/portal.env says (PORT=3001, OC_LISTEN=127.0.0.1) and
+# believes X-Forwarded-For only from OC_TRUSTED_PROXY=127.0.0.1, Anubis. The
+# two units are independent on purpose (either restarts without the other).
 After=network-online.target
 Wants=network-online.target
 

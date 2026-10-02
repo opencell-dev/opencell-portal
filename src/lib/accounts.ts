@@ -9,8 +9,9 @@ import { emailChangedNotice, emailChangeMail, magicLinkMail, type Template, veri
 import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
 import { hit, hitIp, longestWindowMs, rateKey } from '@/lib/ratelimit';
 import { createSession, type RequestMeta } from '@/lib/sessions';
+import { coreActor } from '@/lib/site';
 import { hashToken, newToken } from '@/lib/tokens';
-import { findUserByEmail, getUser, isLastAdmin } from '@/lib/users';
+import { findUserByEmail, getUser, isLastAdmin, STAFF_ONLY, siteAdmits } from '@/lib/users';
 import { emailSchema, firstError, nameSchema } from '@/lib/validation';
 
 export type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
@@ -111,6 +112,8 @@ export async function signUp(
   input: { name: unknown; email: unknown; altcha: unknown },
   meta: RequestMeta,
 ): Promise<Result> {
+  // The NOC's site has no sign-up: the admin CLI adds its accounts (NOC design §N1.5).
+  if (ctx.config.site !== 'portal') return { ok: false, error: 'Sign-up is not open on this site.' };
   const p = signUpSchema.safeParse(input);
   if (!p.success) return { ok: false, error: firstError(p.error) };
   const { name, email, altcha } = p.data;
@@ -128,7 +131,7 @@ export async function signUp(
 
   const existing = findUserByEmail(ctx, email);
   if (existing?.emailVerifiedAt) {
-    mail(ctx, email, magicLinkMail(existing.name, linkFor(ctx, issueEmailToken(ctx, existing.id, 'magic'))));
+    mail(ctx, email, magicLinkMail(existing.name, linkFor(ctx, issueEmailToken(ctx, existing.id, 'magic')), ctx.config.origin, ctx.config.site));
     return { ok: true };
   }
   let userId: number;
@@ -139,7 +142,7 @@ export async function signUp(
     userId = ctx.db.insert(users).values({ name, email, createdAt: ctx.now() }).returning({ id: users.id }).get().id;
     writeAudit(ctx, { actorId: userId, action: 'account.signup', target: `user:${userId}`, ip: meta.ip });
   }
-  mail(ctx, email, verifyMail(linkFor(ctx, issueEmailToken(ctx, userId, 'verify'))));
+  mail(ctx, email, verifyMail(linkFor(ctx, issueEmailToken(ctx, userId, 'verify')), ctx.config.origin, ctx.config.site));
   return { ok: true };
 }
 
@@ -154,10 +157,15 @@ export async function requestMagicLink(ctx: Ctx, input: { email: unknown }, meta
   if (!lim.ok) return { ok: false, error: lim.message };
   const u = findUserByEmail(ctx, email);
   if (!u) return { ok: true };
+  // M5 (final review): an account this site would refuse at sign-in anyway
+  // (a passkey, no staff role) gets no mail either — the token would only
+  // be used up for a STAFF_ONLY refusal. The answer is the same either way,
+  // so this leaks nothing about which accounts exist.
+  if (!siteAdmits(ctx, u.id)) return { ok: true };
   if (!u.emailVerifiedAt) {
-    mail(ctx, email, verifyMail(linkFor(ctx, issueEmailToken(ctx, u.id, 'verify'))));
+    mail(ctx, email, verifyMail(linkFor(ctx, issueEmailToken(ctx, u.id, 'verify')), ctx.config.origin, ctx.config.site));
   } else {
-    mail(ctx, email, magicLinkMail(u.name, linkFor(ctx, issueEmailToken(ctx, u.id, 'magic'))));
+    mail(ctx, email, magicLinkMail(u.name, linkFor(ctx, issueEmailToken(ctx, u.id, 'magic')), ctx.config.origin, ctx.config.site));
   }
   return { ok: true };
 }
@@ -203,6 +211,8 @@ export async function consumeEmailToken(
   if (claimed.changes !== 1) return { ok: false, error: TOKEN_ERRORS.used };
   const u = getUser(ctx, row.userId);
   if (!u) return { ok: false, error: TOKEN_ERRORS.unknown };
+  // The NOC's site signs in staff only, and an added account until its first passkey (NOC design §N1.5).
+  if (!siteAdmits(ctx, u.id)) return { ok: false, error: STAFF_ONLY };
 
   if (row.purpose === 'email_change') {
     const newEmail = row.newEmail!;
@@ -214,7 +224,7 @@ export async function consumeEmailToken(
     ctx.db.delete(sessions).where(eq(sessions.userId, u.id)).run();
     ctx.db.delete(emailTokens).where(and(eq(emailTokens.userId, u.id), inArray(emailTokens.purpose, ['verify', 'magic']), isNull(emailTokens.usedAt))).run();
     writeAudit(ctx, { actorId: u.id, action: 'account.email_change', target: `user:${u.id}`, ip: meta.ip });
-    mail(ctx, u.email, emailChangedNotice(u.name, newEmail));
+    mail(ctx, u.email, emailChangedNotice(u.name, newEmail, ctx.config.origin));
     // Clicking a link mailed to the new address proves control of it, same as
     // a magic link, so this action opens a fresh session of its own too.
     const { token: sessionToken } = createSession(ctx, u.id, 'email', meta);
@@ -246,7 +256,7 @@ export async function changeEmail(ctx: Ctx, userId: number, input: { email: unkn
   const lim = hit(ctx, 'magic_email', email);
   if (!lim.ok) return { ok: false, error: lim.message };
   if (findUserByEmail(ctx, email)) return { ok: true }; // say nothing about other accounts
-  mail(ctx, email, emailChangeMail(linkFor(ctx, issueEmailToken(ctx, userId, 'email_change', email))));
+  mail(ctx, email, emailChangeMail(linkFor(ctx, issueEmailToken(ctx, userId, 'email_change', email)), ctx.config.origin));
   return { ok: true };
 }
 
@@ -300,14 +310,18 @@ export async function deleteAccount(
   // Only numbers that actually change land in `changed`: a 'keep' choice
   // makes no core call, so there's nothing to report for it, on success or
   // on a later number's failure.
+  // M7 (final review): the core call names the actor the site's account id
+  // maps to (coreActor), as every other core call does — dead code today
+  // (ownedNumbers() returns []), but not once P2 gives it a body.
+  const actor = coreActor(ctx.config.site, userId);
   const changed: Record<string, string> = {};
   for (const n of owned) {
     try {
       if (!n.activated) {
-        await ctx.core.subRelease(userId, n.number);
+        await ctx.core.subRelease(actor, n.number);
         changed[n.number] = 'released';
       } else if (choices[n.number] === 'disable') {
-        await ctx.core.subDisable(userId, n.number);
+        await ctx.core.subDisable(actor, n.number);
         changed[n.number] = 'disabled';
       }
     } catch (e) {

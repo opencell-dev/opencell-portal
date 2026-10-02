@@ -1,12 +1,38 @@
 import { z } from 'zod';
+import type { Site } from '@/lib/site';
+
+/** HOST:PORT, the port 1–65535 (no IPv6 literal). */
+function addrOk(v: string): boolean {
+  const m = /^([^\s:]+):(\d{1,5})$/.exec(v);
+  return m !== null && Number(m[2]) >= 1 && Number(m[2]) <= 65535;
+}
 
 const envSchema = z
   .object({
     OC_ORIGIN: z.url({ protocol: /^https?$/ }),
     OC_RP_ID: z.string().min(1),
     OC_SECRET: z.string().min(32, 'OC_SECRET must be at least 32 characters'),
+    // Which site this process is (NOC design §N1.5): the subscriber portal,
+    // or the operators' NOC on its own guest (src/lib/site.ts).
+    OC_SITE: z.enum(['portal', 'noc'], { error: 'OC_SITE is "portal" or "noc"' }).default('portal'),
     OC_DB_PATH: z.string().min(1).default('./data/portal.db'),
-    OC_CORE: z.literal('fake', { error: 'OC_CORE must be "fake" until P4 brings the mTLS client' }).default('fake'),
+    OC_CORE: z.enum(['fake', 'tls'], { error: 'OC_CORE is "fake" or "tls"' }).default('fake'),
+    // OC_CORE=tls: the cores' admin API (portal spec §7). One core:
+    // OC_CORE_ADDR (+ OC_CORE_NAME). Several (plan P4b): OC_CORES=core1,core2
+    // and OC_CORE_<ID>_ADDR / OC_CORE_<ID>_NAME per core (readCores below).
+    // The files are shared by every core (one OpenCell root, one portal
+    // certificate pinned on each): paths, or (no '/') systemd credentials.
+    OC_CORE_ADDR: z.string().refine(addrOk, 'OC_CORE_ADDR is HOST:PORT, e.g. 10.0.0.60:7444').optional(),
+    OC_CORE_NAME: z.string().min(1).optional(),
+    OC_CORES: z.string().optional(),
+    OC_CORE_CA: z.string().min(1).optional(),
+    OC_CORE_CERT: z.string().min(1).optional(),
+    OC_CORE_KEY: z.string().min(1).optional(),
+    // OC_CORE=fake only (NOC design §10): how many fake cores (fake, fake2, …)
+    // and whether each starts with the demo network. Never in production,
+    // which runs OC_CORE=tls: either one with tls is a configuration error.
+    OC_FAKE_CORES: z.coerce.number().int().min(1).max(4, 'OC_FAKE_CORES is 1 to 4').optional(),
+    OC_FAKE_DEMO: z.enum(['0', '1'], { error: 'OC_FAKE_DEMO is 0 or 1' }).optional(),
     OC_MAIL: z.enum(['smtp', 'outbox']).default('outbox'),
     OC_MAIL_OUTBOX: z.string().min(1).default('./data/outbox'),
     OC_MAIL_FROM: z.string().min(3).default('OpenCell <opencell@k4ozi.com>'),
@@ -22,6 +48,20 @@ const envSchema = z
     if (host !== env.OC_RP_ID && !host.endsWith(`.${env.OC_RP_ID}`)) {
       ctx.addIssue({ code: 'custom', path: ['OC_RP_ID'], message: 'OC_RP_ID must be the origin host or a parent domain of it' });
     }
+    if (env.OC_CORE === 'tls') {
+      for (const k of ['OC_CORE_CA', 'OC_CORE_CERT', 'OC_CORE_KEY'] as const) {
+        if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when OC_CORE=tls` });
+      }
+      if (env.OC_CORES === undefined && !env.OC_CORE_ADDR) {
+        const message = 'OC_CORE_ADDR is required when OC_CORE=tls (or list the cores in OC_CORES)';
+        ctx.addIssue({ code: 'custom', path: ['OC_CORE_ADDR'], message });
+      }
+    }
+    if (env.OC_CORE === 'tls') {
+      for (const k of ['OC_FAKE_CORES', 'OC_FAKE_DEMO'] as const) {
+        if (env[k] !== undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is for the fake core only (OC_CORE=fake)` });
+      }
+    }
     if (env.OC_MAIL === 'smtp') {
       for (const k of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TOKEN'] as const) {
         if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when OC_MAIL=smtp` });
@@ -29,12 +69,98 @@ const envSchema = z
     }
   });
 
+type Env = z.infer<typeof envSchema>;
+
+/** One core's admin API (portal spec §7): where it listens, the name its certificate carries, the shared TLS files. */
+export interface CoreEndpoint {
+  /** core1, core2, … (OC_CORES; a single OC_CORE_ADDR core is core1). */
+  id: string;
+  host: string;
+  port: number;
+  servername: string;
+  ca: string;
+  cert: string;
+  key: string;
+}
+
+const CORE_ID = /^[a-z][a-z0-9]{0,15}$/;
+// Loose on purpose (review M1): an underscore or lowercase typo in an
+// unlisted core's key (OC_CORE_CORE_3_ADDR, OC_CORE_core3_ADDR) must still
+// be caught below, not silently ignored because it doesn't look like a
+// normal per-core key. Never matches OC_CORE_ADDR/OC_CORE_NAME themselves.
+const PER_CORE = /^OC_CORE_(.+)_(ADDR|NAME)$/i;
+
+function endpoint(id: string, addr: string, servername: string, e: Env): CoreEndpoint {
+  const at = addr.lastIndexOf(':');
+  return {
+    id,
+    host: addr.slice(0, at),
+    port: Number(addr.slice(at + 1)),
+    servername,
+    ca: e.OC_CORE_CA!,
+    cert: e.OC_CORE_CERT!,
+    key: e.OC_CORE_KEY!,
+  };
+}
+
+/**
+ * The cores, in order (OC_CORE=tls; none for the fake core). The first one
+ * takes every number and subscriber operation until P5 routes each block to
+ * its home core (portal spec §4.3, §12); the admin dashboard shows them all.
+ * Problems go to `issues` as `KEY: message` lines.
+ */
+function readCores(e: Env, env: Record<string, string | undefined>, issues: string[]): CoreEndpoint[] {
+  const listed = e.OC_CORES === undefined ? undefined : e.OC_CORES.split(',').map((s) => s.trim());
+  // A per-core key for a core not listed is a typo that would hide a core.
+  for (const k of Object.keys(env).sort()) {
+    const m = PER_CORE.exec(k);
+    if (m && env[k] !== undefined && !listed?.some((id) => id.toUpperCase() === m[1])) {
+      issues.push(`${k}: ${m[1].toLowerCase()} is not in OC_CORES`);
+    }
+  }
+  if (e.OC_CORE !== 'tls') {
+    if (listed) issues.push('OC_CORES: several cores need OC_CORE=tls');
+    return [];
+  }
+  if (!listed) return [endpoint('core1', e.OC_CORE_ADDR!, e.OC_CORE_NAME ?? 'core1.opencell.k4ozi.com', e)];
+  for (const k of ['OC_CORE_ADDR', 'OC_CORE_NAME'] as const) {
+    if (e[k] !== undefined) issues.push(`${k}: with OC_CORES, each core has its own OC_CORE_<ID>_ADDR and _NAME`);
+  }
+  const out: CoreEndpoint[] = [];
+  const seen = new Set<string>();
+  for (const id of listed) {
+    if (!CORE_ID.test(id)) {
+      issues.push(`OC_CORES: '${id}' is not a core id (a–z and 0–9, starting with a letter, at most 16)`);
+      continue;
+    }
+    if (seen.has(id)) {
+      issues.push(`OC_CORES: ${id} is listed twice`);
+      continue;
+    }
+    seen.add(id);
+    const p = `OC_CORE_${id.toUpperCase()}_`;
+    const addr = env[`${p}ADDR`];
+    const name = env[`${p}NAME`];
+    const ok = addr !== undefined && addrOk(addr);
+    if (!ok) issues.push(`${p}ADDR: ${p}ADDR is HOST:PORT, e.g. 10.99.0.2:7444`);
+    if (!name) issues.push(`${p}NAME: ${p}NAME is required (the name ${id}'s certificate carries)`);
+    if (ok && name) out.push(endpoint(id, addr, name, e));
+  }
+  return out;
+}
+
 export type Config = {
+  /** The subscriber portal or the NOC's own site (NOC design §N1.5). */
+  site: Site;
   origin: string;
   rpId: string;
   secret: string;
   dbPath: string;
-  core: 'fake';
+  core: 'fake' | 'tls';
+  /** OC_CORE=tls: one or more, the first takes the number and subscriber operations; the fake core: none. */
+  cores: CoreEndpoint[];
+  /** OC_CORE=fake: how many fake cores, and whether they start with the demo network (NOC design §10). */
+  fake: { cores: number; demo: boolean };
   secureCookies: boolean;
   sessionCookie: string;
   mail: {
@@ -48,19 +174,23 @@ export type Config = {
 
 export function parseConfig(env: Record<string, string | undefined>): Config {
   const r = envSchema.safeParse(env);
-  if (!r.success) {
-    const lines = r.error.issues.map((i) => `${i.path.join('.') || 'env'}: ${i.message}`);
+  const lines = r.success ? [] : r.error.issues.map((i) => `${i.path.join('.') || 'env'}: ${i.message}`);
+  const cores = r.success ? readCores(r.data, env, lines) : [];
+  if (!r.success || lines.length > 0) {
     throw new Error(`Invalid portal configuration:\n${lines.join('\n')}`);
   }
   const e = r.data;
   const origin = new URL(e.OC_ORIGIN).origin;
   const secure = origin.startsWith('https:');
   return {
+    site: e.OC_SITE,
     origin,
     rpId: e.OC_RP_ID,
     secret: e.OC_SECRET,
     dbPath: e.OC_DB_PATH,
     core: e.OC_CORE,
+    cores,
+    fake: { cores: e.OC_FAKE_CORES ?? 1, demo: e.OC_FAKE_DEMO === '1' },
     secureCookies: secure,
     sessionCookie: secure ? '__Host-oc_session' : 'oc_session',
     mail: {
