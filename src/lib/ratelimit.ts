@@ -57,6 +57,13 @@ export const LIMITS = {
     windowS: 3600,
     message: 'Too many number lookups this hour. Please try again later.',
   },
+  // Plan N2a: a staff member's subscriber disables and enables, and cell mode switches.
+  noc_change: {
+    perIp: false,
+    max: 30,
+    windowS: 3600,
+    message: 'Too many changes this hour. Please try again later.',
+  },
 } as const;
 
 export type LimitName = keyof typeof LIMITS;

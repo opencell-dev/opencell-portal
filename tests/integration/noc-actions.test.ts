@@ -13,7 +13,7 @@ import { type TestCtx, testCtx } from '../helpers/ctx';
 // only). The guard is mocked here (route-guards.test.ts checks it is the
 // first statement); what is tested is what the actions do once it passed.
 
-const state: { ctx?: TestCtx; admin: boolean; noc: boolean } = { admin: true, noc: true };
+const state: { ctx?: TestCtx; admin: boolean; noc: boolean; fresh: boolean } = { admin: true, noc: true, fresh: true };
 
 vi.mock('@/lib/ctx', () => ({ appCtx: () => state.ctx! }));
 vi.mock('@/server/request', () => ({
@@ -25,10 +25,18 @@ vi.mock('@/server/request', () => ({
     if (!state.admin && !state.noc) throw new Error('NEXT_NOT_FOUND');
     return { user: { id: 42 } };
   },
+  freshNoc: async () => {
+    if (!state.admin && !state.noc) throw new Error('NEXT_NOT_FOUND');
+    return state.fresh ? { ok: true, s: { user: { id: 42 } } } : { ok: false, reauth: true };
+  },
+  freshAdmin: async () => {
+    if (!state.admin) throw new Error('NEXT_NOT_FOUND');
+    return state.fresh ? { ok: true, s: { user: { id: 42 } } } : { ok: false, reauth: true };
+  },
   requestMeta: async () => ({ ip: '192.0.2.7' }),
 }));
 
-const { demoAction, lookupNumberAction, registrationsAction } = await import('@/app/actions/admin-noc');
+const { demoAction, lookupNumberAction, registrationsAction, subscriberAction } = await import('@/app/actions/admin-noc');
 
 const N = '+883171746412345';
 let ctx: TestCtx;
@@ -38,6 +46,7 @@ beforeEach(() => {
   state.ctx = ctx;
   state.admin = true;
   state.noc = true;
+  state.fresh = true;
 });
 
 describe('number lookup', () => {
@@ -208,5 +217,56 @@ describe('registrations, the next page (plan N2a)', () => {
     state.admin = false;
     state.noc = false;
     await expect(registrationsAction({ core: 'fake', after: N })).rejects.toThrow('NEXT_NOT_FOUND');
+  });
+});
+
+describe('disable and enable a subscriber (plan N2a; decision 2026-10-01 #10)', () => {
+  it('lets a NOC operator disable a number with a reason, under their account, audited with the reason and outcome', async () => {
+    const id = ctx.core.simAddCell('A', 'part15', 1);
+    ctx.core.simSubscriber(N, 0x76ad0488, id);
+    state.admin = false;
+    const r = await subscriberAction({ number: '+883-1-717-464-12345', enable: false, reason: 'stolen handset' });
+    expect(r).toEqual({ ok: true, message: "+883-1-717-464-12345 is disabled on fake: it can't register or call until it is enabled." });
+    expect(await ctx.core.subStatus(0, N)).toMatchObject({ disabled: true, registered: false });
+    expect(ctx.core.audit.at(-2)).toMatchObject({ actor: 1_000_042, op: 'sub.disable', arg: N });
+    expect(listAudit(ctx, 1)[0]).toMatchObject({
+      actorId: 42,
+      action: 'noc.sub.disable',
+      target: `number:${N}`,
+      detail: JSON.stringify({ core: 'fake', reason: 'stolen handset', outcome: 'ok' }),
+      ip: '192.0.2.7',
+    });
+    expect(await subscriberAction({ number: N, enable: true, reason: 'found again' })).toMatchObject({ ok: true, message: '+883-1-717-464-12345 is enabled again on fake.' });
+    expect((await ctx.core.subStatus(0, N)).disabled).toBe(false);
+  });
+
+  it('asks for a fresh passkey first, and changes nothing until then', async () => {
+    ctx.core.simSubscriber(N, 1, null);
+    state.fresh = false;
+    expect(await subscriberAction({ number: N, enable: false, reason: 'test' })).toEqual({ ok: false, reauth: true });
+    expect((await ctx.core.subStatus(0, N)).disabled).toBe(false);
+    expect(listAudit(ctx, 5).filter((a) => a.action.startsWith('noc.sub'))).toEqual([]);
+  });
+
+  it('wants a reason and a full number; says when there is no such subscriber, and audits that', async () => {
+    expect(await subscriberAction({ number: N, enable: false, reason: ' x ' })).toEqual({ ok: false, message: 'Say why (3–200 characters).' });
+    expect(await subscriberAction({ number: '+1717', enable: false, reason: 'test' })).toMatchObject({ ok: false, message: expect.stringContaining('not a full') });
+    expect(await subscriberAction({ number: N, enable: false, reason: 'test' })).toEqual({ ok: false, message: 'No subscriber has +883-1-717-464-12345 on fake.' });
+    expect(JSON.parse(listAudit(ctx, 1)[0].detail ?? '{}')).toMatchObject({ outcome: 'not_found' });
+  });
+
+  it('limits each person to 30 changes an hour', async () => {
+    ctx.core.simSubscriber(N, 1, null);
+    setLimit(ctx, 'noc_change', 2);
+    await subscriberAction({ number: N, enable: false, reason: 'one' });
+    await subscriberAction({ number: N, enable: true, reason: 'two' });
+    expect(await subscriberAction({ number: N, enable: false, reason: 'three' })).toEqual({ ok: false, message: 'Too many changes this hour. Please try again later.' });
+    expect(listAudit(ctx, 1)[0]).toMatchObject({ action: 'noc.sub.disable.limited' });
+  });
+
+  it('is for staff only', async () => {
+    state.admin = false;
+    state.noc = false;
+    await expect(subscriberAction({ number: N, enable: false, reason: 'test' })).rejects.toThrow('NEXT_NOT_FOUND');
   });
 });

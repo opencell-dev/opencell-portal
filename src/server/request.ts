@@ -83,3 +83,14 @@ export async function freshAdmin(): Promise<{ ok: true; s: Awaited<ReturnType<ty
   const s = await requireAdmin();
   return isFresh(appCtx(), s.session) ? { ok: true, s } : { ok: false, reauth: true };
 }
+
+/**
+ * For a NOC action that changes the network (plan N2a: disable or enable a
+ * subscriber): staff, as requireNoc, holding a passkey assertion from the
+ * last 5 minutes. Admin-only changes (the mode switch) use freshAdmin and
+ * check the site themselves.
+ */
+export async function freshNoc(): Promise<{ ok: true; s: Awaited<ReturnType<typeof requireNoc>> } | { ok: false; reauth: true }> {
+  const s = await requireNoc();
+  return isFresh(appCtx(), s.session) ? { ok: true, s } : { ok: false, reauth: true };
+}

@@ -5,13 +5,14 @@ import { asFakeCore, type FakeCore, type FakeDown } from '@/core/fake';
 import { seedDemo } from '@/core/fake-demo';
 import { writeAudit } from '@/lib/audit';
 import { appCtx } from '@/lib/ctx';
-import { type LookupResult, lookupNumber } from '@/lib/noc/lookup';
+import { type ChangeResult, changeSubscriber } from '@/lib/noc/changes';
+import { type LookupResult, lookupNumber, normalizeNumber } from '@/lib/noc/lookup';
 import { registrationsPage } from '@/lib/noc/registrations';
 import { isFullNumber } from '@/core/numbers';
 import type { Registration } from '@/core/types';
 import { forgetActivity } from '@/lib/noc/activity';
 import { forgetSnapshot } from '@/lib/noc/snapshot';
-import { requestMeta, requireAdmin, requireNoc } from '@/server/request';
+import { freshNoc, requestMeta, requireAdmin, requireNoc } from '@/server/request';
 
 export type DemoResult = { ok: true; message: string } | { ok: false; message: string };
 export type RegPageResult = { ok: true; rows: Registration[]; more: boolean } | { ok: false; message: string };
@@ -108,4 +109,23 @@ export async function demoAction(input: unknown): Promise<DemoResult> {
   forgetActivity(ctx);
   writeAudit(ctx, { actorId: user.id, action: `demo.${d.op}`, detail: d, ip: (await requestMeta()).ip });
   return { ok: true, message };
+}
+
+export type ChangeActionResult = ChangeResult | { ok: false; reauth: true };
+
+const subSchema = z.object({ number: z.string().max(40), enable: z.boolean(), reason: z.string().trim().min(3).max(200) });
+
+/**
+ * Disable or enable a subscriber (plan N2a; decision 2026-10-01 #10): staff
+ * (admins and NOC operators), a fresh passkey, and a reason; audited in the
+ * portal (noc.sub.disable / noc.sub.enable) and on the core.
+ */
+export async function subscriberAction(input: unknown): Promise<ChangeActionResult> {
+  const f = await freshNoc();
+  if (!f.ok) return f;
+  const p = subSchema.safeParse(input);
+  if (!p.success) return { ok: false, message: 'Say why (3–200 characters).' };
+  const number = normalizeNumber(p.data.number);
+  if (!number) return { ok: false, message: 'That is not a full OpenCell number (+883 1 NPA NXX XXXXX).' };
+  return changeSubscriber(appCtx(), f.s.user.id, number, p.data.enable, p.data.reason, (await requestMeta()).ip);
 }

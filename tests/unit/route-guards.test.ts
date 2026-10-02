@@ -50,6 +50,9 @@ function awaitedGuard(e: ts.Expression | undefined, guards: readonly string[], i
   return guards.includes(name) && imported.has(name) ? name : undefined;
 }
 
+/** Guards that report "needs re-auth" in their result (a fresh passkey): the result must be checked. */
+const FRESH = ['freshAdmin', 'freshNoc'];
+
 /** Why this function body is not guarded, or undefined when its first statement is the guard. */
 function bodyProblem(body: ts.Block | undefined, guards: readonly string[], imported: Set<string>): string | undefined {
   const [first, second] = body?.statements ?? [];
@@ -58,14 +61,14 @@ function bodyProblem(body: ts.Block | undefined, guards: readonly string[], impo
   if (ts.isExpressionStatement(first)) {
     const g = awaitedGuard(first.expression, guards, imported);
     if (!g) return want;
-    // freshAdmin reports "needs re-auth" in its result: ignoring the result is no guard at all.
-    return g === 'freshAdmin' ? 'the result of freshAdmin() must be checked' : undefined;
+    // freshAdmin and freshNoc report "needs re-auth" in their result: ignoring the result is no guard at all.
+    return FRESH.includes(g) ? `the result of ${g}() must be checked` : undefined;
   }
   if (!ts.isVariableStatement(first) || first.declarationList.declarations.length !== 1) return want;
   const d = first.declarationList.declarations[0];
   const g = awaitedGuard(d.initializer, guards, imported);
   if (!g) return want;
-  if (g !== 'freshAdmin') return undefined;
+  if (!FRESH.includes(g)) return undefined;
   // `const f = await freshAdmin(); if (!f.ok) return f;`
   const ok =
     ts.isIdentifier(d.name) &&
@@ -78,7 +81,7 @@ function bodyProblem(body: ts.Block | undefined, guards: readonly string[], impo
     second.expression.operand.expression.text === d.name.text &&
     second.expression.operand.name.text === 'ok' &&
     ts.isReturnStatement(second.thenStatement);
-  return ok ? undefined : 'the result of freshAdmin() must be checked next: if (!f.ok) return f;';
+  return ok ? undefined : `the result of ${g}() must be checked next: if (!f.ok) return f;`;
 }
 
 /**
@@ -123,9 +126,12 @@ function pageProblems(src: string, guards: readonly string[], file = 'page.tsx')
 const APP = 'src/app/(app)';
 const ACTIONS = 'src/app/actions';
 const ADMIN_GUARDS = ['freshAdmin', 'requireAdmin'] as const;
-// admin-noc.ts (ruling 2026-10-01 #8/#9): the number lookup is open to staff
-// (requireNoc), while the demo controls stay admin-only (requireAdmin).
-const STAFF_ACTION_GUARDS = ['freshAdmin', 'requireAdmin', 'requireNoc'] as const;
+// admin-noc.ts (ruling 2026-10-01 #8/#9): the number lookup and the
+// registrations' pages are open to staff (requireNoc), a subscriber's disable
+// and enable to staff with a fresh passkey (freshNoc, decision #10), while
+// the demo controls (requireAdmin) and the mode switch (freshAdmin) stay
+// admin-only. Each export's guard is pinned below.
+const STAFF_ACTION_GUARDS = ['freshAdmin', 'freshNoc', 'requireAdmin', 'requireNoc'] as const;
 
 describe('route guards', () => {
   it('every admin page calls requireAdmin first', () => {
@@ -136,7 +142,7 @@ describe('route guards', () => {
 
   it('every NOC page calls requireNoc or requireAdmin first (NOC design §4)', () => {
     const noc = pages(join(APP, 'noc'));
-    expect(noc.length).toBeGreaterThanOrEqual(7);
+    expect(noc.length).toBeGreaterThanOrEqual(10);
     for (const p of noc) expect(pageProblems(readFileSync(p, 'utf8'), ['requireNoc', 'requireAdmin'], p)).toEqual([]);
   });
 
@@ -165,13 +171,15 @@ describe('route guards', () => {
     expect(functions).toBeGreaterThan(0);
   });
 
-  it('pins the exact guard per export in admin-noc.ts (review M1): only lookupNumberAction may use requireNoc', () => {
+  it('pins the exact guard per export in admin-noc.ts (review M1, plan N2a): no other staff guard satisfies it', () => {
     const src = readFileSync(join(ACTIONS, 'admin-noc.ts'), 'utf8');
     const sf = parse(src, 'admin-noc.ts');
     const imported = requestImports(sf);
-    const want: Record<string, readonly string[]> = {
-      lookupNumberAction: ['requireNoc'],
-      demoAction: ['requireAdmin'],
+    const want: Record<string, string> = {
+      lookupNumberAction: 'requireNoc',
+      registrationsAction: 'requireNoc',
+      subscriberAction: 'freshNoc',
+      demoAction: 'requireAdmin',
     };
     const seen = new Set<string>();
     for (const st of sf.statements) {
@@ -179,13 +187,12 @@ describe('route guards', () => {
         continue;
       }
       const name = st.name.text;
-      const guards = want[name];
-      if (!guards) continue; // an export the test above already covers generally
+      expect(Object.keys(want), `${name} needs a pinned guard here`).toContain(name);
       seen.add(name);
-      expect(bodyProblem(st.body, guards, imported), name).toBeUndefined();
-      // And the other guard must NOT satisfy it: demoAction must not accept requireNoc, nor lookupNumberAction requireAdmin.
-      const other = guards[0] === 'requireNoc' ? 'requireAdmin' : 'requireNoc';
-      expect(bodyProblem(st.body, [other], imported), `${name} must not also accept ${other}`).not.toBeUndefined();
+      expect(bodyProblem(st.body, [want[name]], imported), name).toBeUndefined();
+      for (const other of STAFF_ACTION_GUARDS.filter((g) => g !== want[name])) {
+        expect(bodyProblem(st.body, [other], imported), `${name} must not also accept ${other}`).not.toBeUndefined();
+      }
     }
     expect([...seen].sort()).toEqual(Object.keys(want).sort());
   });
@@ -219,6 +226,14 @@ describe('the route-guard check itself', () => {
     ['a default export', 'export default async function a() {\n  await requireAdmin();\n}\n'],
   ])('rejects %s', (_what, body) => {
     expect(check(body)).not.toEqual([]);
+  });
+
+  it("checks freshNoc's result as freshAdmin's (plan N2a)", () => {
+    const head = "'use server';\nimport { freshNoc } from '@/server/request';\n";
+    const problems = (body: string) => actionProblems(head + body, ['freshNoc']).problems;
+    expect(problems('export async function a() {\n  const f = await freshNoc();\n  if (!f.ok) return f;\n  return 1;\n}\n')).toEqual([]);
+    expect(problems('export async function a() {\n  await freshNoc();\n  return 1;\n}\n')).not.toEqual([]);
+    expect(problems('export async function a() {\n  const f = await freshNoc();\n  return f;\n}\n')).not.toEqual([]);
   });
 
   it('rejects a guard that is not the one from @/server/request', () => {
