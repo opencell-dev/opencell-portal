@@ -186,3 +186,37 @@ export function callRows(ctx: Ctx, id: string): CallRow[] | null {
   const t = tails.get(ctx)?.get(id)?.calls;
   return t && t.after !== null ? t.rows : null;
 }
+
+export interface ActivitySummary {
+  /** The calls of the last day on the cores that reported them; null: none did. */
+  calls: CallStats | null;
+  /** The last day's registrations on the cores that reported them; null: none did. */
+  registrations: number | null;
+  /** Cores that did not report (unreachable, or before v0.4.0): the totals leave them out. */
+  missing: string[];
+  /** A core is still reading its backlog (Tail.complete false): the totals are low for now. */
+  catchingUp: boolean;
+}
+
+/** The overview's totals over every core that reported. */
+export function summarizeActivity(a: Activity): ActivitySummary {
+  const out: ActivitySummary = { calls: null, registrations: null, missing: [], catchingUp: false };
+  for (const c of a.cores) {
+    if (c.calls.state === 'ok') {
+      const s = c.calls.value;
+      const t = (out.calls ??= callStats([], 0));
+      t.total += s.total;
+      t.answered += s.answered;
+      for (const k of RESULTS) t.byResult[k] += s.byResult[k];
+      for (const [k, v] of Object.entries(s.byCause)) t.byCause[Number(k)] = (t.byCause[Number(k)] ?? 0) + v;
+      for (const k of ['cell', 'echo', 'playback', 'peer'] as const) t.byLeg[k] += s.byLeg[k];
+      if (c.calls.complete === false) out.catchingUp = true;
+    }
+    if (c.registrations.state === 'ok') {
+      out.registrations = (out.registrations ?? 0) + c.registrations.value.total;
+      if (c.registrations.complete === false) out.catchingUp = true;
+    }
+    if (c.calls.state !== 'ok' || c.registrations.state !== 'ok') out.missing.push(c.id);
+  }
+  return out;
+}
