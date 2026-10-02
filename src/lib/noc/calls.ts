@@ -5,7 +5,7 @@ import { writeAudit } from '@/lib/audit';
 import { askReported } from '@/lib/core-ask';
 import type { Ctx } from '@/lib/ctx';
 import { coreActor } from '@/lib/site';
-import { CALLS_WINDOW_MS, callResult, callsAfter, DAY_MS, RESULTS } from './activity';
+import { CALLS_WINDOW_MS, callResult, callRows, callsAfter, DAY_MS, RESULTS } from './activity';
 
 // The Calls page (plan N2a): the call records of a window, read from each
 // core by a staff member under their own account (cdr.recent; the core
@@ -63,6 +63,24 @@ export function matches(c: CdrRecord, f: CallFilter, from: number): boolean {
   );
 }
 
+/**
+ * Review I1: a window can hold more than CALLS_PAGES pages of calls, and
+ * `readCore` reads forward from `from`'s start for at most that many pages,
+ * so a plain `callsAfter` can leave the window's newest calls unread. The
+ * shared tail already holds every id of the window, without numbers: start
+ * at the id just before the (CALLS_PAGES * limit)-th newest kept row
+ * instead, so the pages that follow cover the newest calls, never the
+ * oldest, whichever is less.
+ */
+function startAfter(ctx: Ctx, id: string, from: number): number | null {
+  const after = callsAfter(ctx, id, from);
+  if (after === null) return null;
+  const rows = (callRows(ctx, id) ?? []).filter((r) => r.t >= from);
+  const cap = CALLS_PAGES * CDR_RECENT_MAX;
+  if (rows.length <= cap) return after;
+  return Math.max(after, rows[rows.length - cap].id - 1);
+}
+
 async function readCore(h: CoreHandle, as: number, after: number): Promise<{ rows: CdrRecord[]; truncated: boolean }> {
   const rows: CdrRecord[] = [];
   let cursor = after;
@@ -83,7 +101,7 @@ export async function listCalls(ctx: Ctx, f: CallFilter, userId: number, ip: str
   const handles = ctx.cores.filter((h) => !f.core || h.id === f.core);
   const per = await Promise.all(
     handles.map(async (h): Promise<{ c: CoreCalls; rows: CallRecord[] }> => {
-      const after = callsAfter(ctx, h.id, from);
+      const after = startAfter(ctx, h.id, from);
       if (after === null) return { c: { id: h.id, state: 'not-ready', truncated: false }, rows: [] };
       const r = await askReported(h, 'cdr.recent', () => readCore(h, as, after), CALLS_DEADLINE_MS);
       if (r.state !== 'ok') return { c: { id: h.id, state: r.state, truncated: false }, rows: [] };

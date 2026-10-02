@@ -5,8 +5,8 @@ import { CallTable } from '@/components/noc/call-table';
 import { seedDemo } from '@/core/fake-demo';
 import { CoreError } from '@/core/types';
 import { listAudit } from '@/lib/audit';
-import { cachedActivity, callResult, DAY_MS } from '@/lib/noc/activity';
-import { CALLS_SHOWN, getCall, listCalls, parseCallFilter } from '@/lib/noc/calls';
+import { ACTIVITY_TTL_MS, cachedActivity, callResult, DAY_MS } from '@/lib/noc/activity';
+import { CALLS_PAGES, CALLS_SHOWN, getCall, listCalls, parseCallFilter } from '@/lib/noc/calls';
 import { cachedSnapshot } from '@/lib/noc/snapshot';
 import { testCtx } from '../helpers/ctx';
 
@@ -68,6 +68,34 @@ describe('listCalls', () => {
     await cachedActivity(ctx, await cachedSnapshot(ctx));
     vi.spyOn(ctx.core, 'cdrRecent').mockRejectedValueOnce(new CoreError('unsupported'));
     expect((await listCalls(ctx, parseCallFilter({}), 42, 'ip')).cores[0].state).toBe('unsupported');
+  });
+
+  it('shows the newest calls, not the oldest, when a window holds more than CALLS_PAGES pages (review I1)', async () => {
+    const ctx = testCtx({ OC_SITE: 'noc' });
+    const base = ctx.now() - 200_000;
+    const total = CALLS_PAGES * 1000 + 1500; // 6500: more than one core's view can read in one go
+    for (let i = 0; i < total; i++) {
+      ctx.core.simCdr({
+        setupAt: base + i,
+        answerAt: base + i + 1,
+        endAt: base + i + 2,
+        cause: 0,
+        caller: '+883171746412345',
+        called: '+883171746400777',
+        cellA: 1,
+        cellB: 1,
+        legA: 'cell',
+        legB: 'cell',
+      });
+    }
+    // Seed the shared tail across two refreshes, so it holds every id of the window without numbers.
+    await cachedActivity(ctx, await cachedSnapshot(ctx));
+    ctx.clock.t += ACTIVITY_TTL_MS;
+    await cachedActivity(ctx, await cachedSnapshot(ctx));
+    const list = await listCalls(ctx, parseCallFilter({ window: '1h' }), 42, 'ip');
+    expect(list.cores[0]).toMatchObject({ truncated: true });
+    expect(Math.max(...list.rows.map((r) => r.id))).toBe(total);
+    expect(Math.min(...list.rows.map((r) => r.id))).toBeGreaterThan(total - CALLS_SHOWN);
   });
 });
 
