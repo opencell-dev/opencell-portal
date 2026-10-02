@@ -79,7 +79,7 @@ its drop-in and `oc-portal-deploy status` are the same on both guests.
   one-liner does not apply to the live nginx), and a custom location
   `/auth/email/` with the access log off, as host 3 has.
 
-
+## The policy (rules in order; the first match decides)
 
 | # | rule | matches | action | why |
 | --- | --- | --- | --- | --- |
