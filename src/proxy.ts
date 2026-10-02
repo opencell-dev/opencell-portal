@@ -37,9 +37,19 @@ export async function proxy(req: NextRequest) {
   const headers = new Headers(req.headers);
   headers.set('x-nonce', nonce);
   headers.set('content-security-policy', csp);
+  // The 404 rewrite never leaves this process (src/lib/site.ts), so it must
+  // target this server's own origin as it actually listens: plain HTTP
+  // (server.mjs; TLS is terminated upstream, by nginx-proxy/Anubis).
+  // req.url's protocol follows X-Forwarded-Proto when the trusted proxy
+  // sends it, which is right for an absolute URL shown to the browser, but
+  // wrong here: Next's router then tries to fetch this same-process
+  // rewrite target over TLS on a port that only ever speaks plain HTTP,
+  // and fails ("wrong version number").
+  const notFoundUrl = new URL(SITE_NOT_FOUND, req.url);
+  notFoundUrl.protocol = 'http:';
   const res =
     route.kind === 'not-found'
-      ? NextResponse.rewrite(new URL(SITE_NOT_FOUND, req.url), { request: { headers } })
+      ? NextResponse.rewrite(notFoundUrl, { request: { headers } })
       : NextResponse.next({ request: { headers } });
   res.headers.set('Content-Security-Policy', csp);
   for (const [k, v] of securityHeaders(https)) res.headers.set(k, v);

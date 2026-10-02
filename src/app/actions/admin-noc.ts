@@ -18,7 +18,14 @@ export type DemoResult = { ok: true; message: string } | { ok: false; message: s
  */
 export async function lookupNumberAction(number: string): Promise<LookupResult> {
   const { user } = await requireNoc();
-  if (typeof number !== 'string' || number.length > 40) return { ok: false, message: 'That is not a full OpenCell number (+883 1 NPA NXX XXXXX).' };
+  if (typeof number !== 'string' || number.length > 40) {
+    // 2026-10-02: a live refusal here left no trace at all (no portal audit
+    // row: lookupNumber() is never reached; no core call). Never the number
+    // itself (it could be a real one, even malformed) — only its shape, so
+    // a recurrence is at least visible in the journal.
+    console.error(`oc-portal: lookupNumberAction: argument was ${typeof number}${Array.isArray(number) ? ' (array)' : ''}, not a string of at most 40 characters`);
+    return { ok: false, message: 'That is not a full OpenCell number (+883 1 NPA NXX XXXXX).' };
+  }
   return lookupNumber(appCtx(), user.id, number, (await requestMeta()).ip);
 }
 

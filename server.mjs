@@ -9,6 +9,18 @@ const dev = process.env.NODE_ENV !== 'production';
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.OC_LISTEN ?? '127.0.0.1';
 
+// This process always speaks plain HTTP on its own loopback port, whatever
+// scheme the client used (TLS is terminated upstream, by nginx-proxy/Anubis).
+// Without this, Next derives its own "origin" from X-Forwarded-Proto when a
+// trusted proxy sends it (so absolute URLs it builds for the browser are
+// correct) and reuses that same origin for an internal self-fetch when a
+// Server Action redirects (next/navigation's redirect()) — trying to speak
+// TLS to this http-only port, failing ("failed to get redirect response …
+// wrong version number"), and falling back to a plain redirect. `next start`
+// sets this same variable itself; a custom server like this one must set it
+// too. See node_modules/next/dist/server/app-render/action-handler.js.
+process.env.__NEXT_PRIVATE_ORIGIN = `http://${host}:${port}`;
+
 let trusted;
 try {
   trusted = parseTrustedProxy(process.env.OC_TRUSTED_PROXY);
