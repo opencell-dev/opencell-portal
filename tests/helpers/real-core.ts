@@ -14,7 +14,7 @@ import type { ContractCore } from './core-contract';
  */
 export const CORE_DIR = process.env.OC_CORE_DIR ? resolve(process.env.OC_CORE_DIR) : undefined;
 
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const s = createServer();
     s.once('error', reject);
@@ -58,6 +58,22 @@ export function makeTestPki(dir: string = CORE_DIR!): TestPki & { done: () => vo
   };
 }
 
+/** A core certificate made ahead of the core: two cores that pin each other for OCSS need both fingerprints first. */
+export interface CoreCert {
+  crt: string;
+  key: string;
+  fpr: string;
+  done: () => void;
+}
+
+export function makeCoreCert(pki: TestPki, dir: string = CORE_DIR!): CoreCert {
+  const t = mkdtempSync(join(tmpdir(), 'oc-test-core-cert-'));
+  const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: t, stdio: 'pipe' }).toString();
+  run('openssl', newKey('core'));
+  const out = run(join(dir, 'tools/ca/oc-ca'), ['sign', pki.caDir, 'core', 'core.csr', 'core.crt', 'localhost', '--dns', 'localhost', '--ip', '127.0.0.1']);
+  return { crt: join(t, 'core.crt'), key: join(t, 'core.key'), fpr: out.trim().split(' ')[1], done: () => rmSync(t, { recursive: true, force: true }) };
+}
+
 export interface RealCoreOptions {
   /** Shared with other cores; by default the core makes its own. */
   pki?: TestPki;
@@ -65,6 +81,10 @@ export interface RealCoreOptions {
   name?: string;
   /** PREFIX INDEX: the block the core is home for. */
   block?: string;
+  /** The core's own certificate (makeCoreCert); by default one is made here. */
+  cert?: CoreCert;
+  /** More config lines (other cores' blocks, peer, ocss_*). */
+  extra?: string[];
 }
 
 export type RealCore = ContractCore & { adminSocket: string; cellSocket: string; port: number; pid: number; log: () => string };
@@ -81,8 +101,12 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
   const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { cwd: t, stdio: 'pipe' }).toString();
   const own = opts.pki ? undefined : makeTestPki(dir);
   const pki = opts.pki ?? own!;
-  run('openssl', newKey('core'));
-  run(ocCa, ['sign', pki.caDir, 'core', 'core.csr', 'core.crt', 'localhost', '--dns', 'localhost', '--ip', '127.0.0.1']);
+  if (!opts.cert) {
+    run('openssl', newKey('core'));
+    run(ocCa, ['sign', pki.caDir, 'core', 'core.csr', 'core.crt', 'localhost', '--dns', 'localhost', '--ip', '127.0.0.1']);
+  }
+  const crt = opts.cert?.crt ?? `${t}/core.crt`;
+  const key = opts.cert?.key ?? `${t}/core.key`;
   writeFileSync(join(t, 'master.key'), randomBytes(32));
   chmodSync(join(t, 'master.key'), 0o400);
   const port = await freePort();
@@ -99,10 +123,11 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
       `cell_socket = ${t}/core.sock`,
       `admin_socket = ${t}/admin.sock`,
       `api_listen = 127.0.0.1:${port}`,
-      `api_cert = ${t}/core.crt`,
-      `api_key = ${t}/core.key`,
+      `api_cert = ${crt}`,
+      `api_key = ${key}`,
       `api_ca = ${pki.caCrt}`,
       `api_portal_fpr = ${pki.portalFpr}`,
+      ...(opts.extra ?? []),
       '',
     ].join('\n'),
   );
