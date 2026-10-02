@@ -44,8 +44,9 @@ describe('the overview (NOC design §9.1)', () => {
   });
 
   it('offers number lookup to any staff viewer (ruling 2026-10-01 #8/#9), and the demo only to an admin on the fake core', () => {
-    expect(nocLinks(false, true).map((l) => l.href)).toEqual(['/noc', '/noc/cells', '/noc/topology', '/noc/lookup']);
-    expect(nocLinks(true, false).map((l) => l.href)).toEqual(['/noc', '/noc/cells', '/noc/topology', '/noc/lookup']);
+    const staff = ['/noc', '/noc/cells', '/noc/calls', '/noc/registrations', '/noc/topology', '/noc/lookup'];
+    expect(nocLinks(false, true).map((l) => l.href)).toEqual(staff);
+    expect(nocLinks(true, false).map((l) => l.href)).toEqual(staff);
     expect(nocLinks(true, true).map((l) => l.href)).toContain('/noc/demo');
     expect(nocLinks(false, true).map((l) => l.href)).not.toContain('/noc/demo');
   });

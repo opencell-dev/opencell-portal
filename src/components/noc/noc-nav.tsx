@@ -14,6 +14,8 @@ export function nocLinks(admin: boolean, fake: boolean): NocLink[] {
   return [
     { href: '/noc', label: 'Overview' },
     { href: '/noc/cells', label: 'Cells' },
+    { href: '/noc/calls', label: 'Calls' },
+    { href: '/noc/registrations', label: 'Registrations' },
     { href: '/noc/topology', label: 'Topology' },
     { href: '/noc/lookup', label: 'Number lookup' },
     ...(admin && fake ? [{ href: '/noc/demo', label: 'Demo controls' }] : []),

@@ -116,7 +116,7 @@ test('a NOC operator opens the NOC with a passkey, including number lookup, but 
     const res = await page.goto(path);
     expect(res?.status(), path).toBe(404);
   }
-  for (const path of ['/noc/cells', '/noc/topology', '/noc/cores/fake', '/noc/lookup']) {
+  for (const path of ['/noc/cells', '/noc/calls', '/noc/registrations', '/noc/topology', '/noc/cores/fake', '/noc/lookup']) {
     const res = await page.goto(path);
     expect(res?.status(), path).toBe(200);
   }
@@ -141,7 +141,7 @@ test('an admin sees the demo network, a core that stops answering as Unreachable
     await expect(page.getByRole('link', { name: 'Harrisburg 1' })).toHaveCount(0);
     await page.getByRole('link', { name: 'Lancaster 2' }).click();
     await expect(page.getByRole('heading', { name: 'Lancaster 2' })).toBeVisible();
-    await expect(page.getByText('Part 97')).toBeVisible();
+    await expect(page.getByText('Part 97', { exact: true })).toBeVisible();
 
     await page.goto('/noc/topology');
     await expect(page.getByRole('img', { name: /OpenCell topology: 1 cores, 5 cells/ })).toBeVisible();
@@ -178,4 +178,77 @@ test('an admin sees the demo network, a core that stops answering as Unreachable
     // Best effort, so a failure above is the one reported: the next tests share this server's fake core.
     await demo(page, 'Answer normally', 'fake answers again.').catch(() => {});
   }
+});
+
+// Plan N2a: the telemetry the cores' new operations give, and the first changes.
+
+test('an admin sees radios, the last day, calls, registrations and a core\'s links, blocks and audit, and switches a cell\'s mode', async ({ page }, info) => {
+  const violations = await watchCsp(page);
+  await staff(page, info, 'n2aadmin', 'promote');
+  await signInWithPasskey(page, /\/noc$/);
+  await demo(page, 'Load the demo network', 'The demo network is loaded on fake.');
+  await page.goto('/noc');
+  await expect(page.getByText('Calls, last 24 h', { exact: true })).toBeVisible();
+  await expect(page.getByText('Registrations, last 24 h')).toBeVisible();
+  await expect(page.getByText('Cell 3 "York 1" on fake: PPS holdover')).toBeVisible();
+
+  await page.getByRole('link', { name: 'all calls' }).click();
+  await expect(page.getByRole('heading', { name: 'Calls', exact: true })).toBeVisible();
+  await page.getByLabel('Result').selectOption('busy');
+  await page.getByRole('button', { name: 'Filter' }).click();
+  await expect(page).toHaveURL(/result=busy/);
+  await page.locator('a[href^="/noc/calls/fake/"]').first().click();
+  await expect(page.getByText(/^busy \(cause 2: busy\)$/)).toBeVisible();
+
+  await page.goto('/noc/cells/fake/1');
+  await expect(page.getByRole('heading', { name: 'Radio', exact: true })).toBeVisible();
+  await expect(page.getByText('locked', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Terminals registered here' })).toBeVisible();
+  await expect(page.getByText(/-\d+ dBm/).first()).toBeVisible();
+  await page.getByLabel(/Type the cell's name to confirm/).fill('Lancaster 1');
+  await page.getByLabel('Reason').fill('e2e: licensed operator on site');
+  await page.getByRole('button', { name: 'Switch to Part 97' }).click();
+  await expect(page.getByText(/Lancaster 1 is switching to Part 97/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Switch to Part 15 (now Part 97)' })).toBeVisible();
+
+  await page.goto('/noc/registrations');
+  await expect(page.getByRole('heading', { name: 'Registrations' })).toBeVisible();
+  await expect(page.getByText(/\+883-1-717-464-\d{5}/).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Next page' })).toHaveCount(0);
+
+  await page.goto('/noc/cores/fake');
+  await expect(page.getByText('No OCSS peer is configured on this core.')).toBeVisible();
+  await expect(page.getByText('+8831717', { exact: true })).toBeVisible();
+  await expect(page.getByText('the NOC itself (shared polls)').first()).toBeVisible();
+  expect(violations).toEqual([]);
+});
+
+test('a NOC operator disables and enables a number with a reason and a passkey, and has no mode switch', async ({ page, browser }, info) => {
+  // An admin, in a browser of their own, loads the demo network the operator works on.
+  const admin = await browser.newPage();
+  await staff(admin, info, 'n2aload', 'promote');
+  await signInWithPasskey(admin, /\/noc$/);
+  await demo(admin, 'Load the demo network', 'The demo network is loaded on fake.');
+  await admin.close();
+
+  await staff(page, info, 'n2anoc', 'noc-grant');
+  await signInWithPasskey(page, /\/noc$/);
+  await page.goto('/noc/lookup');
+  const hint = (await page.getByText('Demo numbers to try:').textContent()) ?? '';
+  const number = hint.match(/\+883-1-717-464-\d{5}/)?.[0];
+  expect(number).toBeTruthy();
+  await page.getByLabel('Number').fill(number!);
+  await page.getByRole('button', { name: 'Look up' }).click();
+  await expect(page.getByRole('heading', { name: 'Disable this number' })).toBeVisible();
+  await page.getByLabel('Reason').fill('e2e: reported stolen');
+  await page.getByRole('button', { name: 'Disable', exact: true }).click();
+  await expect(page.getByText(`${number} is disabled on fake`)).toBeVisible();
+  await expect(page.getByText('activated, disabled')).toBeVisible();
+  await page.getByLabel('Reason').fill('e2e: found again');
+  await page.getByRole('button', { name: 'Enable', exact: true }).click();
+  await expect(page.getByText(`${number} is enabled again on fake.`)).toBeVisible();
+
+  await page.goto('/noc/cells/fake/1');
+  await expect(page.getByRole('heading', { name: 'Radio', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Switch to Part/ })).toHaveCount(0);
 });
