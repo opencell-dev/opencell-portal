@@ -93,49 +93,56 @@ export function CoreAuditTable({ view }: { view: CoreAuditView }) {
   if (r.state === 'unreachable') return <p className="text-sm text-slate-500">The core&apos;s audit is not read yet, or the core did not answer; try again in a minute.</p>;
   if (r.value.length === 0) return <p className="text-sm text-slate-500">No records.</p>;
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead className="text-xs uppercase text-slate-500">
-          <tr className="border-b border-slate-200 dark:border-slate-800">
-            <th className="py-1 pr-4">Time (UTC)</th>
-            <th className="py-1 pr-4">Event</th>
-            <th className="py-1 pr-4">Record</th>
-            <th className="py-1 pr-4">Number / cell</th>
-            <th className="py-1 pr-4">Account</th>
-            <th className="py-1">This site&apos;s audit (± 5 s)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {r.value.map(({ record: x, who, portal }) => (
-            <tr key={x.id} className="border-b border-slate-100 align-top dark:border-slate-900">
-              <td className="py-1 pr-4 font-mono tabular-nums">{exact(x.at).replace(' UTC', '')}</td>
-              <td className="py-1 pr-4">{CORE_AUDIT_EVENTS[x.event] ?? x.event}</td>
-              <td className="py-1 pr-4 font-mono text-xs">{x.detail}</td>
-              <td className="py-1 pr-4 font-mono text-xs">
-                {x.number ? groupNumber(x.number) : ''}
-                {x.cellId !== null ? ` cell ${x.cellId}` : ''}
-              </td>
-              <td className="py-1 pr-4 text-xs">
-                {who === null
-                  ? ''
-                  : who.kind === 'polls'
-                    ? 'the NOC itself (shared polls)'
-                    : who.kind === 'this-site'
-                      ? (view.emails[who.userId] ?? `account ${who.userId}`)
-                      : `the other site's account a${who.actor}`}
-              </td>
-              <td className="py-1 text-xs">
-                {portal.map((p) => (
-                  <div key={p.id}>
-                    {p.action}
-                    {p.target ? ` ${p.target}` : ''}
-                  </div>
-                ))}
-              </td>
+    <div className="space-y-2">
+      {view.catchingUp && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          Still catching up on this core&apos;s audit; the newest records shown here may be a few minutes behind.
+        </p>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="text-xs uppercase text-slate-500">
+            <tr className="border-b border-slate-200 dark:border-slate-800">
+              <th className="py-1 pr-4">Time (UTC)</th>
+              <th className="py-1 pr-4">Event</th>
+              <th className="py-1 pr-4">Record</th>
+              <th className="py-1 pr-4">Number / cell</th>
+              <th className="py-1 pr-4">Account</th>
+              <th className="py-1">This site&apos;s audit (± 5 s)</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {r.value.map(({ record: x, who, portal }) => (
+              <tr key={x.id} className="border-b border-slate-100 align-top dark:border-slate-900">
+                <td className="py-1 pr-4 font-mono tabular-nums">{exact(x.at).replace(' UTC', '')}</td>
+                <td className="py-1 pr-4">{CORE_AUDIT_EVENTS[x.event] ?? x.event}</td>
+                <td className="py-1 pr-4 font-mono text-xs">{x.detail}</td>
+                <td className="py-1 pr-4 font-mono text-xs">
+                  {x.number ? groupNumber(x.number) : ''}
+                  {x.cellId !== null ? ` cell ${x.cellId}` : ''}
+                </td>
+                <td className="py-1 pr-4 text-xs">
+                  {who === null
+                    ? ''
+                    : who.kind === 'polls'
+                      ? 'the NOC itself (shared polls)'
+                      : who.kind === 'this-site'
+                        ? (view.emails[who.userId] ?? `account ${who.userId}`)
+                        : `the other site's account a${who.actor}`}
+                </td>
+                <td className="py-1 text-xs">
+                  {portal.map((p) => (
+                    <div key={p.id}>
+                      {p.action}
+                      {p.target ? ` ${p.target}` : ''}
+                    </div>
+                  ))}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

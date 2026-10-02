@@ -67,6 +67,18 @@ describe('coreAuditView', () => {
     expect(v.records.state).toBe('unreachable');
     expect(renderToStaticMarkup(createElement(CoreAuditTable, { view: v }))).toContain('not read yet');
   });
+
+  it('says it is still catching up rather than showing a stale "newest first" while the shared audit tail has not read a whole day yet (review M2)', async () => {
+    const ctx = testCtx({ OC_SITE: 'noc' });
+    // More than one refresh's worth (8 pages of 500 = 4000) of audit records in the window.
+    for (let i = 0; i < 4500; i++) {
+      ctx.core.simAuditRecord({ at: ctx.now() - 1000, event: 11, number: null, tmidPrefix: null, cellId: null, detail: 'x' });
+    }
+    await cachedActivity(ctx, await cachedSnapshot(ctx)); // one refresh: not enough to read all of it
+    const v = await coreAuditView(ctx, 'fake', 1, 'ip');
+    expect(v.catchingUp).toBe(true);
+    expect(renderToStaticMarkup(createElement(CoreAuditTable, { view: v }))).toContain('catching up');
+  });
 });
 
 describe('the OCSS and block tables', () => {

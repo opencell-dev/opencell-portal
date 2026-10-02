@@ -5,7 +5,7 @@ import type { Reported } from '@/lib/core-ask';
 import type { Ctx } from '@/lib/ctx';
 import { coreActor, NOC_ACTOR_BASE, type Site } from '@/lib/site';
 import { getUser } from '@/lib/users';
-import { auditEnd } from './activity';
+import { auditComplete, auditEnd } from './activity';
 import { askNoc, isUnsupported } from './snapshot';
 
 // A core's own audit beside the portal's (plan N2a; NOC design §15
@@ -62,6 +62,8 @@ export interface CoreAuditView {
   records: Reported<Correlated[]>;
   /** Emails of this site's accounts named, by id. */
   emails: Record<number, string>;
+  /** Review M2: the shared audit tail has not read a whole day's worth yet, so `records` (and `auditEnd`) may be well behind the core's newest. */
+  catchingUp: boolean;
 }
 
 /**
@@ -71,16 +73,17 @@ export interface CoreAuditView {
  */
 export async function coreAuditView(ctx: Ctx, core: string, userId: number, ip: string): Promise<CoreAuditView> {
   const h = ctx.cores.find((c) => c.id === core);
-  if (!h) return { records: { state: 'unreachable' }, emails: {} };
+  if (!h) return { records: { state: 'unreachable' }, emails: {}, catchingUp: false };
+  const catchingUp = !auditComplete(ctx, core);
   const end = auditEnd(ctx, core);
   if (end === null) {
     // Review I4(c): the shared activity may already know audit.list is unsupported (an older core); say so, not "not read yet".
-    return { records: isUnsupported(h, 'audit.list', ctx.now()) ? { state: 'unsupported' } : { state: 'unreachable' }, emails: {} };
+    return { records: isUnsupported(h, 'audit.list', ctx.now()) ? { state: 'unsupported' } : { state: 'unreachable' }, emails: {}, catchingUp };
   }
   const as = coreActor(ctx.config.site, userId);
   const r = await askNoc(h, 'audit.list', () => h.core.auditList(as, { after: Math.max(0, end - CORE_AUDIT_SHOWN), limit: 2 * CORE_AUDIT_SHOWN }), 3000, ctx.now());
   writeAudit(ctx, { actorId: userId, action: 'noc.core.audit', target: `core:${core}`, detail: { core, rows: r.state === 'ok' ? r.value.length : r.state }, ip });
-  if (r.state !== 'ok') return { records: r, emails: {} };
+  if (r.state !== 'ok') return { records: r, emails: {}, catchingUp };
   const newest = r.value.slice(-CORE_AUDIT_SHOWN).reverse();
   const from = Math.min(...newest.map((x) => x.at), ctx.now()) - CORRELATE_MS;
   const rows = auditBetween(ctx, from, ctx.now() + CORRELATE_MS);
@@ -92,5 +95,5 @@ export async function coreAuditView(ctx: Ctx, core: string, userId: number, ip: 
       if (u) emails[c.who.userId] = u.email;
     }
   }
-  return { records: { state: 'ok', value: records }, emails };
+  return { records: { state: 'ok', value: records }, emails, catchingUp };
 }

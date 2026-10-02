@@ -182,6 +182,11 @@ export function auditEnd(ctx: Ctx, id: string): number | null {
   return tails.get(ctx)?.get(id)?.audit.after ?? null;
 }
 
+/** Whether core `id`'s audit tail has read every record of the window yet; false while it is still working through a backlog (review M2). */
+export function auditComplete(ctx: Ctx, id: string): boolean {
+  return tails.get(ctx)?.get(id)?.audit.complete ?? false;
+}
+
 /** Core `id`'s calls (no numbers) of the shared tail's window; null: not read yet. */
 export function callRows(ctx: Ctx, id: string): CallRow[] | null {
   const t = tails.get(ctx)?.get(id)?.calls;
