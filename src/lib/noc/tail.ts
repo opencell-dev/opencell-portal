@@ -13,6 +13,16 @@ export interface TailRow {
 export type PageFn<R extends TailRow> = (after: number, limit: number) => Promise<R[]>;
 
 /**
+ * Review I3: `epoch` (the core's estimated start, unix ms) is noisy by
+ * about ±1 s (uptimeS is whole seconds; the snapshot's own clock phase adds
+ * more), so comparing it for exact equality flaps across whichever instant
+ * the jitter happens to cross, clearing the tail and re-seeking on every
+ * flap. Treat the epoch as unchanged within this tolerance; only a jump
+ * past it (a real restart) seeks again. A real restart does not move ids.
+ */
+export const EPOCH_TOLERANCE_MS = 2 * 60_000;
+
+/**
  * The seek's progress, one probe's worth of state (review I2): kept outside
  * the loop so a `Tail` can carry it across a probe that throws (a core that
  * is rate-limiting `audit.list`/`cdr.recent` for the next minute or more)
@@ -124,7 +134,7 @@ export class Tail<R extends TailRow> {
   }
 
   private async run(page: PageFn<R>, now: number, epoch: number): Promise<void> {
-    if (epoch !== this.epoch) {
+    if (this.epoch === null || Math.abs(epoch - this.epoch) > EPOCH_TOLERANCE_MS) {
       this.cursor = null;
       this.rows = [];
       this.epoch = epoch;

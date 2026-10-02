@@ -147,7 +147,8 @@ export async function networkActivity(ctx: Ctx, snap: NetworkSnapshot, deadlineM
     ctx.cores.map(async (h): Promise<CoreActivity> => {
       const st = snap.cores.find((c) => c.id === h.id)?.status;
       if (!st) return { id: h.id, calls: { state: 'unreachable' }, registrations: { state: 'unreachable' } };
-      const epoch = Math.round((snap.at - st.uptimeS * 1000) / 60_000);
+      // Review I3: kept as raw ms (not rounded to the minute); Tail compares it with a tolerance.
+      const epoch = snap.at - st.uptimeS * 1000;
       return refreshCore(ctx, h, epoch, at, deadlineMs);
     }),
   );

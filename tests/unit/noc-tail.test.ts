@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CoreError } from '@/core/types';
-import { type PageFn, seekAfter, Tail, type TailRow } from '@/lib/noc/tail';
+import { EPOCH_TOLERANCE_MS, type PageFn, seekAfter, Tail, type TailRow } from '@/lib/noc/tail';
 
 // The tail of an id-ordered list (plan N2a): find where a time window starts
 // with few probes, then follow the list one page at a time.
@@ -85,8 +85,29 @@ describe('Tail', () => {
     await tail.refresh(page, rows[99].t, 1);
     expect(tail.rows.every((r) => r.id % 2 === 0)).toBe(true);
     calls.length = 0;
-    await tail.refresh(page, rows[99].t, 2);
+    await tail.refresh(page, rows[99].t, EPOCH_TOLERANCE_MS + 2);
     expect(calls[0]).toEqual([0, 1]);
+  });
+
+  it("tolerates jitter in the epoch estimate: a real restart's uptime-based estimate can land on either side of a minute boundary between snapshots (review I3)", async () => {
+    const { rows, page, calls } = list(5000);
+    const now = rows[4999].t;
+    const tail = new Tail<TailRow>(1_000_000, 500);
+    await tail.refresh(page, now, 29_833_333); // a start estimated at 29.833 333 s into some minute
+    expect(tail.after).toBe(rows[4999].id);
+    calls.length = 0;
+    await tail.refresh(page, now, 29_833_334); // the same restart, 1 ms of jitter later: not a new epoch
+    expect(calls).toEqual([[rows[4999].id, 500]]); // only what is new since last time: no re-seek
+  });
+
+  it('treats an epoch more than the tolerance away as a real restart', async () => {
+    const { rows, page } = list(5000);
+    const now = rows[4999].t;
+    const tail = new Tail<TailRow>(1_000_000, 500);
+    await tail.refresh(page, now, 0);
+    await tail.refresh(page, now, EPOCH_TOLERANCE_MS + 1);
+    expect(tail.rows).toEqual(rows.filter((r) => r.t >= now - 1_000_000));
+    expect(tail.complete).toBe(true);
   });
 
   it('runs one refresh at a time', async () => {
