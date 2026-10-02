@@ -1,9 +1,10 @@
 import type { Registration } from '@/core/types';
 import { REG_LIST_MAX } from '@/core/wire-noc';
 import { writeAudit } from '@/lib/audit';
-import { askReported, type Reported } from '@/lib/core-ask';
+import type { Reported } from '@/lib/core-ask';
 import type { Ctx } from '@/lib/ctx';
 import { coreActor } from '@/lib/site';
+import { askNoc } from './snapshot';
 
 // Who is registered where (reg.list, plan N2a), read by a staff member under
 // their own account: the core audits each read with that account (a page
@@ -31,7 +32,7 @@ export async function registrationsPage(ctx: Ctx, q: RegQuery, userId: number, i
   const h = ctx.cores.find((c) => c.id === q.core);
   if (!h) return { rows: { state: 'unreachable' }, more: false };
   const as = coreActor(ctx.config.site, userId);
-  const rows = await askReported(h, 'reg.list', () => h.core.regList(as, { cellId: q.cellId, after: q.after }), REG_DEADLINE_MS);
+  const rows = await askNoc(h, 'reg.list', () => h.core.regList(as, { cellId: q.cellId, after: q.after }), REG_DEADLINE_MS, ctx.now());
   writeAudit(ctx, {
     actorId: userId,
     action: q.after === undefined && q.cellId !== undefined ? 'noc.cell.terminals' : 'noc.registrations',

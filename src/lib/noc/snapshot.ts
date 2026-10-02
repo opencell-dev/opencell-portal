@@ -1,4 +1,4 @@
-import type { CellStatus, CoreBlock, CoreHandle, CoreStatus, OcssPeer, RadioStatus } from '@/core/types';
+import { type CellStatus, type CoreBlock, type CoreHandle, type CoreStatus, isCoreError, type OcssPeer, type RadioStatus } from '@/core/types';
 import { askReported, askWithin, type Reported } from '@/lib/core-ask';
 import type { Ctx } from '@/lib/ctx';
 import { radioView } from './radio';
@@ -40,19 +40,54 @@ export interface CoreView {
 export const BLOCKS_TTL_MS = 10 * 60_000;
 /** An older core that answered 'unsupported' is not asked that again for this long (its "unknown op" rate is 60 an hour). */
 export const UNSUPPORTED_RETRY_MS = 10 * 60_000;
+/** Review I4(b): a rate-limited op is not asked again for this long either, so the shared bucket it drained gets a chance to refill. */
+export const RATE_LIMIT_BACKOFF_MS = 3 * 60_000;
 
-const unsupportedUntil = new WeakMap<CoreHandle, Map<string, number>>();
-const blocksCache = new WeakMap<CoreHandle, { at: number; blocks: Reported<CoreBlock[]> }>();
+interface Memo {
+  state: 'unsupported' | 'unreachable';
+  until: number;
+}
 
-/** askReported, but an operation the core said it lacks is not asked again for UNSUPPORTED_RETRY_MS (per core handle and `what`). */
+const memoOf = new WeakMap<CoreHandle, Map<string, Memo>>();
+
+function memo(h: CoreHandle): Map<string, Memo> {
+  let m = memoOf.get(h);
+  if (!m) {
+    m = new Map();
+    memoOf.set(h, m);
+  }
+  return m;
+}
+
+/**
+ * askReported, but an operation the core said it lacks is not asked again
+ * for UNSUPPORTED_RETRY_MS, and one it rate-limited is not asked again for
+ * RATE_LIMIT_BACKOFF_MS (per core handle and `what`; review I4). Shared by
+ * the snapshot's own polls and, so an older or rate-limited core is not
+ * asked twice for the same reason, by every per-viewer read of the same op
+ * (registrations.ts, calls.ts, core-audit.ts).
+ */
 export async function askNoc<T>(h: CoreHandle, what: string, ask: () => Promise<T>, deadlineMs: number, now: number): Promise<Reported<T>> {
-  const memo = unsupportedUntil.get(h) ?? new Map<string, number>();
-  unsupportedUntil.set(h, memo);
-  if ((memo.get(what) ?? 0) > now) return { state: 'unsupported' };
-  const r = await askReported(h, what, ask, deadlineMs);
-  if (r.state === 'unsupported') memo.set(what, now + UNSUPPORTED_RETRY_MS);
+  const m = memo(h);
+  const hit = m.get(what);
+  if (hit && hit.until > now) return { state: hit.state };
+  let code: string | undefined;
+  const r = await askReported(h, what, ask, deadlineMs, (e) => {
+    code = isCoreError(e) ? e.code : undefined;
+  });
+  if (r.state === 'unsupported') m.set(what, { state: 'unsupported', until: now + UNSUPPORTED_RETRY_MS });
+  else if (r.state === 'unreachable' && code === 'rate_limited') m.set(what, { state: 'unreachable', until: now + RATE_LIMIT_BACKOFF_MS });
+  else m.delete(what);
   return r;
 }
+
+/** Whether `what` on `h` is remembered right now as unsupported (an older core), without asking it (review I4a/I4c). */
+export function isUnsupported(h: CoreHandle, what: string, now: number): boolean {
+  const hit = memo(h).get(what);
+  return !!hit && hit.state === 'unsupported' && hit.until > now;
+}
+
+const blocksCache = new WeakMap<CoreHandle, { at: number; blocks: Reported<CoreBlock[]> }>();
 
 async function blocksOf(h: CoreHandle, deadlineMs: number, now: number): Promise<Reported<CoreBlock[]>> {
   const hit = blocksCache.get(h);

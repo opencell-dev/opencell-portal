@@ -109,14 +109,14 @@ async function refreshCore(ctx: Ctx, h: CoreHandle, epoch: number, at: number, d
   const [calls, audit] = await Promise.all([
     askNoc(
       h,
-      'calls',
+      'cdr.recent',
       () => t.calls.refresh(async (after, limit) => (await h.core.cdrRecent(NOC_ACTOR, after, limit)).map(noNumbers), at, epoch),
       deadlineMs,
       at,
     ),
     askNoc(
       h,
-      'audit',
+      'audit.list',
       () =>
         t.audit.refresh(
           async (after, limit) => (await h.core.auditList(NOC_ACTOR, { after, limit })).map((r) => ({ id: r.id, t: r.at, event: r.event, cellId: r.cellId })),

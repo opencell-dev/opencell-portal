@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { RESULT_LABEL } from '@/components/noc/activity';
 import { Leg, ringS, talkS } from '@/components/noc/call-table';
+import { notReported } from '@/components/noc/core-panels';
 import { CAUSES } from '@/core/wire-noc';
 import { appCtx } from '@/lib/ctx';
 import { callResult } from '@/lib/noc/activity';
@@ -21,14 +22,13 @@ export default async function NocCall({ params }: { params: Promise<{ core: stri
   const c = await getCall(ctx, core, Number(id), user.id, (await requestMeta()).ip);
   if (c === null) notFound();
   if (c === 'unreachable' || c === 'unsupported') {
+    // Review I4(c): the same wording and the same quiet, grey treatment as every other "not supported by this core" panel -- never a red alert, which belongs to a real failure the viewer must act on.
     return (
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold">
           Call {id} on {core}
         </h1>
-        <p role="alert" className="text-red-700 dark:text-red-400">
-          {c === 'unsupported' ? `${core} does not report calls (oc-core before v0.4.0).` : `${core} did not answer in time.`}
-        </p>
+        <p className="text-sm text-slate-500">{notReported(c === 'unsupported' ? { state: 'unsupported' } : { state: 'unreachable' }, 'cdr.recent')}</p>
       </div>
     );
   }

@@ -42,10 +42,17 @@ describe('registrationsPage', () => {
     const ctx = testCtx({ OC_SITE: 'noc' });
     vi.spyOn(ctx.core, 'regList').mockRejectedValueOnce(new CoreError('unsupported'));
     expect((await registrationsPage(ctx, { core: 'fake' }, 42, 'ip')).rows).toEqual({ state: 'unsupported' });
+    // Review I4(a): memoized per core and op, so a second read of the same op does not ask the core again within the retry window.
+    expect((await registrationsPage(ctx, { core: 'fake' }, 42, 'ip')).rows).toEqual({ state: 'unsupported' });
+
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    vi.spyOn(ctx.core, 'regList').mockRejectedValueOnce(new CoreError('unavailable'));
-    expect((await registrationsPage(ctx, { core: 'fake' }, 42, 'ip')).rows).toEqual({ state: 'unreachable' });
+    const other = testCtx({ OC_SITE: 'noc' }); // a different core handle: its own memo, not the one above
+    vi.spyOn(other.core, 'regList').mockRejectedValueOnce(new CoreError('unavailable'));
+    expect((await registrationsPage(other, { core: 'fake' }, 42, 'ip')).rows).toEqual({ state: 'unreachable' });
     expect((await registrationsPage(ctx, { core: 'nope' }, 42, 'ip')).rows).toEqual({ state: 'unreachable' });
-    expect(listAudit(ctx, 5).map((a) => JSON.parse(a.detail ?? '{}').rows)).toEqual(['unreachable', 'unsupported']);
+
+    expect(listAudit(other, 1).map((a) => JSON.parse(a.detail ?? '{}').rows)).toEqual(['unreachable']);
+    // 'nope' is not a configured core, so registrationsPage returns before auditing (unchanged from before this fix).
+    expect(listAudit(ctx, 5).map((a) => JSON.parse(a.detail ?? '{}').rows)).toEqual(['unsupported', 'unsupported']);
   });
 });

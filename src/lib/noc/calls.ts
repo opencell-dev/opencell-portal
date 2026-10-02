@@ -2,10 +2,10 @@ import { z } from 'zod';
 import type { CdrRecord, CoreHandle } from '@/core/types';
 import { CDR_RECENT_MAX } from '@/core/wire-noc';
 import { writeAudit } from '@/lib/audit';
-import { askReported } from '@/lib/core-ask';
 import type { Ctx } from '@/lib/ctx';
 import { coreActor } from '@/lib/site';
 import { CALLS_WINDOW_MS, callResult, callRows, callsAfter, DAY_MS, RESULTS } from './activity';
+import { askNoc, isUnsupported } from './snapshot';
 
 // The Calls page (plan N2a): the call records of a window, read from each
 // core by a staff member under their own account (cdr.recent; the core
@@ -102,8 +102,12 @@ export async function listCalls(ctx: Ctx, f: CallFilter, userId: number, ip: str
   const per = await Promise.all(
     handles.map(async (h): Promise<{ c: CoreCalls; rows: CallRecord[] }> => {
       const after = startAfter(ctx, h.id, from);
-      if (after === null) return { c: { id: h.id, state: 'not-ready', truncated: false }, rows: [] };
-      const r = await askReported(h, 'cdr.recent', () => readCore(h, as, after), CALLS_DEADLINE_MS);
+      if (after === null) {
+        // Review I4(c): the shared activity may already know this op is unsupported (an older core); say so, not "not read yet".
+        const state = isUnsupported(h, 'cdr.recent', now) ? 'unsupported' : 'not-ready';
+        return { c: { id: h.id, state, truncated: false }, rows: [] };
+      }
+      const r = await askNoc(h, 'cdr.recent', () => readCore(h, as, after), CALLS_DEADLINE_MS, now);
       if (r.state !== 'ok') return { c: { id: h.id, state: r.state, truncated: false }, rows: [] };
       return {
         c: { id: h.id, state: 'ok', truncated: r.value.truncated },
@@ -126,7 +130,7 @@ export async function listCalls(ctx: Ctx, f: CallFilter, userId: number, ip: str
 export async function getCall(ctx: Ctx, core: string, id: number, userId: number, ip: string): Promise<CallRecord | null | 'unreachable' | 'unsupported'> {
   const h = ctx.cores.find((c) => c.id === core);
   if (!h) return null;
-  const r = await askReported(h, 'cdr.recent', () => h.core.cdrRecent(coreActor(ctx.config.site, userId), id - 1, 1), CALLS_DEADLINE_MS);
+  const r = await askNoc(h, 'cdr.recent', () => h.core.cdrRecent(coreActor(ctx.config.site, userId), id - 1, 1), CALLS_DEADLINE_MS, ctx.now());
   const found = r.state === 'ok' && r.value[0]?.id === id ? { ...r.value[0], core } : null;
   writeAudit(ctx, { actorId: userId, action: 'noc.call', target: `cdr:${core}/${id}`, detail: { core, found: found !== null }, ip });
   return r.state === 'ok' ? found : r.state;

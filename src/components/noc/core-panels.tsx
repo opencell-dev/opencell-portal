@@ -10,7 +10,8 @@ import { StatusDot, type Tone, When } from './status';
 
 const OCSS_TONE: Record<OcssState, Tone> = { up: 'ok', open: 'warn', handshake: 'warn', connecting: 'warn', down: 'bad' };
 
-function notReported<T>(r: Reported<T> | undefined, what: string): string | null {
+/** A core's answer for a view that cannot show its own data: "needs oc-core v0.4.0" for an older core, never red (review I4c). Shared with the call page. */
+export function notReported<T>(r: Reported<T> | undefined, what: string): string | null {
   if (!r || r.state === 'unsupported') return `Not reported by this core (${what} needs oc-core v0.4.0).`;
   if (r.state === 'unreachable') return 'The core did not answer in time.';
   return null;
