@@ -7,7 +7,7 @@ import { appCtx } from '@/lib/ctx';
 import { countdown, fromSegment, spacedNumber, utcMinute } from '@/lib/numbers/format';
 import { numberOf } from '@/lib/numbers/ownership';
 import { placeOfNumber } from '@/lib/numbers/places';
-import { takeQr } from '@/lib/numbers/qr-flash';
+import { flashOf } from '@/lib/numbers/qr-flash';
 import { qrSvg } from '@/lib/qr';
 import { requireUser } from '@/server/request';
 
@@ -25,9 +25,11 @@ export default async function Activate({ params }: { params: Promise<{ number: s
   const number = fromSegment((await params).number);
   const row = numberOf(ctx, user.id, number);
   if (!row) notFound();
-  const t = takeQr(session.id, number, ctx.now());
   const place = placeOfNumber(ctx, number);
   const activated = row.state === 'activated';
+  // A QR issued before the number was activated is the one the terminal used: it works no more.
+  const flash = flashOf(session.id, number, ctx.now());
+  const t = flash && !(activated && row.activatedAt !== null && row.activatedAt >= flash.at) ? flash.token : null;
   return (
     <div className="max-w-xl space-y-6">
       <p>

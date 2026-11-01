@@ -10,6 +10,7 @@ import { writeAudit } from '@/lib/audit';
 import { appCtx } from '@/lib/ctx';
 import { activationQrMail } from '@/lib/mail-templates';
 import { activateHref } from '@/lib/numbers/format';
+import { requestMoreNumbers } from '@/lib/numbers/limits';
 import { getNumber, numberOf, releaseNumber, reissueNumber, syncNumber } from '@/lib/numbers/ownership';
 import { takeQr } from '@/lib/numbers/qr-flash';
 import { coreFor } from '@/lib/numbers/route';
@@ -106,4 +107,13 @@ export async function simulateAction(_prev: FormState, form: FormData): Promise<
   await syncNumber(ctx, row);
   revalidatePath('/numbers');
   return { ok: true, message: op.data === 'activate' ? 'A simulated terminal activated it.' : 'Registered on a simulated cell.' };
+}
+
+/** "Ask for more numbers" on the Get a number card (spec §4.2; P2 decision 5). */
+export async function requestMoreAction(_prev: FormState, form: FormData): Promise<FormState> {
+  const { user } = await requireUser();
+  const r = requestMoreNumbers(appCtx(), user.id, { reason: form.get('reason') ?? '', wanted: form.get('wanted') ?? '' }, await requestMeta());
+  if (!r.ok) return { ok: false, message: r.error };
+  revalidatePath('/numbers');
+  return { ok: true, message: 'Sent. An admin will answer by email.' };
 }

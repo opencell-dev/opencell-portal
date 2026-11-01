@@ -10,7 +10,7 @@ import type { IssuedToken } from '@/core/types';
 export const FLASH_MS = 15 * 60_000;
 const PER_SESSION = 8;
 
-interface Entry {
+export interface Entry {
   token: IssuedToken;
   at: number;
 }
@@ -41,6 +41,12 @@ export function putQr(sessionId: string, t: IssuedToken, now = Date.now()): void
 export function takeQr(sessionId: string, number: string, now = Date.now()): IssuedToken | null {
   const e = store().get(sessionId)?.find((x) => x.token.number === number);
   return e && now - e.at < FLASH_MS ? e.token : null;
+}
+
+/** takeQr with the time it was put: a token issued before the number's activation was the one used up by it. */
+export function flashOf(sessionId: string, number: string, now = Date.now()): Entry | null {
+  const e = store().get(sessionId)?.find((x) => x.token.number === number);
+  return e && now - e.at < FLASH_MS ? e : null;
 }
 
 /** Forget a number's QR (it was released). */

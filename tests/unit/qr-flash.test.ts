@@ -37,3 +37,12 @@ describe('the QR flash (portal spec §7: shown once; P2: for 15 minutes, to the 
     expect((globalThis as { __ocQrFlash?: Map<string, unknown> }).__ocQrFlash?.has('s1')).toBe(true);
   });
 });
+
+describe('flashOf', () => {
+  it('says when the QR was put', async () => {
+    const { flashOf } = await import('@/lib/numbers/qr-flash');
+    putQr('s1', tok(A), 500);
+    expect(flashOf('s1', A, 600)).toMatchObject({ at: 500, token: { number: A } });
+    expect(flashOf('s1', A, 500 + FLASH_MS)).toBeNull();
+  });
+});

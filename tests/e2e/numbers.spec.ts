@@ -89,3 +89,39 @@ test("another account's number is a 404", async ({ page, browser }, info) => {
   await expect(bob.page.getByRole('heading', { name: 'Page not found' })).toBeVisible();
   await bob.ctx.close();
 });
+
+test('My numbers: the card goes waiting → activated → registered, live; release takes a card away', async ({ page, context }, info) => {
+  await freshUser(page, info, 'Liv');
+  const url = await getLancasterNumber(page);
+  const number = decodeURIComponent(new URL(url).pathname.split('/')[2]);
+  await page.goto('/numbers');
+  const card = page.locator(`[data-testid="number-card"][data-number="${number}"]`);
+  await expect(card.getByTestId('number-state')).toHaveText(/^Waiting for activation · 2 d 23 h left$/);
+  await expect(page.getByTestId('get-number-card')).toContainText('2 of 3 left');
+  // A terminal activates it in another tab (the fake core's simulated terminal, with this session's QR).
+  const other = await context.newPage();
+  await other.goto(url);
+  await other.getByRole('button', { name: 'Simulate a terminal activating it (fake core)' }).click();
+  await expect(other.getByText('This number is active on a terminal.')).toBeVisible(); // the used QR is not shown again
+  await expect(card.getByTestId('number-state')).toHaveText('Activated', { timeout: 10_000 });
+  await expect(card.getByText('Terminal', { exact: true })).toBeVisible();
+  await card.getByRole('button', { name: 'Simulate a registration (fake core)' }).click();
+  await expect(card.getByTestId('number-state')).toHaveText(/^Registered on cell /, { timeout: 10_000 });
+  await other.close();
+
+  // A second number, released from its card.
+  const second = await getLancasterNumber(page);
+  const n2 = decodeURIComponent(new URL(second).pathname.split('/')[2]);
+  await page.goto('/numbers');
+  const card2 = page.locator(`[data-testid="number-card"][data-number="${n2}"]`);
+  await card2.getByText('Release', { exact: true }).click();
+  await card2.getByRole('button', { name: 'Release this number' }).click();
+  await expect(card2).toHaveCount(0);
+  await expect(page.getByTestId('get-number-card')).toContainText('2 of 3 left');
+});
+
+test('a subscriber gets a 404 on the admin pages for number limits', async ({ page }, info) => {
+  await freshUser(page, info, 'Sue');
+  const res = await page.goto('/admin/limits');
+  expect(res?.status()).toBe(404);
+});

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { count, isNull } from 'drizzle-orm';
+import { count, desc, isNull } from 'drizzle-orm';
 import { unzipSync } from 'fflate';
 import { exchanges, nanpaRefreshes, npas } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
@@ -237,4 +237,22 @@ export function logFailedRefresh(ctx: Ctx, e: unknown): void {
 /** The live (not withdrawn) exchange count, for the CLI's summary. */
 export function liveExchanges(ctx: Ctx): number {
   return ctx.db.select({ n: count() }).from(exchanges).where(isNull(exchanges.withdrawnAt)).get()!.n;
+}
+
+/** The last refreshes, newest first, in words (the admin page, spec §4.4). */
+export function recentRefreshes(ctx: Ctx, n: number): { id: number; at: number; ok: boolean; summary: string }[] {
+  return ctx.db
+    .select()
+    .from(nanpaRefreshes)
+    .orderBy(desc(nanpaRefreshes.at), desc(nanpaRefreshes.id))
+    .limit(n)
+    .all()
+    .map((r) => {
+      const d = JSON.parse(r.detail) as RefreshResult;
+      const summary = r.ok
+        ? `${d.newExchanges} new exchanges, ${d.withdrawn} withdrawn, ${d.restored} restored, ${d.rateCenters} rate centers` +
+          `${d.newNpas.length > 0 ? `; new NPAs ${d.newNpas.join(' ')}` : ''}${d.errors.length > 0 ? `; ${d.errors.length} problems` : ''}`
+        : `failed: ${d.errors[0] ?? 'unknown'}`;
+      return { id: r.id, at: r.at, ok: r.ok, summary };
+    });
 }
