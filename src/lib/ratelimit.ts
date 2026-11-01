@@ -50,6 +50,13 @@ export const LIMITS = {
     windowS: 86400,
     message: 'You have asked for numbers too often today. Please try again tomorrow.',
   },
+  // Portal P2: "Email it to me" on the activation page (the QR's text form).
+  qr_mail_account: {
+    perIp: false,
+    max: 5,
+    windowS: 3600,
+    message: 'You have asked for that email too often. Please try again in about an hour.',
+  },
   // NOC design §11: a staff number lookup (a number's status and calls).
   noc_lookup: {
     perIp: false,

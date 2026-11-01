@@ -190,6 +190,12 @@ describe('route guards', () => {
     expect([...seen].sort()).toEqual(Object.keys(want).sort());
   });
 
+  it('every number action checks for a signed-in user first (portal P2)', () => {
+    const r = actionProblems(readFileSync(join(ACTIONS, 'numbers.ts'), 'utf8'), ['requireUser'], 'numbers.ts');
+    expect(r.problems).toEqual([]);
+    expect(r.functions).toBeGreaterThanOrEqual(5);
+  });
+
   it('every account action checks for a signed-in user first', () => {
     const r = actionProblems(readFileSync(join(ACTIONS, 'account.ts'), 'utf8'), ['requireUser'], 'account.ts');
     expect(r.problems).toEqual([]);
