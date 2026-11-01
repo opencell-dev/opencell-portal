@@ -6,7 +6,8 @@ import { disableAccount, enableAccount, searchSubscribers, setNumberDisabled, su
 import { directory } from '@/lib/numbers/directory';
 import { createSession, sessionFromToken } from '@/lib/sessions';
 import { hashToken } from '@/lib/tokens';
-import { ACCOUNT_DISABLED } from '@/lib/users';
+import { makeSetupToken, peekToken } from '@/lib/nodes/setup-tokens';
+import { ACCOUNT_DISABLED, adminContacts, isLastAdmin, revokeRole } from '@/lib/users';
 import { testCtx, type TestCtx } from '../helpers/ctx';
 
 const META = { ip: '203.0.113.9' };
@@ -197,6 +198,31 @@ describe('disabling an account', () => {
     ctx.db.insert(emailTokens).values({ id: hashToken('a-link-from-before'), userId: alice, purpose: 'magic', createdAt: ctx.now(), expiresAt: ctx.now() + 1000 }).run();
     expect(await consumeEmailToken(ctx, 'a-link-from-before', META)).toEqual({ ok: false, error: ACCOUNT_DISABLED });
     expect(ctx.db.select().from(sessions).where(eq(sessions.userId, alice)).all()).toEqual([]);
+  });
+});
+
+describe('a disabled admin', () => {
+  it('gets no more mail, and does not count as an admin left', async () => {
+    const two = user(ctx, 'Two', 'two@example.org');
+    ctx.db.insert(userRoles).values({ userId: two, role: 'admin', grantedAt: 1 }).run();
+    expect(isLastAdmin(ctx, root)).toBe(false);
+    expect((await disableAccount(ctx, root, two, META)).ok).toBe(true);
+    expect(adminContacts(ctx).map((a) => a.id)).toEqual([root]);
+    expect(isLastAdmin(ctx, root)).toBe(true);
+    expect(revokeRole(ctx, root, 'admin', null)).toMatchObject({ ok: false });
+    expect(await deleteAccount(ctx, root, { confirmEmail: 'root@example.org', choices: {} }, META)).toMatchObject({ ok: false });
+  });
+});
+
+describe('a disabled operator’s setup command', () => {
+  it('stops working, and enabling the account does not bring it back', async () => {
+    const n = ctx.db.insert(nodes).values({ requestId: 1, userId: alice, coreId: 'fake', cellId: 3, cellName: 'x', certCn: 'x', siteName: 'x', lat: 39, lon: -77, region: 'MD', contactPhone: 'x', anchor: 3, cellSeed: 1, boardRole: 'bs', mode: 'part15', listGroup: 0, createdAt: 1 }).returning().get();
+    const { token } = makeSetupToken(ctx, n.id, root);
+    expect(peekToken(ctx, token).ok).toBe(true);
+    await disableAccount(ctx, root, alice, META);
+    expect(peekToken(ctx, token).ok).toBe(false);
+    await enableAccount(ctx, root, alice, META);
+    expect(peekToken(ctx, token).ok).toBe(false);
   });
 });
 

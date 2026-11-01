@@ -51,17 +51,14 @@ describe('anchors and frequencies', () => {
 });
 
 describe('names', () => {
-  it('makes a cell name of a site name', () => {
-    expect(cellName('Frederick Roof #2!')).toBe('frederick-roof-2');
-    expect(cellName('  --Ünïcode--  ')).toBe('n-code');
-    expect(cellName('日本語')).toBe('node');
-    const long = cellName(`${'a'.repeat(30)} b c`);
-    expect(long.length).toBeLessThanOrEqual(31);
-    expect(long).toMatch(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/);
+  it('makes a cell name of the state and the request, never the site: subscribers see it', () => {
+    expect(cellName('MD', 12)).toBe('md-12');
+    expect(cellName('', 12)).toBe('node-12');
+    expect(cellName('BC', 4294967295).length).toBeLessThanOrEqual(31);
   });
 
   it('makes a certificate CN with the cell id', () => {
-    expect(certCn(7, 'frederick-roof-2')).toBe('cell7-frederick-roof-2');
+    expect(certCn(7, 'md-12')).toBe('cell7-md-12');
     expect(certCn(4294967295, 'a'.repeat(31))).toMatch(/^[A-Za-z0-9._-]{1,64}$/);
   });
 

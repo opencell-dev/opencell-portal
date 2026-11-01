@@ -9,6 +9,7 @@ import type { Ctx } from '@/lib/ctx';
 import { accountDisabledMail, accountEnabledMail } from '@/lib/mail-templates';
 import { type NumberRow } from '@/lib/numbers/ownership';
 import { coreFor } from '@/lib/numbers/route';
+import { voidTokensOfUser } from '@/lib/nodes/setup-tokens';
 import { endSessionsOfDisabled, type RequestMeta } from '@/lib/sessions';
 import { coreActor } from '@/lib/site';
 import { getUser, isLastAdmin, type Role, rolesOf, type User } from '@/lib/users';
@@ -111,6 +112,7 @@ export async function disableAccount(ctx: Ctx, adminId: number, userId: number, 
     ctx.db.transaction(() => {
       ctx.db.update(users).set({ disabledAt: ctx.now(), disabledBy: adminId }).where(eq(users.id, userId)).run();
       endSessionsOfDisabled(ctx, userId);
+      voidTokensOfUser(ctx, userId);
     });
   }
   const rows = ctx.db.select({ number: numbers.number }).from(numbers).where(and(eq(numbers.userId, userId), eq(numbers.disabled, false))).all();

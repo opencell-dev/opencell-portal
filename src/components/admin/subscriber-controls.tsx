@@ -44,7 +44,31 @@ export function DisableAccountForm({ id }: { id: number }) {
   );
 }
 
-export function EnableAccountButton({ id }: { id: number }) {
+/** The same action again, for the numbers a core didn't answer for the first time. */
+export function FinishDisablingButton({ id, email }: { id: number; email: string }) {
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    setBusy(true);
+    try {
+      setMessage(say(await withFreshPasskey(() => disableAccountAction(id, email), () => setMessage('Confirm with your passkey…'))));
+    } catch {
+      setMessage(SESSION_GONE);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="space-y-1">
+      <button type="button" onClick={go} disabled={busy} className={button}>
+        Finish disabling: some numbers are still on
+      </button>
+      {message && <p role="status">{message}</p>}
+    </div>
+  );
+}
+
+export function EnableAccountButton({ id, label }: { id: number; label: string }) {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   async function go() {
@@ -60,7 +84,7 @@ export function EnableAccountButton({ id }: { id: number }) {
   return (
     <div className="space-y-1">
       <button type="button" onClick={go} disabled={busy} className={button}>
-        Enable this account
+        {label}
       </button>
       {message && <p role="status">{message}</p>}
     </div>

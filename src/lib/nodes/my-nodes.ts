@@ -6,8 +6,9 @@ import type { Result } from '@/lib/accounts';
 import { needsAgreement } from '@/lib/agreement';
 import { writeAudit } from '@/lib/audit';
 import { askReported, askWithin } from '@/lib/core-ask';
+import { forgetPublicNodes } from '@/lib/coverage';
 import type { Ctx } from '@/lib/ctx';
-import { nodeRetireMail } from '@/lib/mail-templates';
+import { nodeRetireMail, nodeRevokedMail } from '@/lib/mail-templates';
 import { duration } from '@/lib/noc/format';
 import { hit } from '@/lib/ratelimit';
 import type { RequestMeta } from '@/lib/sessions';
@@ -155,7 +156,9 @@ function cardOf(ctx: Ctx, n: Node, snap: CellSnapshot | null): NodeCard {
   else if (!cell) state = 'unknown';
   else if (cell.online) state = 'online';
   else state = cell.lastHeardAt === null ? 'waiting_setup' : 'offline';
-  const anchor = radio?.anchor ?? n.anchor;
+  // A cell's report is unchecked telemetry: only an anchor in the band is believed.
+  const reported = radio !== undefined && Number.isInteger(radio.anchor) && radio.anchor >= 0 && radio.anchor <= 51;
+  const anchor = reported ? radio.anchor : n.anchor;
   return {
     id: n.id,
     siteName: n.siteName,
@@ -168,7 +171,7 @@ function cardOf(ctx: Ctx, n: Node, snap: CellSnapshot | null): NodeCard {
     boardUptimeS: radio?.boardUptimeS ?? null,
     terminals: cell?.terminals ?? null,
     calls: cell?.calls ?? null,
-    channel: { anchor, mhz: anchorMhz(anchor), reported: radio !== undefined },
+    channel: { anchor, mhz: anchorMhz(anchor), reported },
     mode: cell?.mode ?? n.mode,
     cert: n.certFpr !== null && n.certExpiresAt !== null ? { fpr: n.certFpr, expiresAt: n.certExpiresAt } : null,
     setup: setup ?? null,
@@ -216,9 +219,24 @@ export function cardLine(c: NodeCard, now: number): { label: string; tone: 'ok' 
     case 'offline': {
       const window = c.downtime.find((w) => w.startsAt <= now && now < w.endsAt);
       if (window) return { label: `In downtime until ${hhmm(window.endsAt)}`, tone: 'wait' };
-      const since = c.offlineSince ?? c.lastHeardAt;
-      return { label: since === null ? 'Offline' : `Offline for ${duration((now - since) / 1000)}`, tone: 'off' };
+      // The watcher's first offline sample. Not lastHeardAt: a real core writes that only at HELLO.
+      return { label: c.offlineSince === null ? 'Offline' : `Offline for ${duration((now - c.offlineSince) / 1000)}`, tone: 'off' };
     }
+  }
+}
+
+/** A cell is revoked at its core: its node closes here, its tokens void, the map forgets it, and its operator is told. */
+export function closeRevokedNode(ctx: Ctx, n: Node, adminId: number | null): void {
+  const now = ctx.now();
+  ctx.db.update(nodes).set({ revokedAt: now }).where(eq(nodes.id, n.id)).run();
+  ctx.db.update(setupTokens).set({ usedAt: now, expiresAt: now }).where(and(eq(setupTokens.nodeId, n.id), gt(setupTokens.expiresAt, now))).run();
+  if (adminId === null) writeAudit(ctx, { actorId: null, action: 'node.revoked_at_core', target: `node:${n.id}`, detail: { core: n.coreId, cell: n.cellId } });
+  forgetPublicNodes(ctx);
+  forgetSnapshot(ctx, n.coreId);
+  const u = n.userId === null ? undefined : getUser(ctx, n.userId);
+  if (u) {
+    const m = nodeRevokedMail(u.name, n.siteName, ctx.config.origin);
+    ctx.mailQueue.send({ to: u.email, subject: m.subject, text: m.text });
   }
 }
 

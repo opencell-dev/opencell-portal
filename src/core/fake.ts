@@ -597,7 +597,8 @@ export class FakeCore implements CoreAdmin {
   simCellOnline(cellId: number, online: boolean): void {
     const c = this.cell(cellId);
     c.online = online;
-    c.lastHeardAt = this.now();
+    // As a real core: last_seen is written at HELLO, never when the link drops.
+    if (online) c.lastHeardAt = this.now();
     if (!online) this.activeCalls.delete(cellId); // a lost link releases its calls
   }
 

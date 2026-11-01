@@ -1,13 +1,12 @@
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { type CellStatus, isCoreError } from '@/core/types';
-import { nodes, setupTokens, users } from '@/db/schema';
+import { nodes, users } from '@/db/schema';
 import type { Result } from '@/lib/accounts';
 import { writeAudit } from '@/lib/audit';
 import { askWithin, tryWithin } from '@/lib/core-ask';
 import { forgetPublicNodes } from '@/lib/coverage';
 import type { Ctx } from '@/lib/ctx';
-import { nodeRevokedMail } from '@/lib/mail-templates';
-import { type DowntimeWindow, downtimeOf, forgetSnapshot } from '@/lib/nodes/my-nodes';
+import { closeRevokedNode, type DowntimeWindow, downtimeOf, forgetSnapshot } from '@/lib/nodes/my-nodes';
 import type { RequestMeta } from '@/lib/sessions';
 import { coreActor } from '@/lib/site';
 
@@ -58,18 +57,8 @@ export async function revokeCell(ctx: Ctx, adminId: number, coreId: string, cell
     if ('error' in r && isCoreError(r.error) && r.error.code === 'not_found') return { ok: false, error: `${coreId} has no cell ${cellId}.` };
     return { ok: false, error: `${coreId} didn't answer; nothing was changed. Please try again in a minute.` };
   }
-  const now = ctx.now();
-  const node = ctx.db.update(nodes).set({ revokedAt: now }).where(and(eq(nodes.coreId, coreId), eq(nodes.cellId, cellId))).returning().get();
-  if (node) {
-    ctx.db.update(setupTokens).set({ usedAt: now, expiresAt: now }).where(and(eq(setupTokens.nodeId, node.id), gt(setupTokens.expiresAt, now))).run();
-    if (node.userId !== null) {
-      const u = ctx.db.select().from(users).where(eq(users.id, node.userId)).get();
-      if (u) {
-        const m = nodeRevokedMail(u.name, node.siteName, ctx.config.origin);
-        ctx.mailQueue.send({ to: u.email, subject: m.subject, text: m.text });
-      }
-    }
-  }
+  const node = ctx.db.select().from(nodes).where(and(eq(nodes.coreId, coreId), eq(nodes.cellId, cellId))).get();
+  if (node) closeRevokedNode(ctx, node, adminId);
   writeAudit(ctx, { actorId: adminId, action: 'cell.revoke', target: `${coreId}/${cellId}`, detail: { node: node?.id ?? null }, ip: meta.ip });
   forgetPublicNodes(ctx);
   forgetSnapshot(ctx, coreId);

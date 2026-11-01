@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { DisableAccountForm, EnableAccountButton, NumberDisabledButton } from '@/components/admin/subscriber-controls';
+import { DisableAccountForm, EnableAccountButton, FinishDisablingButton, NumberDisabledButton } from '@/components/admin/subscriber-controls';
 import { LocalTime } from '@/components/numbers/local-time';
 import { subscriberDetail } from '@/lib/admin/subscribers';
 import { appCtx } from '@/lib/ctx';
@@ -93,7 +93,20 @@ export default async function AdminUser({ params }: { params: Promise<{ id: stri
       <section className="space-y-2">
         <h2 className="text-lg font-semibold">Disabling</h2>
         <p className="text-sm">It ends the account&apos;s sessions and disables its numbers. Its nodes keep running: revoking a cell is its own action. Both ask for your passkey.</p>
-        {d.user.id === me.id ? <p className="text-sm">This is your own account.</p> : d.user.disabledAt === null ? <DisableAccountForm id={d.user.id} /> : <EnableAccountButton id={d.user.id} />}
+        {d.user.id === me.id ? (
+          <p className="text-sm">This is your own account.</p>
+        ) : d.user.disabledAt === null ? (
+          <>
+            {/* A core that did not answer leaves numbers behind: each step can be run again (decision 22). */}
+            {d.numbers.some((n) => n.disabledBy === 'account') && <EnableAccountButton id={d.user.id} label="Finish enabling: some numbers are still off" />}
+            <DisableAccountForm id={d.user.id} />
+          </>
+        ) : (
+          <>
+            {d.numbers.some((n) => !n.disabled) && <FinishDisablingButton id={d.user.id} email={d.user.email} />}
+            <EnableAccountButton id={d.user.id} label="Enable this account" />
+          </>
+        )}
       </section>
     </div>
   );

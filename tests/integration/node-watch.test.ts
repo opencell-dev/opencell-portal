@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { nodeDowntime, nodes, nodeState, settings, userRoles, users } from '@/db/schema';
+import { publicNodes } from '@/lib/coverage';
 import { forgetSnapshot } from '@/lib/nodes/my-nodes';
 import { addDowntime, cancelDowntime } from '@/lib/nodes/my-nodes';
 import { inDowntime, startNodeWatch, watchTick, WATCH_MS } from '@/lib/nodes/watch';
@@ -53,29 +54,72 @@ describe('the watcher: offline and back mails', () => {
     expect(state()).toMatchObject({ online: true, onlineSince: t0, offlineSince: null });
     ctx.core.simCellOnline(cellId, false);
     let r = await tickAt(t0 + MIN);
-    expect(state()).toMatchObject({ online: false, offlineSince: t0, onlineSince: null });
+    const down = t0 + MIN;
+    expect(state()).toMatchObject({ online: false, offlineSince: down, onlineSince: null });
     expect(r.offline).toEqual([]);
-    r = await tickAt(t0 + 9 * MIN);
+    r = await tickAt(down + 9 * MIN);
     expect(r.offline).toEqual([]);
     expect(await mails('alice@example.org')).toEqual([]);
-    r = await tickAt(t0 + 10 * MIN);
+    r = await tickAt(down + 10 * MIN);
     expect(r.offline).toEqual([id]);
     let sent = await mails('alice@example.org');
     expect(sent).toHaveLength(1);
     expect(sent[0].subject).toContain('offline');
     expect(sent[0].text).toContain(`/nodes/${id}`);
-    r = await tickAt(t0 + 20 * MIN);
+    r = await tickAt(down + 20 * MIN);
     expect(r.offline).toEqual([]);
     expect(await mails('alice@example.org')).toHaveLength(1);
     ctx.core.simCellOnline(cellId, true);
-    r = await tickAt(t0 + 21 * MIN);
+    r = await tickAt(down + 21 * MIN);
     expect(r.back).toEqual([id]);
     sent = await mails('alice@example.org');
     expect(sent).toHaveLength(2);
     expect(sent[1].subject).toContain('back');
-    expect(state()).toMatchObject({ online: true, onlineSince: t0 + 21 * MIN, offlineSince: null, offlineAlertAt: null });
-    r = await tickAt(t0 + 22 * MIN);
+    expect(state()).toMatchObject({ online: true, onlineSince: down + 21 * MIN, offlineSince: null, offlineAlertAt: null });
+    r = await tickAt(down + 22 * MIN);
     expect(r.back).toEqual([]);
+  });
+
+  it('a node up for days that drops gets its 10 minutes: the core’s lastHeardAt is its last HELLO, not its last traffic', async () => {
+    const t0 = ctx.clock.t;
+    await tickAt(t0);
+    const later = t0 + 5 * 86_400_000;
+    ctx.clock.t = later;
+    ctx.core.simCellOnline(cellId, false);
+    // Still the HELLO of 5 days ago.
+    expect((await ctx.core.cellStatus(0, cellId))[0].lastHeardAt).toBe(t0);
+    const r = await tickAt(later);
+    expect(r.offline).toEqual([]);
+    expect(state().offlineSince).toBe(later);
+    expect(await mails('alice@example.org')).toEqual([]);
+    expect((await tickAt(later + 10 * MIN)).offline).toEqual([id]);
+    const [mail] = await mails('alice@example.org');
+    expect(mail.text).toContain(new Date(later).toISOString().slice(0, 16).replace('T', ' '));
+  });
+
+  it('a core restart: nodes still reconnecting at the first tick get no mail', async () => {
+    const t0 = ctx.clock.t;
+    await tickAt(t0);
+    ctx.core.simCellOnline(cellId, false);
+    const r = await tickAt(t0 + 3 * 86_400_000);
+    expect(r.offline).toEqual([]);
+    ctx.core.simCellOnline(cellId, true);
+    await tickAt(t0 + 3 * 86_400_000 + MIN);
+    expect(await mails('alice@example.org')).toEqual([]);
+  });
+
+  it('a cell revoked at its core closes the node: no more alerts, off the map, the operator told', async () => {
+    const t0 = ctx.clock.t;
+    expect(publicNodes(ctx)).toHaveLength(1);
+    await ctx.core.cellRevoke(0, cellId);
+    const r = await tickAt(t0 + 60_000);
+    expect(r.offline).toEqual([]);
+    expect(ctx.db.select().from(nodes).where(eq(nodes.id, id)).get()?.revokedAt).toBe(t0 + 60_000);
+    expect(publicNodes(ctx)).toEqual([]);
+    const sent = await mails('alice@example.org');
+    expect(sent.map((m) => m.subject)).toEqual([expect.stringContaining('revoked')]);
+    await tickAt(t0 + 120_000);
+    expect(await mails('alice@example.org')).toHaveLength(1);
   });
 
   it('a short outage says nothing either way', async () => {
@@ -96,23 +140,6 @@ describe('the watcher: offline and back mails', () => {
       t += MIN;
       await tickAt(t);
     }
-    expect(await mails('alice@example.org')).toEqual([]);
-  });
-
-  it('counts from when the core last heard it, if that is earlier', async () => {
-    const t0 = ctx.clock.t;
-    ctx.core.simCellOffline(cellId, t0 - 30 * MIN);
-    await tickAt(t0);
-    expect(state().offlineSince).toBe(t0 - 30 * MIN);
-    expect((await mails('alice@example.org'))).toHaveLength(1);
-  });
-
-  it('a new certificate starts the count again', async () => {
-    const t0 = ctx.clock.t;
-    ctx.core.simCellOffline(cellId, t0 - 3 * 86_400_000);
-    ctx.db.update(nodes).set({ certIssuedAt: t0 }).where(eq(nodes.id, id)).run();
-    await tickAt(t0);
-    expect(state().offlineSince).toBe(t0);
     expect(await mails('alice@example.org')).toEqual([]);
   });
 
@@ -146,6 +173,7 @@ describe('the watcher: offline and back mails', () => {
     const n = addNode(null);
     ctx.core.simCellOffline(n.cellId, t0 - 60 * MIN);
     await tickAt(t0);
+    await tickAt(t0 + 11 * MIN);
     expect(state(n.id).online).toBe(false);
     await ctx.mailQueue.drain();
     expect(ctx.mailer.sent).toEqual([]);
@@ -229,7 +257,7 @@ describe('the admins’ digest', () => {
   const digests = async () => (await mails('root@example.org')).filter((m) => m.subject.includes('offline'));
 
   it('goes out once a day from 08:00 New York time, when a node is offline', async () => {
-    ctx.core.simCellOffline(cellId, at(1));
+    ctx.core.simCellOnline(cellId, false);
     let r = await tickAt(at(7));
     expect(r.digest).toBe(false);
     r = await tickAt(at(8));
@@ -250,15 +278,20 @@ describe('the admins’ digest', () => {
     expect(ctx.db.select().from(settings).where(eq(settings.key, 'nodes:digest_day')).get()?.value).toBe('2026-07-16');
   });
 
-  it('sends nothing on a day with nothing offline', async () => {
+  it('sends nothing on a day with nothing offline at 08:00, even if a node goes down later', async () => {
     ctx.core.simCellOnline(cellId, true);
+    await tickAt(at(7));
     const r = await tickAt(at(8));
     expect(r.digest).toBe(false);
+    ctx.core.simCellOnline(cellId, false);
+    expect((await tickAt(at(15))).digest).toBe(false);
     expect(await digests()).toEqual([]);
+    expect((await tickAt(at(8, 16))).digest).toBe(true);
   });
 
   it('a node in downtime is left out of it', async () => {
-    ctx.core.simCellOffline(cellId, at(1));
+    ctx.core.simCellOnline(cellId, false);
+    await tickAt(at(6));
     ctx.clock.t = at(7);
     addDowntime(ctx, alice, id, { startsAt: at(7), endsAt: at(12), reason: 'Roof work' }, META);
     const r = await tickAt(at(8));
@@ -266,7 +299,7 @@ describe('the admins’ digest', () => {
   });
 
   it('follows daylight saving: March and November', async () => {
-    ctx.core.simCellOffline(cellId, Date.UTC(2026, 0, 1));
+    ctx.core.simCellOnline(cellId, false);
     // 2026-03-07 is still EST (-5); 12:59 UTC is 07:59 local, 13:00 UTC is 08:00.
     expect((await tickAt(Date.UTC(2026, 2, 7, 12, 59))).digest).toBe(false);
     expect((await tickAt(Date.UTC(2026, 2, 7, 13, 0))).digest).toBe(true);

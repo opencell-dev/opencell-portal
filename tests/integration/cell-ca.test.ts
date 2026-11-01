@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { X509Certificate } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -70,6 +70,22 @@ describe('loadCellCa', () => {
   it('refuses the wrong key', () => {
     const other = pki.makeIca();
     expect(() => loadCellCa(ctxFor(pki.icaCrt, other.key))).toThrow(/cell CA: .*key/);
+  });
+
+  it('refuses a longer OID that starts like the policy', () => {
+    const i = pki.makeIca({ policy: `${CELL_POLICY_OID}4` });
+    expect(() => loadCellCa(ctxFor(i.crt, i.key))).toThrow(/cell CA: .*polic/);
+  });
+
+  it('refuses one that does not chain to the OpenCell root, when the root is known', () => {
+    const other = pki.makeRoot('another-root');
+    const i = pki.makeIca({ rootDir: other });
+    expect(loadCellCa(ctxFor(i.crt, i.key))).not.toBeNull();
+    const c = testCtx({ OC_CELL_CA_CERT: i.crt, OC_CELL_CA_KEY: i.key, OC_CORE_CA: pki.rootCrt });
+    // A file of its own: what was checked is kept per file version.
+    const copy = write('foreign-ica.crt', readFileSync(i.crt, 'utf8'));
+    expect(() => loadCellCa({ ...c, config: { ...c.config, cellCa: { cert: copy, key: i.key } } })).toThrow(/cell CA: .*root/);
+    expect(loadCellCa(testCtx({ OC_CELL_CA_CERT: pki.icaCrt, OC_CELL_CA_KEY: pki.icaKey, OC_CORE_CA: pki.rootCrt }))).not.toBeNull();
   });
 
   it('refuses a leaf and a missing file', () => {

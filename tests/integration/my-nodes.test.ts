@@ -79,6 +79,12 @@ describe('myNodes', () => {
     expect(c).toMatchObject({ state: 'offline', lastHeardAt: ctx.now() - 5 * MIN });
   });
 
+  it('a nonsense anchor in a cell’s report does not break the page', async () => {
+    ctx.core.simCellOnline(cellId, true);
+    ctx.core.simRadio(cellId, [{ radio: 0, role: 'bs', band: 915, fw: '0.3.0', anchor: 200, pps: 'locked', timebase: true, tempC: 40, boardUptimeS: 1, reportedAt: ctx.now(), schedules: 1, rach: 0, attach: 0, grants: 0, ackErrors: 0, ackLate: 0, lateSlots: 0, radioErrors: 0, lastRadioError: 0, scheduleMisses: 0, uartCrcErrors: 0, terminalsHeard: 0 }]);
+    expect((await myNodes(ctx, alice))[0].channel).toEqual({ anchor: 30, mhz: 917.25, reported: false });
+  });
+
   it('a core that does not answer leaves it unknown', async () => {
     ctx.core.simDown('refuse');
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});

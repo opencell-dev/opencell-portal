@@ -79,20 +79,22 @@ install_build() {
     say "Downloading the oc-cell $TAG source"
     curl -fsSL --max-time 900 -o "$WORK/oc-cell.tgz" "$ORIGIN/setup/$TOKEN/oc-cell.tgz" || die "the download failed: check this Pi's internet connection, and run the same command again"
     echo "$SHA256  $WORK/oc-cell.tgz" | sha256sum -c --quiet - || die "the download does not match its SHA-256: run the same command again"
-    # Built by nobody, in a directory of its own; root only installs the result.
+    # Built by nobody, in a directory of its own; root installs the result, and only nobody ever runs it here.
     mkdir -p "$WORK/src" "$WORK/build"
     tar -xzf "$WORK/oc-cell.tgz" --no-same-owner -C "$WORK/src"
     chown -R nobody "$WORK"
     say "Building oc-cell $TAG (a few minutes on a Pi)"
     runuser -u nobody -- cmake -S "$WORK/src" -B "$WORK/build" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOC_PI_TESTS=OFF "-DOC_VERSION=$TAG" || die "cmake failed"
     runuser -u nobody -- cmake --build "$WORK/build" -j2 || die "the build failed"
+    # From here root reads this tree: nobody can write to it any more.
+    chown -R root "$WORK"
     local new="$lib/.new-$TAG"
     rm -rf -- "$new"
     mkdir -p -- "$lib"
     cmake --install "$WORK/build" --prefix "$new" >/dev/null
     [ -x "$new/bin/oc-cell" ] || die "the build installed no oc-cell"
     local ver
-    ver=$("$new/bin/oc-cell" --version 2>&1 || true)
+    ver=$(runuser -u nobody -- "$new/bin/oc-cell" --version 2>&1 || true)
     case "$ver" in
       "oc-cell $TAG" | "oc-cell $TAG "*) ;;
       *) die "the build says '$ver', not 'oc-cell $TAG'" ;;
@@ -127,7 +129,7 @@ account() {
 }
 
 # The key is made here, and only here. A new key takes its place only once a
-# certificate for it has come back: a failure leaves the node as it was.
+# certificate for it has come back: a failure leaves this Pi's files as they were.
 make_key() {
   KEY="$ETC/cell.key"
   if [ "$1" = 1 ] || [ ! -e "$KEY" ]; then
@@ -138,21 +140,21 @@ make_key() {
     say "Keeping this node's private key"
     openssl pkey -in "$KEY" -noout 2>/dev/null || die "$KEY is not a key. To make a new one, add --new-key"
   fi
-  openssl req -new -key "$KEY" -subj /CN=oc-cell -out "$WORK/csr"
+  openssl req -new -key "$KEY" -subj /CN=oc-cell -out "$PRIV/csr"
 }
 
 request_certificate() {
   say "Asking for this node's certificate"
-  if ! curl -sS --fail-with-body --max-time 60 -H "Origin: $ORIGIN" -H 'Content-Type: application/pkcs10' --data-binary "@$WORK/csr" -o "$WORK/bundle" "$ORIGIN/setup/$TOKEN/csr"; then
-    [ -s "$WORK/bundle" ] && cat "$WORK/bundle" >&2
-    die "no certificate. Nothing on this Pi changed"
+  if ! curl -sS --fail-with-body --max-time 60 -H "Origin: $ORIGIN" -H 'Content-Type: application/pkcs10' --data-binary "@$PRIV/csr" -o "$PRIV/bundle" "$ORIGIN/setup/$TOKEN/csr"; then
+    [ -s "$PRIV/bundle" ] && cat "$PRIV/bundle" >&2
+    die "no certificate came back, and this Pi's files are as they were. If the node stops connecting (the answer may have been lost on its way), make a new setup command on My nodes and run it"
   fi
 }
 
 # The answer's parts by their names, and only these three names.
 split_bundle() {
-  mkdir -p "$WORK/parts"
-  awk -v dir="$WORK/parts" '
+  mkdir -p "$PRIV/parts"
+  awk -v dir="$PRIV/parts" '
     /^--- / {
       name = substr($0, 5)
       if (name != "oc-cell.crt" && name != "ca.crt" && name != "oc-cell.conf") exit 3
@@ -162,22 +164,22 @@ split_bundle() {
     }
     file == "" { exit 3 }
     { print > file }
-  ' "$WORK/bundle" || die "the portal's answer makes no sense"
+  ' "$PRIV/bundle" || die "the portal's answer makes no sense"
   local part
   for part in oc-cell.crt ca.crt oc-cell.conf; do
-    [ -s "$WORK/parts/$part" ] || die "the portal's answer lacks $part"
+    [ -s "$PRIV/parts/$part" ] || die "the portal's answer lacks $part"
   done
-  [ "$(grep -c 'BEGIN CERTIFICATE' "$WORK/parts/oc-cell.crt")" = 2 ] || die "the certificate must come with its issuer"
+  [ "$(grep -c 'BEGIN CERTIFICATE' "$PRIV/parts/oc-cell.crt")" = 2 ] || die "the certificate must come with its issuer"
   # The certificate must be for this key.
-  [ "$(openssl x509 -in "$WORK/parts/oc-cell.crt" -noout -pubkey)" = "$(openssl pkey -in "$KEY" -pubout)" ] || die "the certificate is not for this node's key"
-  sed -i "s|@BOARD@|$BOARD|" "$WORK/parts/oc-cell.conf"
+  [ "$(openssl x509 -in "$PRIV/parts/oc-cell.crt" -noout -pubkey)" = "$(openssl pkey -in "$KEY" -pubout)" ] || die "the certificate is not for this node's key"
+  sed -i "s|@BOARD@|$BOARD|" "$PRIV/parts/oc-cell.conf"
 }
 
 install_files() {
   local part target
   for part in oc-cell.crt:cell.crt ca.crt:ca.crt oc-cell.conf:oc-cell.conf; do
     target="$ETC/${part#*:}"
-    install -m 0640 "$WORK/parts/${part%%:*}" "$target.new"
+    install -m 0640 "$PRIV/parts/${part%%:*}" "$target.new"
     chown root:oc-cell "$target.new"
     mv -Tf -- "$target.new" "$target"
   done
@@ -225,8 +227,10 @@ main() {
   REEXEC=0
   shopt -s nullglob
   preflight
+  # WORK is handed to the unprivileged build; what the certificate request needs stays in PRIV, root's alone.
   WORK=$(mktemp -d)
-  trap 'rm -rf -- "$WORK"' EXIT
+  PRIV=$(mktemp -d)
+  trap 'rm -rf -- "$WORK" "$PRIV"' EXIT
   packages
   install_build
   account

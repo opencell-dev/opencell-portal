@@ -5,7 +5,7 @@ import type { Ctx } from '@/lib/ctx';
 import { errorKind } from '@/lib/errors';
 import { cellCaExpiringMail, nodeBackMail, nodeOfflineMail, offlineDigestMail } from '@/lib/mail-templates';
 import { adminContacts } from '@/lib/users';
-import { cellSnapshot } from './my-nodes';
+import { cellSnapshot, closeRevokedNode } from './my-nodes';
 
 // One watcher in the portal's process (plan P3, decision 19): every 60 s, one
 // look per core as actor 0, shared with My nodes. It keeps node_state and sends
@@ -64,6 +64,8 @@ function localClock(t: number): { day: string; hour: number } {
 function sendDigest(ctx: Ctx, now: number): boolean {
   const { day, hour } = localClock(now);
   if (hour < DIGEST_HOUR || setting(ctx, DIGEST_DAY) === day) return false;
+  // The morning's one look, sent or not: a node going down at 15:00 waits for tomorrow's digest (its operator has the alert).
+  setSetting(ctx, DIGEST_DAY, day);
   const rows = ctx.db
     .select({ nodeId: nodes.id, siteName: nodes.siteName, coreId: nodes.coreId, cellId: nodes.cellId, since: nodeState.offlineSince, operator: users.name })
     .from(nodes)
@@ -74,7 +76,6 @@ function sendDigest(ctx: Ctx, now: number): boolean {
     // A notice covers the node: "no alert fires inside a downtime notice".
     .filter((r) => inDowntime(ctx, r.nodeId, now) === null);
   if (rows.length === 0) return false;
-  setSetting(ctx, DIGEST_DAY, day);
   for (const a of adminContacts(ctx)) {
     const m = offlineDigestMail(a.name, rows, `${ctx.config.origin}/admin/cells`, ctx.config.origin);
     ctx.mailQueue.send({ to: a.email, subject: m.subject, text: m.text });
@@ -134,6 +135,11 @@ export async function watchTick(ctx: Ctx): Promise<{ offline: number[]; back: nu
     const row = ctx.db.select().from(nodeState).where(eq(nodeState.nodeId, n.id)).get();
     const s: Sample = { online: row?.online ?? null, lastHeardAt: row?.lastHeardAt ?? null, onlineSince: row?.onlineSince ?? null, offlineSince: row?.offlineSince ?? null, offlineAlertAt: row?.offlineAlertAt ?? null };
     const cell = snaps.get(n.coreId)?.cells.get(n.cellId);
+    if (cell?.revoked) {
+      // Revoked outside the portal (oc-core admin): the node is over, here too.
+      closeRevokedNode(ctx, n, null);
+      continue;
+    }
     let next: Sample;
     if (!cell) {
       // Its core did not answer: unknown. Nothing else changes, and nothing is sent.
@@ -150,10 +156,10 @@ export async function watchTick(ctx: Ctx): Promise<{ offline: number[]; back: nu
         }
       }
     } else {
-      // First seen offline, or when the core last heard it if that is earlier;
-      // never before this certificate, which started the node afresh.
-      const heard = Math.max(cell.lastHeardAt ?? now, n.certIssuedAt ?? 0);
-      const offlineSince = s.offlineSince ?? Math.min(now, heard);
+      // First seen offline. Not the core's lastHeardAt, whatever decision 19 hoped:
+      // a real core writes it only at HELLO, so for a node up for days it says
+      // nothing about when the link dropped, and would alert at the first sample.
+      const offlineSince = s.offlineSince ?? now;
       next = { online: false, lastHeardAt: cell.lastHeardAt, onlineSince: null, offlineSince, offlineAlertAt: s.offlineAlertAt };
       const notice = inDowntime(ctx, n.id, now);
       const from = Math.max(offlineSince, lastWindowEnd(ctx, n.id, offlineSince, now) ?? offlineSince);

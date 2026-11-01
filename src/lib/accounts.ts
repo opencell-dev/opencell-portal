@@ -358,7 +358,7 @@ export async function deleteAccount(
   // calls (another admin demoted while this request was in flight) can't
   // slip past the guard.
   const result = ctx.db.transaction((tx) => {
-    const admins = tx.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, 'admin')).all();
+    const admins = tx.select({ userId: userRoles.userId }).from(userRoles).innerJoin(users, eq(users.id, userRoles.userId)).where(and(eq(userRoles.role, 'admin'), isNull(users.disabledAt))).all();
     if (admins.length <= 1 && admins.some((a) => a.userId === userId)) return lastAdminError;
     // No trace of the address should survive: rate-limit rows are keyed by a
     // hash of it, and past audit rows carry the IP the account acted from.

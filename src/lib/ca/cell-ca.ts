@@ -67,7 +67,7 @@ interface Loaded {
 // One per process, as __ocCores is: Next can load this module more than once.
 const g = globalThis as typeof globalThis & { __ocCellCa?: Map<string, Loaded> };
 
-function readCa(certPath: string, keyPath: string): CellCa {
+function readCa(certPath: string, keyPath: string, rootPath: string | null): CellCa {
   let certPem: string;
   try {
     certPem = readFileSync(certPath, 'utf8');
@@ -82,13 +82,24 @@ function readCa(certPath: string, keyPath: string): CellCa {
   }
   let ext: string;
   try {
-    ext = execFileSync('openssl', ['x509', '-noout', '-ext', 'basicConstraints,extendedKeyUsage,certificatePolicies'], { input: certPem, timeout: OPENSSL_MS, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+    ext = execFileSync('openssl', ['x509', '-noout', '-ext', 'basicConstraints,keyUsage,extendedKeyUsage,certificatePolicies'], { input: certPem, timeout: OPENSSL_MS, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
   } catch {
     throw new Error('cell CA: openssl could not read the certificate');
   }
   if (!/Basic Constraints: critical\s+CA:TRUE, pathlen:0\b/.test(ext)) throw new Error('cell CA: it must be CA:TRUE, pathlen:0 (critical)');
   if (!/Extended Key Usage:\s+TLS Web Client Authentication\s*$/m.test(ext)) throw new Error('cell CA: it must carry the extended key usage clientAuth and only that');
-  if (!ext.includes(`Policy: ${CELL_POLICY_OID}`)) throw new Error('cell CA: it lacks the cell certificate policy');
+  if (!/Key Usage: critical\s+Certificate Sign/.test(ext)) throw new Error('cell CA: it must have the key usage keyCertSign (critical)');
+  if (!ext.split('\n').some((l) => l.trim() === `Policy: ${CELL_POLICY_OID}`)) throw new Error('cell CA: it lacks the cell certificate policy');
+  // Real time, not the context's: this is about the file as openssl will read it.
+  if (new Date(x.validFrom).getTime() > Date.now()) throw new Error('cell CA: it is not valid yet');
+  // A certificate from another root would fail only at the core, with the token spent and the cell re-pinned.
+  if (rootPath) {
+    try {
+      execFileSync('openssl', ['verify', '-CAfile', rootPath, certPath], { timeout: OPENSSL_MS, stdio: 'pipe' });
+    } catch {
+      throw new Error('cell CA: it does not chain to the OpenCell root');
+    }
+  }
   let keyOk = false;
   try {
     keyOk = x.checkPrivateKey(createPrivateKey(readFileSync(keyPath)));
@@ -120,7 +131,7 @@ export function loadCellCa(ctx: Ctx): CellCa | null {
   const key = `${certPath}\0${keyPath}`;
   let hit = g.__ocCellCa.get(key);
   if (hit?.stamp !== stamp) {
-    hit = { stamp, ca: readCa(certPath, keyPath) };
+    hit = { stamp, ca: readCa(certPath, keyPath, ctx.config.coreCa ? credentialPath(ctx.config.coreCa) : null) };
     g.__ocCellCa.set(key, hit);
   }
   if (hit.ca.notAfter <= ctx.now()) throw new Error('cell CA: it has expired');

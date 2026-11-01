@@ -39,15 +39,14 @@ export function newCellSeed(): number {
   }
 }
 
-/** The name a cell carries on its core: lowercase letters, digits and dashes, 1–31; `node` if nothing of the site name is left. */
-export function cellName(siteName: string): string {
-  const clean = siteName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+/, '')
-    .slice(0, 31)
-    .replace(/-+$/, '');
-  return clean || 'node';
+/**
+ * The name a cell carries on its core: its state and the request's number, like
+ * `md-12`. Never the site name, which may be an address (decision 16): any
+ * subscriber registered on the cell sees this name on their number's card.
+ */
+export function cellName(region: string, requestId: number): string {
+  const r = region.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return `${r || 'node'}-${requestId}`.slice(0, 31);
 }
 
 /** The cell certificate's CN: always the portal's, never the CSR's (spec §8.3). oc-ca's rule: ^[A-Za-z0-9._-]{1,64}$. */

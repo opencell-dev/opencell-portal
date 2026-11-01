@@ -209,12 +209,12 @@ describe('a CSR with the token', () => {
     const leafFile = join(pki.dir, `leaf-${Date.now()}.pem`);
     writeFileSync(leafFile, parts['oc-cell.crt']);
     const leaf = new X509Certificate(parts['oc-cell.crt']);
-    expect(leaf.subject).toBe(`O=OpenCell\nCN=cell${cellId}-frederick-roof`);
+    expect(leaf.subject).toMatch(new RegExp(`^O=OpenCell\nCN=cell${cellId}-md-\\d+$`));
     expect(pki.ossl('verify', '-purpose', 'sslclient', '-CAfile', pki.rootCrt, '-untrusted', leafFile, leafFile)).toContain('OK');
     const fpr = leaf.fingerprint256.replaceAll(':', '').toLowerCase();
     expect((await ctx.core.cellStatus(0, cellId))[0].certFpr).toBe(fpr);
     expect(ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()).toMatchObject({ certFpr: fpr, certIssuedAt: ctx.clock.t, certExpiresAt: new Date(leaf.validTo).getTime() });
-    expect(ctx.db.select().from(issuedCerts).all()).toEqual([expect.objectContaining({ nodeId, fpr, pinned: true, cn: `cell${cellId}-frederick-roof` })]);
+    expect(ctx.db.select().from(issuedCerts).all()).toEqual([expect.objectContaining({ nodeId, fpr, pinned: true, cn: expect.stringMatching(new RegExp(`^cell${cellId}-md-\\d+$`)) })]);
     expect(ctx.db.select().from(nodeState).where(eq(nodeState.nodeId, nodeId)).get()).toMatchObject({ online: null, onlineSince: null, offlineSince: null });
     expect(ctx.db.select().from(audit).where(eq(audit.action, 'node.cert')).all()).toHaveLength(1);
     expect(ctx.core.audit.filter((a) => a.op === 'cell.set_cert').at(-1)?.actor).toBe(ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()!.userId);
@@ -326,6 +326,17 @@ describe('a CSR with the token', () => {
     setLimit(ctx, 'setup_ip', 1);
     expect((await postCsr(token, 'hello')).status).toBe(400);
     expect((await postCsr(token, 'hello')).status).toBe(429);
+  });
+
+  it('a disabled operator, or none: 410 on the script and the CSR, and nothing is re-pinned', async () => {
+    const owner = ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()!.userId!;
+    ctx.db.update(users).set({ disabledAt: 1 }).where(eq(users.id, owner)).run();
+    expect((await handleScript(ctx, token, req(`/setup/${token}`))).status).toBe(410);
+    expect((await postCsr(token, makeCsr(pki).csr)).status).toBe(410);
+    ctx.db.update(users).set({ disabledAt: null }).where(eq(users.id, owner)).run();
+    ctx.db.update(nodes).set({ userId: null }).where(eq(nodes.id, nodeId)).run();
+    expect((await postCsr(token, makeCsr(pki).csr)).status).toBe(410);
+    expect(ctx.core.audit.filter((a) => a.op === 'cell.set_cert')).toEqual([]);
   });
 
   it('a revoked node: 410', async () => {

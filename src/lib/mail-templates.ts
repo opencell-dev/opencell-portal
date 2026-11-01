@@ -195,7 +195,7 @@ export function cellCaExpiringMail(adminName: string, notAfter: number, origin: 
     subject: 'OpenCell: the cell intermediate CA is about to expire',
     text:
       `Hello ${adminName},\n\nThe portal's cell intermediate CA ends at ${utc(notAfter)}; after that no node can get a certificate. ` +
-      `Renew it on the laptop: deploy/oc-portal-cell-ca renew oc-portal${sig(origin)}`,
+      `Renew it on the laptop: deploy/oc-portal-cell-ca renew oc-portal, and follow what it prints.${sig(origin)}`,
   };
 }
 

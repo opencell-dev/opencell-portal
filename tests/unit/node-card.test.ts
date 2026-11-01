@@ -36,7 +36,8 @@ describe('cardLine', () => {
 
   it('says offline and for how long', () => {
     expect(cardLine({ ...base, state: 'offline', onlineSince: null, offlineSince: NOW - 12 * MIN }, NOW)).toEqual({ label: 'Offline for 12 min', tone: 'off' });
-    expect(cardLine({ ...base, state: 'offline', onlineSince: null, offlineSince: null, lastHeardAt: NOW - 3 * MIN }, NOW)).toEqual({ label: 'Offline for 3 min', tone: 'off' });
+    // Not from lastHeardAt: a real core writes it only at HELLO, maybe days ago.
+    expect(cardLine({ ...base, state: 'offline', onlineSince: null, offlineSince: null, lastHeardAt: NOW - 3 * MIN }, NOW)).toEqual({ label: 'Offline', tone: 'off' });
     expect(cardLine({ ...base, state: 'offline', offlineSince: null, lastHeardAt: null }, NOW)).toEqual({ label: 'Offline', tone: 'off' });
   });
 

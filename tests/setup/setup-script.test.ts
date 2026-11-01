@@ -159,6 +159,10 @@ describe('the setup script on a stubbed Pi', () => {
     expect(l).toContain('systemctl daemon-reload');
     expect(l).toContain('systemctl enable --now oc-cell');
     expect(l).toContain('runuser -u nobody -- cmake -S');
+    // The tree is root's before root reads it, and only nobody runs the new binary.
+    expect(l.indexOf('chown -R root')).toBeGreaterThan(l.indexOf('--build'));
+    expect(l.indexOf('cmake --install')).toBeGreaterThan(l.indexOf('chown -R root'));
+    expect(l).toMatch(/runuser -u nobody -- \S+\/bin\/oc-cell --version/);
     expect(l).toContain('-DOC_PI_TESTS=OFF -DOC_VERSION=v0.2.0');
     expect(l).not.toContain('apt-get');
     expect(l.split('\n').filter((x) => x.startsWith('systemctl restart'))).toEqual([]);
@@ -292,7 +296,7 @@ describe('the setup script on a stubbed Pi', () => {
     const t = fresh();
     const script = await (await handleScript(ctx, t, new Request(`${origin}/setup/${t}`))).text();
     // The same awk the script runs, on a bundle naming another file.
-    const awk = /awk -v dir="\$WORK\/parts" '([\s\S]*?)' "\$WORK\/bundle"/.exec(script)![1];
+    const awk = /awk -v dir="\$PRIV\/parts" '([\s\S]*?)' "\$PRIV\/bundle"/.exec(script)![1];
     const dir = mkdtempSync(join(tmpdir(), 'oc-awk-'));
     const evil = join(dir, 'bundle');
     writeFileSync(evil, '--- ../../etc/cron.d/x\nboom\n');

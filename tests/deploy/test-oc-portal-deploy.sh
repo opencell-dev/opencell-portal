@@ -660,7 +660,19 @@ sleep 1
 cc_out="$(cc_run renew guest "$cc_root")"; cc_rc=$?
 if [ "$cc_rc" -eq 0 ]; then echo "ok   cell CA script: renew"; else echo "FAIL cell CA script: renew (exit $cc_rc): $cc_out"; fail=1; fi
 simassert "cell CA script: ...keeps the key" [ "$cc_pub" = "$(openssl pkey -in "$cc_key2" -pubout)" ]
-simassert "cell CA script: ...a new certificate" [ "$cc_fpr" != "$(openssl x509 -in "$cc_crt2" -noout -fingerprint -sha256)" ]
+simassert "cell CA script: ...nothing goes live yet" [ "$cc_fpr" = "$(openssl x509 -in "$cc_crt2" -noout -fingerprint -sha256)" ]
+cc_old="$(sed 's/.*=//; s/://g' <<<"$cc_fpr" | tr 'A-F' 'a-f')"
+simassert "cell CA script: ...keeps the old issuer in the cores' line" grep -Eq "cell_issuers = root,$cc_old,[0-9a-f]{64}" <<<"$cc_out"
+simassert "cell CA script: ...says how to go on" grep -q 'oc-portal-cell-ca install guest' <<<"$cc_out"
+cc_restarts="$(grep -c 'systemctl restart oc-portal' "$cc_tmp/systemctl.log")"
+simassert "cell CA script: ...and does not restart the portal" [ "$cc_restarts" = 1 ]
+cc_out="$(cc_run install guest)"; cc_rc=$?
+if [ "$cc_rc" -eq 0 ]; then echo "ok   cell CA script: install"; else echo "FAIL cell CA script: install (exit $cc_rc): $cc_out"; fail=1; fi
+simassert "cell CA script: ...the new certificate is live" [ "$cc_fpr" != "$(openssl x509 -in "$cc_crt2" -noout -fingerprint -sha256)" ]
+simassert "cell CA script: ...nothing left waiting" [ ! -e "$cc_crt2.next" ]
+simassert "cell CA script: ...the portal restarted" [ "$(grep -c 'systemctl restart oc-portal' "$cc_tmp/systemctl.log")" = 2 ]
+cc_out="$(cc_run install guest)"; cc_rc=$?
+if [ "$cc_rc" -ne 0 ] && grep -q 'run renew first' <<<"$cc_out"; then echo "ok   cell CA script: install with nothing waiting refuses"; else echo "FAIL cell CA script: second install (exit $cc_rc): $cc_out"; fail=1; fi
 check 2 "cell CA script: a bad command" env OC_CELL_CA_LOCAL="$cc_guest" deploy/oc-portal-cell-ca frobnicate guest "$cc_root"
 check 1 "cell CA script: a guest that is no alias" env OC_CELL_CA_LOCAL="$cc_guest" deploy/oc-portal-cell-ca renew 'x;id' "$cc_root"
 check 1 "cell CA script: no root here" env OC_CELL_CA_LOCAL="$cc_guest" deploy/oc-portal-cell-ca renew guest "$cc_tmp/nope"

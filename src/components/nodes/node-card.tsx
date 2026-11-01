@@ -29,7 +29,7 @@ export function NodeCardView({ c, now, link = true }: { c: NodeCard; now: number
         {line.label}
       </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-slate-500">Last heard</dt>
+        <dt className="text-slate-500">Last connected</dt>
         <dd>{c.lastHeardAt === null ? 'Not yet' : ago(c.lastHeardAt, now)}</dd>
         <dt className="text-slate-500">Terminals</dt>
         <dd data-testid="node-terminals">{c.terminals ?? '—'}</dd>

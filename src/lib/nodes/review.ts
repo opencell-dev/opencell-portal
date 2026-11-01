@@ -1,6 +1,6 @@
 import { and, asc, count, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
-import { isCoreError } from '@/core/types';
+import { type CoreHandle, isCoreError } from '@/core/types';
 import { nodeRequests, nodes, nodeState, numbers, users } from '@/db/schema';
 import type { Result } from '@/lib/accounts';
 import { writeAudit } from '@/lib/audit';
@@ -130,15 +130,16 @@ export const approveSchema = z.object({
   boardRole: z.enum(['bs', 'bench']),
 });
 
-/** Revoke a cell the core made that no node row holds, and leave a trace: nothing may stay pinned-able and unowned. */
-function orphan(ctx: Ctx, h: { id: string; core: { cellRevoke(actor: number, cellId: number): Promise<void> } }, actor: number, adminId: number, cellId: number, requestId: number, meta: RequestMeta): void {
-  void h.core.cellRevoke(actor, cellId).then(
-    () => writeAudit(ctx, { actorId: adminId, action: 'node.approve_orphan', target: `node_request:${requestId}`, detail: { core: h.id, cell: cellId, revoked: true }, ip: meta.ip }),
-    (e: unknown) => {
-      console.error(`oc-portal: cell ${cellId} on ${h.id} has no node and could not be revoked (${errorKind(e)})`);
-      writeAudit(ctx, { actorId: adminId, action: 'node.approve_orphan', target: `node_request:${requestId}`, detail: { core: h.id, cell: cellId, revoked: false }, ip: meta.ip });
-    },
-  );
+/** Revoke a cell the core made that no node row holds, and leave a trace: nothing may stay pinned-able and unowned. Never throws. */
+function orphan(ctx: Ctx, h: CoreHandle, actor: number, adminId: number, cellId: number, requestId: number, meta: RequestMeta): void {
+  void tryWithin(h, 'cell.revoke', () => h.core.cellRevoke(actor, cellId), WRITE_MS).then((r) => {
+    if (!r.ok) console.error(`oc-portal: cell ${cellId} on ${h.id} has no node and could not be revoked`);
+    try {
+      writeAudit(ctx, { actorId: adminId, action: 'node.approve_orphan', target: `node_request:${requestId}`, detail: { core: h.id, cell: cellId, revoked: r.ok }, ip: meta.ip });
+    } catch (e) {
+      console.error(`oc-portal: cell ${cellId} on ${h.id} has no node, and the audit failed (${errorKind(e)})`);
+    }
+  });
 }
 
 /**
@@ -172,7 +173,7 @@ export async function approveRequest(ctx: Ctx, adminId: number, id: number, opts
   if (claimed.changes !== 1) return { ok: false, error: DECIDED };
   const restore = () => ctx.db.update(nodeRequests).set({ status: row.status, decidedAt: null, decidedBy: null }).where(eq(nodeRequests.id, id)).run();
   const actor = coreActor(ctx.config.site, adminId);
-  const name = cellName(row.siteName);
+  const name = cellName(row.region, id);
   const added = await tryWithin(handle, 'cell.add', () => handle.core.cellAdd(actor, name, 'part15', 0), tuning.deadlineMs ?? WRITE_MS, (late) => {
     // The page gave up, but the core made the cell after all.
     if (late.ok) orphan(ctx, handle, actor, adminId, late.value, id, meta);
@@ -216,13 +217,19 @@ export async function approveRequest(ctx: Ctx, adminId: number, id: number, opts
     });
   } catch (e) {
     console.error(`oc-portal: approving request ${id}: the node could not be stored (${errorKind(e)})`);
-    restore();
     orphan(ctx, handle, actor, adminId, cellId, id, meta);
+    restore();
     return { ok: false, error: 'The node could not be stored, so its cell is being revoked. Please try again.' };
   }
-  const rel = currentRelease(ctx);
-  const token = rel ? makeSetupToken(ctx, nodeId, adminId) : null;
   writeAudit(ctx, { actorId: adminId, action: 'node.approve', target: `node:${nodeId}`, detail: { core: handle.id, cell: cellId, anchor }, ip: meta.ip });
+  // It is approved from here on: a failure below must not read as "try again". The operator's node page can make a command.
+  let token: { token: string; expiresAt: number } | null = null;
+  try {
+    const rel = currentRelease(ctx);
+    token = rel ? makeSetupToken(ctx, nodeId, adminId) : null;
+  } catch (e) {
+    console.error(`oc-portal: approving request ${id}: no setup token (${errorKind(e)})`);
+  }
   const m = nodeApprovedMail(u.name, row.siteName, token && setupCommand(ctx, token.token), token?.expiresAt ?? null, `${ctx.config.origin}/nodes/${nodeId}`, ctx.config.origin);
   ctx.mailQueue.send({ to: u.email, subject: m.subject, text: m.text });
   return { ok: true, nodeId, cellId, tokenMade: token !== null };

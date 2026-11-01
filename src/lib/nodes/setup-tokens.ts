@@ -1,5 +1,5 @@
 import { and, eq, gt, isNull, lt, sql } from 'drizzle-orm';
-import { nodes, setupTokens } from '@/db/schema';
+import { nodes, setupTokens, users } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
 import { hashToken, newToken } from '@/lib/tokens';
@@ -52,9 +52,11 @@ export function makeSetupToken(ctx: Ctx, nodeId: number, byUserId: number | null
 function look(ctx: Ctx, token: string): TokenPeek {
   if (!TOKEN_RE.test(token)) return { ok: false, why: 'unknown' };
   const id = hashToken(token);
-  const row = ctx.db.select().from(setupTokens).innerJoin(nodes, eq(nodes.id, setupTokens.nodeId)).where(eq(setupTokens.id, id)).get();
+  const row = ctx.db.select().from(setupTokens).innerJoin(nodes, eq(nodes.id, setupTokens.nodeId)).leftJoin(users, eq(users.id, nodes.userId)).where(eq(setupTokens.id, id)).get();
   if (!row) return { ok: false, why: 'unknown' };
   if (row.nodes.revokedAt !== null) return { ok: false, why: 'revoked' };
+  // No operator, or a disabled one: a certificate would re-pin a live cell for someone with no account here.
+  if (!row.users || row.users.disabledAt !== null) return { ok: false, why: 'revoked' };
   if (row.setup_tokens.usedAt !== null) return { ok: false, why: 'used' };
   if (row.setup_tokens.expiresAt <= ctx.now()) return { ok: false, why: 'expired' };
   if (row.setup_tokens.csrTries >= MAX_CSR_TRIES) return { ok: false, why: 'tries' };
@@ -77,6 +79,14 @@ export function claimToken(ctx: Ctx, token: string): TokenPeek {
     .where(and(eq(setupTokens.id, seen.tokenId), isNull(setupTokens.usedAt), gt(setupTokens.expiresAt, now), lt(setupTokens.csrTries, MAX_CSR_TRIES)))
     .run();
   return claimed.changes === 1 ? seen : look(ctx, token);
+}
+
+/** Every setup token of an account's nodes stops working: the account is being disabled, and enabling it must not bring them back. */
+export function voidTokensOfUser(ctx: Ctx, userId: number): void {
+  const now = ctx.now();
+  for (const n of ctx.db.select({ id: nodes.id }).from(nodes).where(eq(nodes.userId, userId)).all()) {
+    ctx.db.update(setupTokens).set({ usedAt: sql`coalesce(${setupTokens.usedAt}, ${now})`, expiresAt: sql`min(${setupTokens.expiresAt}, ${now})` }).where(and(eq(setupTokens.nodeId, n.id), gt(setupTokens.expiresAt, now))).run();
+  }
 }
 
 /** Signing or pinning failed: the operator can run the command again. */

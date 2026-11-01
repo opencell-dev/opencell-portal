@@ -28,6 +28,7 @@ const field = (form: FormData, name: string) => form.get(name) ?? undefined;
 /** "I accept" on /nodes/agreement: the current version, then on to where the sign-in was going. */
 export async function acceptAgreementAction(form: FormData): Promise<void> {
   const { user } = await requireUser();
+  if (appCtx().config.site !== 'portal') redirect('/');
   acceptAgreement(appCtx(), user.id, AGREEMENT_VERSION, await requestMeta());
   const next = form.get('next');
   redirect(samePath(typeof next === 'string' ? next : '') ?? '/nodes');

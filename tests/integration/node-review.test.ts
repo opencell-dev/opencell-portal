@@ -103,7 +103,7 @@ describe('the queue and the detail', () => {
     if (!r2.ok) throw new Error(r2.error);
     const d = reviewDetail(ctx, r2.id)!;
     expect(d.suggestedAnchor).toBe(1);
-    expect(d.nearestNode).toMatchObject({ cellName: 'frederick-roof', km: 0 });
+    expect(d.nearestNode).toMatchObject({ cellName: `md-${id}`, km: 0 });
   });
 });
 
@@ -112,10 +112,10 @@ describe('approving', () => {
     setRelease(ctx);
     const r = await approveRequest(ctx, root, id, OPTS, META);
     expect(r).toMatchObject({ ok: true, cellId: 1, tokenMade: true });
-    expect(ctx.core.audit.filter((a) => a.op === 'cell.add')).toEqual([expect.objectContaining({ actor: root, arg: 'frederick-roof' })]);
-    expect((await ctx.core.cellStatus(0))[0]).toMatchObject({ cellId: 1, name: 'frederick-roof', mode: 'part15', group: 0 });
+    expect(ctx.core.audit.filter((a) => a.op === 'cell.add')).toEqual([expect.objectContaining({ actor: root, arg: `md-${id}` })]);
+    expect((await ctx.core.cellStatus(0))[0]).toMatchObject({ cellId: 1, name: `md-${id}`, mode: 'part15', group: 0 });
     const n = ctx.db.select().from(nodes).get()!;
-    expect(n).toMatchObject({ requestId: id, userId: alice, coreId: 'fake', cellId: 1, cellName: 'frederick-roof', certCn: 'cell1-frederick-roof', siteName: 'Frederick Roof', lat: 39.414371, lon: -77.410541, region: 'MD', contactPhone: '+13015550100', anchor: 3, boardRole: 'bs', mode: 'part15', listGroup: 0, certFpr: null, revokedAt: null });
+    expect(n).toMatchObject({ requestId: id, userId: alice, coreId: 'fake', cellId: 1, cellName: `md-${id}`, certCn: `cell1-md-${id}`, siteName: 'Frederick Roof', lat: 39.414371, lon: -77.410541, region: 'MD', contactPhone: '+13015550100', anchor: 3, boardRole: 'bs', mode: 'part15', listGroup: 0, certFpr: null, revokedAt: null });
     expect(n.cellSeed).toBeGreaterThan(0);
     expect(ctx.db.select().from(nodeState).get()).toMatchObject({ nodeId: n.id, online: null });
     expect(ctx.db.select().from(nodeRequests).where(eq(nodeRequests.id, id)).get()).toMatchObject({ status: 'approved', decidedBy: root, nodeId: n.id });
@@ -188,8 +188,8 @@ describe('approving', () => {
     const r = await approveRequest(ctx, root, id, OPTS, META);
     log.mockRestore();
     expect(r.ok).toBe(false);
+    await vi.waitFor(() => expect(ctx.db.select().from(audit).where(eq(audit.action, 'node.approve_orphan')).all()).toHaveLength(1));
     expect((await ctx.core.cellStatus(0))[0]).toMatchObject({ cellId: 1, revoked: true });
-    expect(ctx.db.select().from(audit).where(eq(audit.action, 'node.approve_orphan')).all()).toHaveLength(1);
     expect(ctx.db.select().from(nodeRequests).where(eq(nodeRequests.id, id)).get()?.status).toBe('pending');
     expect(rolesOf(ctx, alice)).not.toContain('operator');
   });
@@ -209,6 +209,30 @@ describe('approving', () => {
   it('is refused on the NOC site', async () => {
     const noc = testCtx({ OC_SITE: 'noc' });
     expect((await approveRequest(noc, 1, 1, OPTS, META)).ok).toBe(false);
+  });
+});
+
+describe('the cell’s name', () => {
+  it('holds nothing of the site name, which subscribers on the cell would see', async () => {
+    expect((await approveRequest(ctx, root, id, OPTS, META)).ok).toBe(true);
+    const [c] = await ctx.core.cellStatus(0);
+    expect(c.name.toLowerCase()).not.toContain('frederick');
+    expect(ctx.db.select().from(nodes).get()?.certCn.toLowerCase()).not.toContain('frederick');
+  });
+});
+
+describe('an approval whose setup token fails', () => {
+  it('is still an approval: audited and mailed, with no "try again"', async () => {
+    setRelease(ctx);
+    // No such table any more: the insert of the token fails, after the node is stored.
+    ctx.db.$client.exec('DROP TABLE setup_tokens');
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await approveRequest(ctx, root, id, OPTS, META);
+    log.mockRestore();
+    expect(r).toMatchObject({ ok: true, tokenMade: false });
+    expect(ctx.db.select().from(audit).where(eq(audit.action, 'node.approve')).all()).toHaveLength(1);
+    const [mail] = await mailsTo('alice@example.org');
+    expect(mail.subject).toContain('approved');
   });
 });
 
