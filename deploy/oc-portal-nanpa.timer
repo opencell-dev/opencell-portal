@@ -19,6 +19,10 @@
 #   oc-portal-admin nanpa-refresh --dir DIR
 # A refresh that would withdraw more than 10 % of the live exchanges is
 # refused and changes nothing (a truncated download); it says so and exits 1.
+#
+# The refresh also signs and offers new NPAs (portal P5): the delegate key's
+# runbook, and what the live guest needs for it, is at the top of
+# oc-portal-route-delegate.conf.
 
 [Unit]
 Description=OpenCell portal: weekly NANPA exchange refresh (Sundays)

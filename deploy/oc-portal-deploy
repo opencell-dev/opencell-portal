@@ -400,6 +400,17 @@ chown -R oc-portal:oc-portal "\$build"
 # redeploying either of those two tags was already refused above.
 rm -rf "\$rel"
 mv -T "\$build" "\$rel"
+# The route delegate's key (portal plan P5): the weekly refresh's credential when
+# the key file is on this guest, and gone with it: a LoadCredential of a missing
+# file would fail the refresh. Runbook: deploy/oc-portal-route-delegate.conf.
+rd_dropin="\$ROOT/etc/systemd/system/oc-portal-nanpa.service.d/route-delegate.conf"
+if [ -f "\$ROOT/etc/opencell/tls/route-delegate.key" ] && [ -f "\$rel/deploy/oc-portal-route-delegate.conf" ]; then
+  install -D -m 0644 "\$rel/deploy/oc-portal-route-delegate.conf" "\$rd_dropin"
+  systemctl daemon-reload
+elif [ -e "\$rd_dropin" ]; then
+  rm -f "\$rd_dropin"
+  systemctl daemon-reload
+fi
 if [ -f "\$ROOT/var/lib/oc-portal/portal.db" ]; then
   runuser -u oc-portal -- sqlite3 "\$ROOT/var/lib/oc-portal/portal.db" ".backup '\$ROOT/var/lib/oc-portal/backups/pre-\$tag-\$(date -u +%Y%m%dT%H%M%SZ).db'"
   find "\$ROOT/var/lib/oc-portal/backups" -maxdepth 1 -type f -name 'pre-*.db' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f
