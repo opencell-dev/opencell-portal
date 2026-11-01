@@ -1,17 +1,18 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { count, desc, isNull } from 'drizzle-orm';
+import { count, desc, eq, isNull } from 'drizzle-orm';
 import { unzipSync } from 'fflate';
 import { exchanges, nanpaRefreshes, npas } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
 import { type ExchangeRow, lcgRegions, parseCnacCodes, parseCoCodes, parseNpas, parseRateCenters, type RateCenterRow } from './nanpa-parse';
+import type { OfferResult } from './route-delegate';
 
 // The weekly NANPA refresh (portal spec §4.4): new NXX assignments become
 // searchable, a code that leaves NANPA's file is withdrawn (kept for the
-// numbers already issued in it, never offered again), a new geographic NPA
-// is reported for P5 to sign and offer as a block. Run by
-// `oc-portal-admin nanpa-refresh` from oc-portal-nanpa.timer.
+// numbers already issued in it, never offered again). What core.blocks lacks
+// is then signed and offered as blocks (offerMissingNpas, route-delegate.ts).
+// Run by `oc-portal-admin nanpa-refresh` from oc-portal-nanpa.timer.
 
 /** Where the files come from (the P2 plan's "Data sources" appendix). Every one is a plain GET. */
 export const NANPA_URLS = {
@@ -47,9 +48,9 @@ export interface NanpaFiles {
 
 export interface RefreshResult {
   /**
-   * Geographic NPAs this refresh saw for the first time: the hook P5 signs
-   * and offers new blocks from (spec §4.4, §8.2). Empty on the first import,
-   * whose whole table P5 signs at setup.
+   * Geographic NPAs this refresh saw for the first time, for the log. Empty on
+   * the first import. What gets offered as a block is decided by what
+   * core.blocks lacks, not by this (plan P5 decision 3).
    */
   newNpas: string[];
   newExchanges: number;
@@ -57,6 +58,8 @@ export interface RefreshResult {
   restored: number;
   rateCenters: number;
   errors: string[];
+  /** What the refresh then did for the routing table (absent: it was not run). */
+  offers?: OfferResult;
 }
 
 type FetchImpl = typeof fetch;
@@ -263,6 +266,24 @@ export function logFailedRefresh(ctx: Ctx, e: unknown): void {
   writeAudit(ctx, { actorId: null, action: 'nanpa.refresh_failed', detail: { error: detail.errors[0].slice(0, 300) } });
 }
 
+/** The newest refresh's log row gains what happened to the routing table after it. */
+export function logOffers(ctx: Ctx, offers: OfferResult): void {
+  const row = ctx.db.select().from(nanpaRefreshes).orderBy(desc(nanpaRefreshes.id)).limit(1).get();
+  if (!row) return;
+  ctx.db.update(nanpaRefreshes).set({ detail: JSON.stringify({ ...(JSON.parse(row.detail) as RefreshResult), offers }) }).where(eq(nanpaRefreshes.id, row.id)).run();
+  if (offers.offered.length > 0 || offers.replayed > 0 || offers.errors.length > 0) writeAudit(ctx, { actorId: null, action: 'route.offers', detail: { offered: offers.offered, replayed: offers.replayed, errors: offers.errors.length } });
+}
+
+/** The routing table's half of a refresh's line: quiet when nothing happened. */
+function offersSummary(o: OfferResult | undefined): string {
+  if (!o) return '';
+  return (
+    `${o.offered.length > 0 ? `; offered NPAs ${o.offered.join(' ')}` : ''}` +
+    `${o.replayed > 0 ? `; ${o.replayed} additions replayed` : ''}` +
+    `${o.errors.length > 0 ? `; route: ${o.errors.join('; ')}` : ''}`
+  );
+}
+
 /** The live (not withdrawn) exchange count, for the CLI's summary. */
 export function liveExchanges(ctx: Ctx): number {
   return ctx.db.select({ n: count() }).from(exchanges).where(isNull(exchanges.withdrawnAt)).get()!.n;
@@ -280,7 +301,7 @@ export function recentRefreshes(ctx: Ctx, n: number): { id: number; at: number; 
       const d = JSON.parse(r.detail) as RefreshResult;
       const summary = r.ok
         ? `${d.newExchanges} new exchanges, ${d.withdrawn} withdrawn, ${d.restored} restored, ${d.rateCenters} rate centers` +
-          `${d.newNpas.length > 0 ? `; new NPAs ${d.newNpas.join(' ')}` : ''}${d.errors.length > 0 ? `; ${d.errors.length} problems` : ''}`
+          `${d.newNpas.length > 0 ? `; new NPAs ${d.newNpas.join(' ')}` : ''}${d.errors.length > 0 ? `; ${d.errors.length} problems` : ''}${offersSummary(d.offers)}`
         : `failed: ${d.errors[0] ?? 'unknown'}`;
       return { id: r.id, at: r.at, ok: r.ok, summary };
     });

@@ -8,8 +8,9 @@ import { auditEnd, networkActivity } from '@/lib/noc/activity';
 import { networkSnapshot, summarize } from '@/lib/noc/snapshot';
 import { blockOf, homeCoreOf, refreshBlocks } from '@/lib/numbers/blocks';
 import { accountCalls } from '@/lib/numbers/calls';
-import { forgetGetting, getNumber, listNumbers, syncDue } from '@/lib/numbers/ownership';
+import { forgetGetting, getNumber, listNumbers, reissueNumber, syncDue } from '@/lib/numbers/ownership';
 import { clearQrFlash } from '@/lib/numbers/qr-flash';
+import { offerMissingNpas } from '@/lib/numbers/route-delegate';
 import { CORE_DIR, type CoreCert, freePort, makeCoreCert, makeRouteTable, makeTestPki, type RealCore, type RouteTable, startRealCore, type TestPki } from '../helpers/real-core';
 
 // Plan P4b: the portal and two real oc-core processes, configured as
@@ -208,8 +209,8 @@ describe.skipIf(!CORE_DIR)('two real cores on a signed table (P5)', () => {
     table = makeRouteTable(['606,US-KY', '503,US-OR', '865,US-TN', '212,US-NY', '415,US-CA'], ['--pin', '606=1', '--pin', '503=2', '--pin', '865=3']);
     const port = await freePort();
     const ocss = (n: 0 | 1) => [`ocss_cert = ${certs[n].crt}`, `ocss_key = ${certs[n].key}`, `ocss_ca = ${pki.caCrt}`];
-    c1 = await startRealCore(CORE_DIR, { pki, coreId: 1, name: 'oc-core-t1', block: '8831606 1', cert: certs[0], table, extra: [`peer = 2 127.0.0.1:${port} ${certs[1].fpr}`, ...ocss(0)] });
-    c2 = await startRealCore(CORE_DIR, { pki, coreId: 2, name: 'oc-core-t2', block: '8831503 2', cert: certs[1], table, extra: [`peer = 1 - ${certs[0].fpr}`, `ocss_listen = 127.0.0.1:${port}`, ...ocss(1)] });
+    c1 = await startRealCore(CORE_DIR, { pki, coreId: 1, name: 'oc-core-t1', block: '8831606 1', cert: certs[0], table, extra: ['api_rate = route.offer 3600 50', `peer = 2 127.0.0.1:${port} ${certs[1].fpr}`, ...ocss(0)] });
+    c2 = await startRealCore(CORE_DIR, { pki, coreId: 2, name: 'oc-core-t2', block: '8831503 2', cert: certs[1], table, extra: ['api_rate = route.offer 3600 50', `peer = 1 - ${certs[0].fpr}`, `ocss_listen = 127.0.0.1:${port}`, ...ocss(1)] });
     const env = {
       OC_ORIGIN: 'https://portal.test',
       OC_RP_ID: 'portal.test',
@@ -234,7 +235,7 @@ describe.skipIf(!CORE_DIR)('two real cores on a signed table (P5)', () => {
     clearQrFlash();
     forgetGetting();
     const now = Date.now();
-    for (const [npa, region] of [['606', 'KY'], ['503', 'OR']]) ctx.db.insert(npas).values({ npa, region, geographic: true, inService: true, updatedAt: now }).run();
+    for (const [npa, region, stateCode] of [['606', 'KY', 'US-KY'], ['503', 'OR', 'US-OR']]) ctx.db.insert(npas).values({ npa, region, stateCode, geographic: true, inService: true, updatedAt: now }).run();
     for (const [npa, nxx, region] of [['606', '464', 'KY'], ['503', '222', 'OR']]) {
       ctx.db.insert(exchanges).values({ npaNxx: npa + nxx, npa, nxx, region, rateCenter: 'TEST', firstSeenAt: now }).run();
     }
@@ -279,4 +280,64 @@ describe.skipIf(!CORE_DIR)('two real cores on a signed table (P5)', () => {
     expect(audit(c1)).toContain('sub.create ok');
     expect(listNumbers(ctx, ada.userId).map((r) => [r.number, r.coreId])).toContainEqual([EAST, 'core1']);
   });
+
+  it('reports the table on route.status (OCSS spec §5.2)', async () => {
+    for (const c of [c1, c2]) {
+      const st = await c.core.routeStatus(7);
+      expect(st).toMatchObject({ signed: true, rootVersion: 1, seq: 0, blocks: 5, maxIdx: 5 });
+      expect(st.delegateNotAfter).toBeGreaterThan(Date.now());
+    }
+  });
+
+  // The whole P5 path: a new NPA, signed by the delegate as oc-route's table names it, taken by both real cores.
+  it('a new NPA via offerMissingNpas shows in both cores, and a number in it can be got on its home core', async () => {
+    const readKey = () => table.delegateKey;
+    const now = Date.now();
+    ctx.db.insert(npas).values({ npa: '206', region: 'WA', stateCode: 'US-WA', geographic: true, inService: true, updatedAt: now }).run();
+    ctx.db.insert(exchanges).values({ npaNxx: '206222', npa: '206', nxx: '222', region: 'WA', rateCenter: 'SEATTLE', firstSeenAt: now }).run();
+    // Every other block is here too, so only 206 is missing.
+    for (const [npa, region, stateCode] of [['865', 'TN', 'US-TN'], ['212', 'NY', 'US-NY'], ['415', 'CA', 'US-CA']]) {
+      ctx.db.insert(npas).values({ npa, region, stateCode, geographic: true, inService: true, updatedAt: now }).run();
+    }
+    expect(await offerMissingNpas(ctx, { readKey })).toEqual({ offered: ['206'], replayed: 0, errors: [] });
+    for (const c of [c1, c2]) {
+      expect(await c.core.routeStatus(7)).toMatchObject({ seq: 1, blocks: 6, maxIdx: 6 });
+      expect((await c.core.coreBlocks(7)).find((b) => b.prefix === '8831206')).toMatchObject({ index: 6, homeCore: 2 });
+    }
+    expect((await c1.core.coreBlocks(7)).find((b) => b.prefix === '8831206')?.role).toBe('secondary');
+    expect((await c2.core.coreBlocks(7)).find((b) => b.prefix === '8831206')?.role).toBe('home');
+    await refreshBlocks(ctx);
+    expect(blockOf(ctx, '206')).toEqual({ homeCore: 2, index: 6 });
+    const N = '+883120622201000';
+    expect(await getNumber(ctx, ada, { number: N, listed: 'on' }, meta)).toMatchObject({ ok: true });
+    expect(listNumbers(ctx, ada.userId).map((r) => [r.number, r.coreId])).toContainEqual([N, 'core2']);
+    expect(await c2.core.numCheck(7, N)).toBe('taken');
+    // Nothing is missing now, and a byte-identical repeat is held, not new (rule 3).
+    expect(await offerMissingNpas(ctx, { readKey })).toEqual({ offered: [], replayed: 0, errors: [] });
+  });
+
+  it('real cores refuse what the fake refuses: a signature, a seq, a used prefix (OCSS spec §3.5)', async () => {
+    const { buildAddition, delegatePublicKey, signAddition } = await import('@/lib/numbers/route-delegate');
+    const key = table.delegateKey;
+    const delegate = delegatePublicKey(key);
+    const st = await c1.core.routeStatus(7);
+    const add = (seq: number, npa: string, index: number) => buildAddition({ rootVersion: 1, seq, issued: 1, delegate, blocks: [{ npa, index, state: 'US-NC' }] });
+    const good = add(st.seq + 1, '472', st.maxIdx + 1);
+    await expect(c1.core.routeOffer(7, 1, good, Buffer.alloc(64))).rejects.toMatchObject({ code: 'invalid', message: 'bad signature' });
+    const gap = add(st.seq + 2, '472', st.maxIdx + 1);
+    await expect(c1.core.routeOffer(7, 1, gap, signAddition(gap, key))).rejects.toMatchObject({ code: 'invalid', message: expect.stringContaining('out of order') });
+    expect(await c1.core.routeStatus(7)).toMatchObject({ seq: st.seq });
+  });
+
+  it('core 2 down: a West number fails plainly and nothing goes to core 1; East is untouched', async () => {
+    await c2.done();
+    const bob = { id: 's-bob', userId: ctx.db.insert(users).values({ name: 'bob', email: 'bob@example.org', emailVerifiedAt: 1, numberLimit: 5, createdAt: 1 }).returning().get().id };
+    expect(await getNumber(ctx, bob, { number: '+883150322201001', listed: 'on' }, meta)).toMatchObject({ ok: false, error: expect.stringContaining("didn't answer") });
+    expect(await reissueNumber(ctx, ada, WEST, meta)).toMatchObject({ ok: false, error: expect.stringContaining("didn't answer") });
+    expect(audit(c1)).not.toContain('sub.create ok +883150322201001');
+    expect(audit(c1)).not.toContain('sub.reissue');
+    const rows = await syncDue(ctx, ada.userId, 0);
+    expect(rows.find((r) => r.number === WEST)).toMatchObject({ state: 'unactivated' });
+    expect(rows.find((r) => r.number === EAST)).toMatchObject({ state: 'unactivated' });
+  }, 20_000);
 });

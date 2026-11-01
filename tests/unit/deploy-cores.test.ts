@@ -38,7 +38,8 @@ describe('the deploy files for two cores', () => {
     const differ = Object.keys({ ...portal, ...noc })
       .filter((k) => portal[k] !== noc[k])
       .sort();
-    expect(differ).toEqual(['OC_ORIGIN', 'OC_SITE']);
+    // The NOC site holds no numbers, so it signs none: the delegate key is the portal's alone.
+    expect(differ).toEqual(['OC_ORIGIN', 'OC_ROUTE_DELEGATE_KEY', 'OC_SITE']);
   });
 
   it("oc-cores-route.service routes the cores' WireGuard network through oc-core-1", () => {
