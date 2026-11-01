@@ -126,6 +126,7 @@ describe('TlsCore', () => {
       cellId: 3,
       tmidPrefix: '76ad',
       lastSeenAt: 1_790_000_100_000,
+      servingCore: null, // this frame is a v0.7.0 core's: 25 bytes
     });
   });
 

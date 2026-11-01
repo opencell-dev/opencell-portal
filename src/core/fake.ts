@@ -1,5 +1,6 @@
-import { randomBytes, randomInt } from 'node:crypto';
+import { createPublicKey, randomBytes, randomInt, verify } from 'node:crypto';
 import { isAssignable, isExchange, isFullNumber, numberBcd } from './numbers';
+import { EAST_STATES, STATE_CODE, WEST_STATES } from './state-codes';
 import {
   type AuditQuery,
   type Cdr,
@@ -17,6 +18,8 @@ import {
   type RadioStatus,
   type Registration,
   type RegListQuery,
+  type RouteOffered,
+  type RouteStatus,
   type SubStatus,
 } from './types';
 import { cdrResult } from './wire';
@@ -33,6 +36,8 @@ interface Sub {
   token: { id: string; expiresAt: number } | null;
   tmid: number | null;
   cellId: number | null;
+  /** Registered on another core's cell (OCSS spec §5.6): that core; absent: `cellId` is this core's own. */
+  visiting?: number;
   lastSeenAt: number | null;
   /** When it last registered (reg.list's registered at). */
   registeredAt?: number | null;
@@ -108,6 +113,41 @@ export function crc16CcittFalse(data: Uint8Array): number {
   return crc;
 }
 
+/** A fake core's delegation names core 1 for East and core 2 for West, as the deployed table does. */
+const EAST_CORE = 1;
+const WEST_CORE = 2;
+
+/** An addition blob (OCSS spec §3.2), or null if it is malformed (rule 2). Separate from the portal's own builder, on purpose. */
+function parseAddition(blob: Buffer): { rootVersion: number; seq: number; delegate: Buffer; blocks: { npa: string; index: number; state: string }[] } | null {
+  if (blob.length < 48 || blob.length > 400 || blob.subarray(0, 4).toString('latin1') !== 'OCRA' || blob[4] !== 1) return null;
+  const n = blob[47];
+  if (n < 1 || n > 16) return null;
+  const blocks: { npa: string; index: number; state: string }[] = [];
+  let o = 48;
+  for (let i = 0; i < n; i++) {
+    if (o + 6 > blob.length) return null;
+    const npa = blob.subarray(o, o + 3).toString('latin1');
+    const len = blob[o + 5];
+    if (o + 6 + len > blob.length) return null;
+    const state = blob.subarray(o + 6, o + 6 + len).toString('latin1');
+    if (!/^[2-9]\d\d$/.test(npa) || npa.endsWith('11') || npa === '883' || !STATE_CODE.test(state)) return null;
+    blocks.push({ npa, index: blob.readUInt16LE(o + 3), state });
+    o += 6 + len;
+  }
+  if (o !== blob.length) return null;
+  return { rootVersion: blob.readUInt32LE(5), seq: blob.readUInt16LE(9), delegate: blob.subarray(15, 47), blocks };
+}
+
+function signedBy(blob: Buffer, delegate: Buffer, sig: Uint8Array): boolean {
+  try {
+    // SubjectPublicKeyInfo for Ed25519: a fixed 12-byte prefix, then the raw key.
+    const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), delegate]), format: 'der', type: 'spki' });
+    return verify(null, blob, key, sig);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * An in-process stand-in for a core's admin API (portal spec §7), for
  * development and tests until P4. It keeps its state in memory, enforces the
@@ -118,7 +158,6 @@ export function crc16CcittFalse(data: Uint8Array): number {
 export class FakeCore implements CoreAdmin {
   readonly [FAKE] = true;
   readonly audit: FakeAuditEntry[] = [];
-  readonly routes: { tableVersion: number; size: number }[] = [];
   private readonly subs = new Map<string, Sub>();
   private readonly cdrs: Cdr[] = [];
   private readonly cells = new Map<number, Cell>();
@@ -133,6 +172,9 @@ export class FakeCore implements CoreAdmin {
   private nextAuditId = 1;
   private peers: OcssPeer[] = [];
   private blocks: CoreBlock[];
+  private route = { signed: false, rootVersion: 0, seq: 0, maxIdx: 0, delegateNotAfter: null as number | null };
+  /** The additions taken, by seq, for a repeat (OCSS spec §3.5 rule 3). */
+  private readonly additions = new Map<number, Buffer>();
   readonly coreId: number;
   readonly name: string;
   readonly version: string;
@@ -262,6 +304,7 @@ export class FakeCore implements CoreAdmin {
       cellId: s.cellId,
       tmidPrefix: s.tmid === null ? null : s.tmid.toString(16).padStart(8, '0').slice(0, 4),
       lastSeenAt: s.lastSeenAt,
+      servingCore: s.cellId === null ? null : (s.visiting ?? this.coreId),
     };
   }
 
@@ -331,7 +374,7 @@ export class FakeCore implements CoreAdmin {
     this.log(actor, 'cell.status', cellId ?? 'all');
     const list = cellId === undefined ? [...this.cells.values()] : [this.cell(cellId)];
     return list.map((c) => {
-      const here = [...this.subs.values()].filter((s) => s.cellId === c.cellId);
+      const here = [...this.subs.values()].filter((s) => s.cellId === c.cellId && s.visiting === undefined);
       return { ...c, terminals: here.length, calls: this.activeCalls.get(c.cellId) ?? 0 };
     });
   }
@@ -353,11 +396,52 @@ export class FakeCore implements CoreAdmin {
     };
   }
 
-  async routeOffer(actor: number, tableVersion: number, blob: Uint8Array, sig: Uint8Array): Promise<void> {
+  /** OCSS spec §3.5's rules in its order, against this fake's own table (rule 4's delegation is not modelled). */
+  async routeOffer(actor: number, tableVersion: number, blob: Uint8Array, sig: Uint8Array): Promise<RouteOffered> {
     await this.gate();
     this.log(actor, 'route.offer', tableVersion);
-    if (blob.length === 0 || sig.length !== 64) throw new CoreError('invalid', 'empty table or bad signature length');
-    this.routes.push({ tableVersion, size: blob.length });
+    const r = this.route;
+    if (!r.signed) throw new CoreError('unsupported', 'no signed table here (block lines)');
+    const bytes = Buffer.from(blob);
+    const a = sig.length === 64 ? parseAddition(bytes) : null;
+    if (!a) throw new CoreError('invalid', 'malformed');
+    if (a.rootVersion !== tableVersion || tableVersion !== r.rootVersion) throw new CoreError('invalid', `root version ${r.rootVersion} expected`);
+    const held = this.additions.get(a.seq);
+    if (a.seq <= r.seq && held?.equals(bytes)) {
+      if (!signedBy(bytes, a.delegate, sig)) throw new CoreError('invalid', 'bad signature');
+      return { rootVersion: r.rootVersion, seq: r.seq, blocks: this.blocks.length, isNew: false };
+    }
+    if (!signedBy(bytes, a.delegate, sig)) throw new CoreError('invalid', 'bad signature');
+    if (a.seq <= r.seq) throw new CoreError('taken', `seq ${a.seq} holds another addition`);
+    if (a.seq > r.seq + 1) throw new CoreError('invalid', `out of order: at seq ${r.seq}`);
+    const prefixes = new Set(this.blocks.map((b) => b.prefix));
+    let floor = this.maxIdx();
+    for (const b of a.blocks) {
+      const prefix = `8831${b.npa}`;
+      if (prefixes.has(prefix)) throw new CoreError('invalid', `rule: ${b.npa} is in the table`);
+      if (b.index <= floor) throw new CoreError('invalid', `rule: index ${b.index} is not above ${floor}`);
+      if (!EAST_STATES.has(b.state) && !WEST_STATES.has(b.state)) throw new CoreError('invalid', `rule: ${b.state} is in neither list`);
+      prefixes.add(prefix);
+      floor = b.index;
+    }
+    for (const b of a.blocks) {
+      const homeCore = EAST_STATES.has(b.state) ? EAST_CORE : WEST_CORE;
+      this.blocks.push({ index: b.index, homeCore, role: homeCore === this.coreId ? 'home' : 'secondary', prefix: `8831${b.npa}` });
+    }
+    this.additions.set(a.seq, bytes);
+    r.seq = a.seq;
+    return { rootVersion: r.rootVersion, seq: r.seq, blocks: this.blocks.length, isNew: true };
+  }
+
+  async routeStatus(actor: number): Promise<RouteStatus> {
+    await this.gate();
+    this.log(actor, 'route.status', '');
+    const { signed, rootVersion, seq, delegateNotAfter } = this.route;
+    return { signed, rootVersion, seq, blocks: this.blocks.length, maxIdx: this.maxIdx(), delegateNotAfter };
+  }
+
+  private maxIdx(): number {
+    return Math.max(this.route.maxIdx, ...this.blocks.map((b) => b.index));
   }
 
   // ---- the NOC's operations (NOC design §7.1), as core v0.4.0 answers them
@@ -380,7 +464,7 @@ export class FakeCore implements CoreAdmin {
     this.releaseExpired();
     const t = this.now();
     return [...this.subs.values()]
-      .filter((s) => s.cellId !== null && (!q.cellId || s.cellId === q.cellId) && (q.after === undefined || s.number > q.after))
+      .filter((s) => s.cellId !== null && s.visiting === undefined && (!q.cellId || s.cellId === q.cellId) && (q.after === undefined || s.number > q.after))
       .sort((a, b) => (a.number < b.number ? -1 : 1))
       .slice(0, REG_LIST_MAX)
       .map((s) => ({
@@ -465,10 +549,13 @@ export class FakeCore implements CoreAdmin {
     s.lastSeenAt = this.now();
   }
 
-  simRegister(number: string, cellId: number): void {
+  /** It registers on one of this core's cells, or (`servingCore`) on cell `cellId` of another core: a visitor there, homed here. */
+  simRegister(number: string, cellId: number, servingCore?: number): void {
     const s = this.sub(number);
-    this.cell(cellId);
+    const away = servingCore !== undefined && servingCore !== this.coreId;
+    if (!away) this.cell(cellId);
     s.cellId = cellId;
+    s.visiting = away ? servingCore : undefined;
     s.lastSeenAt = this.now();
     s.registeredAt = this.now();
     this.registerRecord(s, this.now());
@@ -605,8 +692,12 @@ export class FakeCore implements CoreAdmin {
     this.peers = peers.map((p) => ({ ...p }));
   }
 
-  simBlocks(blocks: CoreBlock[]): void {
+  /** core.blocks as they are now and, with `status`, the table route.status reports (`blocks` is always counted). */
+  simBlocks(blocks: CoreBlock[], status: Partial<RouteStatus> = {}): void {
     this.blocks = blocks.map((b) => ({ ...b }));
+    const { blocks: _counted, ...rest } = status;
+    this.route = { ...this.route, ...rest };
+    if (status.rootVersion !== undefined) this.additions.clear();
   }
 
   /** Every number this core holds, for tests. */

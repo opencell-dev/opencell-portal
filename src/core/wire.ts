@@ -7,7 +7,7 @@
 // req | status (1) | result, or a message for any status but ok/more.
 
 import { numberBcd } from './numbers';
-import { type Cdr, CoreError, type CoreErrorCode } from './types';
+import { type Cdr, CoreError, type CoreErrorCode, type RouteOffered, type RouteStatus, type SubStatus } from './types';
 
 export const FRAME_MAX = 512;
 
@@ -27,6 +27,7 @@ export const OP = {
   cellStatus: 0x0d,
   coreStatus: 0x0e,
   routeOffer: 0x0f,
+  routeStatus: 0x17,
 } as const;
 
 export const ANSWER = 0x80;
@@ -210,6 +211,59 @@ export function cdrResult(answer: number, cause: number): Cdr['result'] {
     default:
       return 'failed';
   }
+}
+
+/**
+ * sub.status's result (OCSS spec §5.6). Since v0.7.1 it ends with the serving
+ * core; a v0.7.0 core stops before it, which reads as unknown. A core asked
+ * about a visitor it merely serves answers not_found: ask the home core.
+ */
+export function subStatusResult(r: Reader): SubStatus {
+  const number = r.number();
+  const activated = r.u8() === 1;
+  const disabled = r.u8() === 1;
+  const expiry = r.u32();
+  const registered = r.u8() === 1;
+  const cell = r.u32();
+  const tmid = r.u16();
+  const seen = r.u32();
+  const serving = r.left >= 2 ? r.u16() : 0;
+  return {
+    number,
+    state: activated ? 'activated' : 'unactivated',
+    disabled,
+    tokenExpiresAt: expiry ? expiry * 1000 : null,
+    registered,
+    cellId: registered ? cell : null,
+    tmidPrefix: activated ? tmid.toString(16).padStart(4, '0') : null,
+    lastSeenAt: seen ? seen * 1000 : null,
+    servingCore: serving === 0 ? null : serving,
+  };
+}
+
+/** route.offer's fields (OCSS spec §5.1). */
+export function routeOfferFields(w: Writer, tableVersion: number, blob: Uint8Array, sig: Uint8Array): void {
+  if (blob.length < 1 || blob.length > 400) throw new CoreError('invalid', 'an addition is 1 to 400 bytes');
+  if (sig.length !== 64) throw new CoreError('invalid', 'a signature is 64 bytes');
+  w.u32(tableVersion).u16(blob.length).raw(blob).raw(sig);
+}
+
+export function routeOfferedResult(r: Reader): RouteOffered {
+  const rootVersion = r.u32();
+  const seq = r.u16();
+  const blocks = r.u16();
+  return { rootVersion, seq, blocks, isNew: r.u8() === 1 };
+}
+
+/** route.status's result (OCSS spec §5.2). */
+export function routeStatusResult(r: Reader): RouteStatus {
+  const signed = r.u8() === 1;
+  const rootVersion = r.u32();
+  const seq = r.u16();
+  const blocks = r.u16();
+  const maxIdx = r.u16();
+  const until = r.u32();
+  return { signed, rootVersion, seq, blocks, maxIdx, delegateNotAfter: until === 0 ? null : until * 1000 };
 }
 
 /** Whole frames out of a byte stream, as it arrives. */

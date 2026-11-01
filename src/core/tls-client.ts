@@ -26,6 +26,8 @@ import {
   type RadioStatus,
   type Registration,
   type RegListQuery,
+  type RouteOffered,
+  type RouteStatus,
   type SubStatus,
 } from './types';
 import {
@@ -37,8 +39,12 @@ import {
   parseAnswer,
   Reader,
   request,
+  routeOfferedResult,
+  routeOfferFields,
+  routeStatusResult,
   STATUS_MORE,
   STATUS_OK,
+  subStatusResult,
   type Writer,
 } from './wire';
 import {
@@ -247,25 +253,7 @@ export class TlsCore implements CoreAdmin {
   }
 
   async subStatus(actor: number, number: string): Promise<SubStatus> {
-    const r = await this.one(OP.subStatus, actor, (w) => w.number(TlsCore.full(number)));
-    const n = r.number();
-    const activated = r.u8() === 1;
-    const disabled = r.u8() === 1;
-    const expiry = r.u32();
-    const registered = r.u8() === 1;
-    const cell = r.u32();
-    const tmid = r.u16();
-    const seen = r.u32();
-    return {
-      number: n,
-      state: activated ? 'activated' : 'unactivated',
-      disabled,
-      tokenExpiresAt: expiry ? expiry * 1000 : null,
-      registered,
-      cellId: registered ? cell : null,
-      tmidPrefix: activated ? tmid.toString(16).padStart(4, '0') : null,
-      lastSeenAt: seen ? seen * 1000 : null,
-    };
+    return subStatusResult(await this.one(OP.subStatus, actor, (w) => w.number(TlsCore.full(number))));
   }
 
   async subRelease(actor: number, number: string): Promise<void> {
@@ -363,9 +351,12 @@ export class TlsCore implements CoreAdmin {
     return { coreId, uptimeS, cellsTotal, cellsOnline, subscribers, callsNow, name: r.text(), version: r.text() };
   }
 
-  async routeOffer(actor: number, tableVersion: number, _blob: Uint8Array, _sig: Uint8Array): Promise<void> {
-    // The core refuses it until P5 (the signed table and its delegation).
-    await this.call(OP.routeOffer, actor, (w) => w.u32(tableVersion));
+  async routeOffer(actor: number, tableVersion: number, blob: Uint8Array, sig: Uint8Array): Promise<RouteOffered> {
+    return routeOfferedResult(await this.one(OP.routeOffer, actor, (w) => routeOfferFields(w, tableVersion, blob, sig)));
+  }
+
+  async routeStatus(actor: number): Promise<RouteStatus> {
+    return routeStatusResult(await this.one(OP.routeStatus, actor));
   }
 
   // ---- the NOC's operations (core v0.4.0, NOC design §7.1; codecs in wire-noc.ts)
