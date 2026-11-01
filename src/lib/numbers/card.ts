@@ -42,7 +42,10 @@ type CardRow = Pick<NumberRow, 'state' | 'disabled' | 'registered' | 'cellId' | 
 export function cardState(row: CardRow, now: number, cellName?: (id: number) => string | undefined): CardState {
   if (row.disabled) return { label: 'Disabled', tone: 'off' };
   if (row.state === 'unactivated') {
-    const left = (row.tokenExpiresAt ?? 0) - now;
+    // No token at all: the terminal activated another number, so the core
+    // unbound this one. The number is still the account's, on no terminal.
+    if (row.tokenExpiresAt === null) return { label: 'No terminal · re-issue a QR or release it', tone: 'warn' };
+    const left = row.tokenExpiresAt - now;
     return left > 0 ? { label: `Waiting for activation · ${shortSpan(left)} left`, tone: 'wait' } : RELEASED;
   }
   if (row.registered && row.cellId !== null) return { label: `Registered on cell ${cellName?.(row.cellId) ?? row.cellId}`, tone: 'ok' };

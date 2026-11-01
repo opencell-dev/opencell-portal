@@ -33,3 +33,12 @@ describe('cardState (spec §5: waiting, activated, registered on cell "name", no
     expect(shortSpan(3 * 86400_000)).toBe('3 d 0 h');
   });
 });
+
+describe('a number whose terminal moved to another number', () => {
+  // Bench 2026-11-01 on production: a terminal activated a second number, so
+  // the core unbound the first: unactivated, no token. The core still holds it.
+  it('says it has no terminal, not that it was released', () => {
+    const s = cardState({ state: 'unactivated', disabled: false, registered: false, cellId: null, lastSeenAt: null, tokenExpiresAt: null }, 1000);
+    expect(s).toEqual({ label: 'No terminal · re-issue a QR or release it', tone: 'warn' });
+  });
+});
