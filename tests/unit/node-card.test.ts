@@ -20,6 +20,7 @@ const base: NodeCard = {
   cert: { fpr: 'a'.repeat(64), expiresAt: NOW + 86_400_000 },
   setup: null,
   alertsMuted: false,
+  alertsHeld: 0,
   downtime: [],
   agreementBehind: false,
 };

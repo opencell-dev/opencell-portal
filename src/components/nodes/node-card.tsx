@@ -50,6 +50,11 @@ export function NodeCardView({ c, now, link = true }: { c: NodeCard; now: number
         </p>
       ))}
       {c.alertsMuted && <p className="text-sm text-slate-500">Alerts are off.</p>}
+      {c.alertsHeld > 0 && (
+        <p className="text-sm text-amber-700 dark:text-amber-400" data-testid="node-alerts-held">
+          This node keeps dropping. You get at most one alert an hour, so {c.alertsHeld} outage{c.alertsHeld === 1 ? '' : 's'} since this morning {c.alertsHeld === 1 ? 'was' : 'were'} not mailed.
+        </p>
+      )}
     </div>
   );
 }

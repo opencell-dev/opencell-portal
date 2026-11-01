@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audit, issuedCerts, nodes, nodeState, setupTokens, userRoles, users } from '@/db/schema';
+import { revokeCell } from '@/lib/admin/cells';
 import { runAdmin } from '@/lib/admin-cli';
 import { submitRequest } from '@/lib/nodes/requests';
 import { currentRelease, publishRelease } from '@/lib/nodes/release';
@@ -326,6 +327,111 @@ describe('a CSR with the token', () => {
     setLimit(ctx, 'setup_ip', 1);
     expect((await postCsr(token, 'hello')).status).toBe(400);
     expect((await postCsr(token, 'hello')).status).toBe(429);
+  });
+
+  describe('a failure after the claim', () => {
+    const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => {});
+    const tries = () => ctx.db.select().from(setupTokens).where(eq(setupTokens.id, hashToken(token))).get()!.csrTries;
+    const boom = (name: string, on: string) => ctx.db.$client.exec(`CREATE TRIGGER ${name} BEFORE ${on} BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    const unboom = (name: string) => ctx.db.$client.exec(`DROP TRIGGER ${name}`);
+
+    it('the certificate record failing: 503, not a 500; the token is given back, at no cost', async () => {
+      const { csr } = makeCsr(pki);
+      boom('no_cert', 'INSERT ON issued_certs');
+      const log = quiet();
+      const r = await postCsr(token, csr);
+      log.mockRestore();
+      expect(r.status).toBe(503);
+      expect(tries()).toBe(0);
+      expect(ctx.core.audit.filter((a) => a.op === 'cell.set_cert')).toEqual([]);
+      unboom('no_cert');
+      expect((await postCsr(token, csr)).status).toBe(200);
+    });
+
+    it('the transaction after the pin failing: 503, the token given back, nothing recorded as pinned', async () => {
+      const { csr } = makeCsr(pki);
+      boom('no_state', 'UPDATE ON node_state');
+      const log = quiet();
+      const r = await postCsr(token, csr);
+      log.mockRestore();
+      expect(r.status).toBe(503);
+      expect(tries()).toBe(0);
+      expect(ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()?.certFpr).toBeNull();
+      expect(ctx.db.select().from(issuedCerts).all().map((c) => c.pinned)).toEqual([false]);
+      unboom('no_state');
+      expect((await postCsr(token, csr)).status).toBe(200);
+      const fpr = ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()!.certFpr;
+      expect((await ctx.core.cellStatus(0, cellId))[0].certFpr).toBe(fpr);
+    });
+
+    it('…and a node that had a certificate gets its old pin back: the Pi never received the new one', async () => {
+      expect((await postCsr(token, makeCsr(pki).csr)).status).toBe(200);
+      const old = ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()!.certFpr;
+      expect((await ctx.core.cellStatus(0, cellId))[0].certFpr).toBe(old);
+      const next = makeSetupToken(ctx, nodeId, null).token;
+      boom('no_state', 'UPDATE ON node_state');
+      const log = quiet();
+      const r = await postCsr(next, makeCsr(pki).csr);
+      log.mockRestore();
+      unboom('no_state');
+      expect(r.status).toBe(503);
+      expect((await ctx.core.cellStatus(0, cellId))[0].certFpr).toBe(old);
+      expect(ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()?.certFpr).toBe(old);
+    });
+
+    it('a core that is down costs no tries: seven 503s, and the token still works', async () => {
+      const { csr } = makeCsr(pki);
+      ctx.core.simDown('refuse');
+      const log = quiet();
+      for (let i = 0; i < 7; i++) expect((await postCsr(token, csr)).status).toBe(503);
+      log.mockRestore();
+      expect(tries()).toBe(0);
+      ctx.core.simDown(null);
+      expect((await postCsr(token, csr)).status).toBe(200);
+    });
+
+    it('a bad CSR still costs a try', async () => {
+      expect((await postCsr(token, 'hello')).status).toBe(400);
+      expect(tries()).toBe(1);
+    });
+
+    it('the mail failing after the certificate is on record does not lose the certificate', async () => {
+      const send = vi.spyOn(ctx.mailQueue, 'send').mockImplementation(() => {
+        throw new Error('queue');
+      });
+      const log = quiet();
+      const r = await postCsr(token, makeCsr(pki).csr);
+      log.mockRestore();
+      send.mockRestore();
+      expect(r.status).toBe(200);
+      expect(ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()?.certFpr).not.toBeNull();
+    });
+  });
+
+  describe('a revoke while a CSR is in flight', () => {
+    it('revoked at the core first: set_cert is refused, so 410, no bundle, nothing recorded as pinned', async () => {
+      await ctx.core.cellRevoke(0, cellId);
+      const r = await postCsr(token, makeCsr(pki).csr);
+      expect(r.status).toBe(410);
+      expect(await r.text()).not.toContain('BEGIN CERTIFICATE');
+      expect(ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()?.certFpr).toBeNull();
+      expect(ctx.db.select().from(issuedCerts).all().map((c) => c.pinned)).toEqual([false]);
+      expect((await ctx.core.cellStatus(0, cellId))[0].certFpr).toBeNull();
+    });
+
+    it('revoked just after the pin: still no bundle, and the node is not given a certificate', async () => {
+      const real = ctx.core.cellSetCert.bind(ctx.core);
+      const spy = vi.spyOn(ctx.core, 'cellSetCert').mockImplementation(async (a, id, fpr) => {
+        await real(a, id, fpr);
+        await revokeCell(ctx, 0, 'fake', cellId, META);
+      });
+      const r = await postCsr(token, makeCsr(pki).csr);
+      spy.mockRestore();
+      expect(r.status).toBe(410);
+      expect(await r.text()).not.toContain('BEGIN CERTIFICATE');
+      expect(ctx.db.select().from(nodes).where(eq(nodes.id, nodeId)).get()?.certFpr).toBeNull();
+      expect((await ctx.core.cellStatus(0, cellId))[0].certFpr).toBeNull();
+    });
   });
 
   it('a disabled operator, or none: 410 on the script and the CSR, and nothing is re-pinned', async () => {

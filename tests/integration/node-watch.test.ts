@@ -1,10 +1,12 @@
 import { eq } from 'drizzle-orm';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { nodeDowntime, nodes, nodeState, settings, userRoles, users } from '@/db/schema';
 import { publicNodes } from '@/lib/coverage';
-import { forgetSnapshot } from '@/lib/nodes/my-nodes';
-import { addDowntime, cancelDowntime } from '@/lib/nodes/my-nodes';
-import { inDowntime, startNodeWatch, watchTick, WATCH_MS } from '@/lib/nodes/watch';
+import { NodeCardView } from '@/components/nodes/node-card';
+import { addDowntime, cancelDowntime, forgetSnapshot, getMyNode } from '@/lib/nodes/my-nodes';
+import { inDowntime, offlineCount, startNodeWatch, watchTick, WATCH_MS } from '@/lib/nodes/watch';
+import { limitOf } from '@/lib/ratelimit';
 import { type CellPki, makeCellPki } from '../helpers/cell-pki';
 import { testCtx, type TestCtx } from '../helpers/ctx';
 
@@ -168,6 +170,25 @@ describe('the watcher: offline and back mails', () => {
     expect(await mails('alice@example.org')).toEqual([]);
   });
 
+  it('a certificate that has never connected is waiting for setup, not offline: no mail, no count', async () => {
+    const t0 = ctx.clock.t;
+    const n = addNode(alice);
+    ctx.core.simCellOnline(cellId, true);
+    await tickAt(t0);
+    for (const m of [1, 11, 60, 600]) expect((await tickAt(t0 + m * MIN)).offline).toEqual([]);
+    expect(state(n.id)).toMatchObject({ online: null, offlineSince: null });
+    expect(offlineCount(ctx)).toBe(0);
+    expect(await mails('alice@example.org')).toEqual([]);
+    expect((await getMyNode(ctx, alice, n.id))?.state).toBe('waiting_setup');
+    // Once it has been up, it is a node like any other.
+    ctx.core.simCellOnline(n.cellId, true);
+    await tickAt(t0 + 601 * MIN);
+    ctx.core.simCellOnline(n.cellId, false);
+    await tickAt(t0 + 602 * MIN);
+    expect(offlineCount(ctx)).toBe(1);
+    expect((await tickAt(t0 + 612 * MIN)).offline).toEqual([n.id]);
+  });
+
   it('a node with no operator: state, no mail', async () => {
     const t0 = ctx.clock.t;
     const n = addNode(null);
@@ -194,6 +215,71 @@ describe('the watcher: offline and back mails', () => {
     ctx.core.simDown(null);
     await tickAt(t0 + 61 * MIN);
     expect(state()).toMatchObject({ online: true, onlineSince: t0 });
+  });
+});
+
+describe('the watcher and a flapping node', () => {
+  /** Ticks every minute from `t` for `down` minutes down, then `up` up, `times` over; the time it ends. */
+  async function flap(t: number, down: number, up: number, times: number): Promise<number> {
+    let now = t;
+    for (let i = 0; i < times; i++) {
+      ctx.core.simCellOnline(cellId, false);
+      for (let m = 0; m < down; m++) await tickAt((now += MIN));
+      ctx.core.simCellOnline(cellId, true);
+      for (let m = 0; m < up; m++) await tickAt((now += MIN));
+    }
+    return now;
+  }
+
+  it('sends at most one offline and back pair an hour, and counts what it held back', async () => {
+    const t0 = ctx.clock.t;
+    await tickAt(t0);
+    // 12 minutes down, 3 up, for 6 hours: 24 episodes that would each mail twice.
+    const end = await flap(t0, 12, 3, 24);
+    const sent = await mails('alice@example.org');
+    const offline = sent.filter((m) => m.subject.includes('offline'));
+    const backs = sent.filter((m) => m.subject.includes('back'));
+    expect(offline.length).toBeLessThanOrEqual(7);
+    expect(offline.length).toBeGreaterThanOrEqual(5);
+    expect(backs.length).toBe(offline.length);
+    const held = state().alertsHeld;
+    expect(held).toBe(24 - offline.length);
+    const card = (await getMyNode(ctx, alice, id))!;
+    expect(card.alertsHeld).toBe(held);
+    expect(renderToStaticMarkup(NodeCardView({ c: card, now: end }))).toContain(`${held} outage`);
+  });
+
+  it('an episode held back and still going gets its mail when the hour is up, and is no longer counted as held', async () => {
+    const t0 = ctx.clock.t;
+    await tickAt(t0);
+    let now = await flap(t0, 11, 2, 1); // one pair spent
+    expect(await mails('alice@example.org')).toHaveLength(2);
+    ctx.core.simCellOnline(cellId, false);
+    const down = now + MIN;
+    await tickAt(down);
+    now = down + 10 * MIN;
+    expect((await tickAt(now)).offline).toEqual([]);
+    expect(state().alertsHeld).toBe(1);
+    await tickAt(now + MIN);
+    expect(state().alertsHeld).toBe(1); // one episode, however many ticks
+    const later = t0 + 3_600_000 + 13 * MIN;
+    expect((await tickAt(later)).offline).toEqual([id]);
+    expect(state().alertsHeld).toBe(0);
+    expect(await mails('alice@example.org')).toHaveLength(3);
+    ctx.core.simCellOnline(cellId, true);
+    expect((await tickAt(later + MIN)).back).toEqual([id]);
+  });
+
+  it('a muted node holds nothing back: it was never going to mail', async () => {
+    ctx.db.update(nodes).set({ alertsMuted: true }).where(eq(nodes.id, id)).run();
+    const t0 = ctx.clock.t;
+    await tickAt(t0);
+    await flap(t0, 12, 3, 4);
+    expect(state().alertsHeld).toBe(0);
+  });
+
+  it('the limit is one an admin can see and change', () => {
+    expect(limitOf(ctx, 'node_alert')).toEqual({ max: 1, windowS: 3600 });
   });
 });
 
@@ -296,6 +382,37 @@ describe('the admins’ digest', () => {
     addDowntime(ctx, alice, id, { startsAt: at(7), endsAt: at(12), reason: 'Roof work' }, META);
     const r = await tickAt(at(8));
     expect(r.digest).toBe(false);
+  });
+
+  it('counts a flapping node that happens to be up at 08:00, once, and starts the count again', async () => {
+    ctx.db.update(nodes).set({ alertsMuted: false }).where(eq(nodes.id, id)).run();
+    const start = at(6);
+    await tickAt(start);
+    let now = start;
+    for (let i = 0; i < 4; i++) {
+      ctx.core.simCellOnline(cellId, false);
+      for (let m = 0; m < 12; m++) await tickAt((now += MIN));
+      ctx.core.simCellOnline(cellId, true);
+      for (let m = 0; m < 3; m++) await tickAt((now += MIN));
+    }
+    const held = state().alertsHeld;
+    expect(held).toBeGreaterThan(0);
+    ctx.core.simCellOnline(cellId, true);
+    expect((await tickAt(at(8))).digest).toBe(true);
+    const [mail] = await digests();
+    expect(mail.text).toContain(`Node ${id}`);
+    expect(mail.text).toContain('online now');
+    expect(mail.text).toContain(`${held} outage`);
+    expect(state().alertsHeld).toBe(0);
+    expect((await tickAt(at(8, 16))).digest).toBe(false);
+  });
+
+  it('leaves out a certificate that has never connected', async () => {
+    const n = addNode(null);
+    await tickAt(at(7));
+    ctx.core.simCellOnline(cellId, true);
+    expect(n.certFpr).not.toBeNull();
+    expect((await tickAt(at(8))).digest).toBe(false);
   });
 
   it('follows daylight saving: March and November', async () => {

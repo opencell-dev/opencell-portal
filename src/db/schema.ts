@@ -394,6 +394,10 @@ export const nodeState = sqliteTable('node_state', {
   onlineSince: integer('online_since'),
   offlineSince: integer('offline_since'),
   offlineAlertAt: integer('offline_alert_at'),
+  // Outages not mailed because of the per-node limit (node_alert), since this
+  // morning's digest; and when the newest was counted, so an episode counts once.
+  alertsHeld: integer('alerts_held').notNull().default(0),
+  alertHeldAt: integer('alert_held_at'),
   checkedAt: integer('checked_at').notNull(),
 });
 

@@ -182,11 +182,20 @@ export function nodeBackMail(name: string, siteName: string, link: string, origi
   };
 }
 
-export function offlineDigestMail(adminName: string, rows: { nodeId: number; siteName: string; coreId: string; cellId: number; since: number | null; operator: string | null }[], link: string, origin: string): Template {
-  const lines = rows.map((r) => `- Node ${r.nodeId} (${r.siteName}), cell ${r.cellId} on ${r.coreId}, offline since ${r.since === null ? 'unknown' : utc(r.since)}, operator ${r.operator ?? 'none'}`);
+export function offlineDigestMail(
+  adminName: string,
+  rows: { nodeId: number; siteName: string; coreId: string; cellId: number; online: boolean | null; since: number | null; held: number; operator: string | null }[],
+  link: string,
+  origin: string,
+): Template {
+  const lines = rows.map((r) => {
+    const now = r.online === false ? `offline since ${r.since === null ? 'unknown' : utc(r.since)}` : r.online === true ? 'online now' : 'state unknown now';
+    const held = r.held > 0 ? `, ${r.held} outage${r.held === 1 ? '' : 's'} since yesterday not mailed to its operator (it keeps dropping)` : '';
+    return `- Node ${r.nodeId} (${r.siteName}), cell ${r.cellId} on ${r.coreId}, ${now}${held}, operator ${r.operator ?? 'none'}`;
+  });
   return {
-    subject: `OpenCell: ${rows.length} base station${rows.length === 1 ? ' is' : 's are'} offline`,
-    text: `Hello ${adminName},\n\nOffline this morning:\n\n${lines.join('\n')}\n\nCells: ${link}${sig(origin)}`,
+    subject: `OpenCell: ${rows.length} base station${rows.length === 1 ? ' is' : 's are'} offline or flapping`,
+    text: `Hello ${adminName},\n\nThis morning:\n\n${lines.join('\n')}\n\nCells: ${link}${sig(origin)}`,
   };
 }
 

@@ -1,9 +1,10 @@
-import { and, desc, eq, gt, isNotNull, isNull, lte } from 'drizzle-orm';
+import { and, desc, eq, gt, isNotNull, isNull, lte, or } from 'drizzle-orm';
 import { nodeDowntime, nodes, nodeState, settings, users } from '@/db/schema';
 import { loadCellCa } from '@/lib/ca/cell-ca';
 import type { Ctx } from '@/lib/ctx';
 import { errorKind } from '@/lib/errors';
 import { cellCaExpiringMail, nodeBackMail, nodeOfflineMail, offlineDigestMail } from '@/lib/mail-templates';
+import { hit } from '@/lib/ratelimit';
 import { adminContacts } from '@/lib/users';
 import { cellSnapshot, closeRevokedNode } from './my-nodes';
 
@@ -67,14 +68,17 @@ function sendDigest(ctx: Ctx, now: number): boolean {
   // The morning's one look, sent or not: a node going down at 15:00 waits for tomorrow's digest (its operator has the alert).
   setSetting(ctx, DIGEST_DAY, day);
   const rows = ctx.db
-    .select({ nodeId: nodes.id, siteName: nodes.siteName, coreId: nodes.coreId, cellId: nodes.cellId, since: nodeState.offlineSince, operator: users.name })
+    .select({ nodeId: nodes.id, siteName: nodes.siteName, coreId: nodes.coreId, cellId: nodes.cellId, online: nodeState.online, since: nodeState.offlineSince, held: nodeState.alertsHeld, operator: users.name })
     .from(nodes)
     .innerJoin(nodeState, eq(nodeState.nodeId, nodes.id))
     .leftJoin(users, eq(users.id, nodes.userId))
-    .where(and(isNull(nodes.revokedAt), isNotNull(nodes.certFpr), eq(nodeState.online, false)))
+    .where(and(isNull(nodes.revokedAt), isNotNull(nodes.certFpr), or(eq(nodeState.online, false), gt(nodeState.alertsHeld, 0))))
     .all()
-    // A notice covers the node: "no alert fires inside a downtime notice".
-    .filter((r) => inDowntime(ctx, r.nodeId, now) === null);
+    // A notice covers the node: "no alert fires inside a downtime notice". What
+    // was held back before it still counts: a flapping node may well be up at 08:00.
+    .filter((r) => r.held > 0 || inDowntime(ctx, r.nodeId, now) === null);
+  // This count is since the last look.
+  ctx.db.update(nodeState).set({ alertsHeld: 0 }).where(gt(nodeState.alertsHeld, 0)).run();
   if (rows.length === 0) return false;
   for (const a of adminContacts(ctx)) {
     const m = offlineDigestMail(a.name, rows, `${ctx.config.origin}/admin/cells`, ctx.config.origin);
@@ -105,7 +109,7 @@ function warnCellCa(ctx: Ctx, now: number): boolean {
   return true;
 }
 
-type Sample = Pick<typeof nodeState.$inferSelect, 'online' | 'lastHeardAt' | 'onlineSince' | 'offlineSince' | 'offlineAlertAt'>;
+type Sample = Pick<typeof nodeState.$inferSelect, 'online' | 'lastHeardAt' | 'onlineSince' | 'offlineSince' | 'offlineAlertAt' | 'alertsHeld' | 'alertHeldAt'>;
 
 /** How many nodes the watcher last saw offline, for the dashboard. */
 export function offlineCount(ctx: Ctx): number {
@@ -133,7 +137,7 @@ export async function watchTick(ctx: Ctx): Promise<{ offline: number[]; back: nu
   const link = (id: number) => `${ctx.config.origin}/nodes/${id}`;
   for (const { n, operator } of rows) {
     const row = ctx.db.select().from(nodeState).where(eq(nodeState.nodeId, n.id)).get();
-    const s: Sample = { online: row?.online ?? null, lastHeardAt: row?.lastHeardAt ?? null, onlineSince: row?.onlineSince ?? null, offlineSince: row?.offlineSince ?? null, offlineAlertAt: row?.offlineAlertAt ?? null };
+    const s: Sample = { online: row?.online ?? null, lastHeardAt: row?.lastHeardAt ?? null, onlineSince: row?.onlineSince ?? null, offlineSince: row?.offlineSince ?? null, offlineAlertAt: row?.offlineAlertAt ?? null, alertsHeld: row?.alertsHeld ?? 0, alertHeldAt: row?.alertHeldAt ?? null };
     const cell = snaps.get(n.coreId)?.cells.get(n.cellId);
     if (cell?.revoked) {
       // Revoked outside the portal (oc-core admin): the node is over, here too.
@@ -146,7 +150,7 @@ export async function watchTick(ctx: Ctx): Promise<{ offline: number[]; back: nu
       next = { ...s, online: null };
     } else if (cell.online) {
       const continuous = s.online !== false && s.onlineSince !== null;
-      next = { online: true, lastHeardAt: cell.lastHeardAt, onlineSince: continuous ? s.onlineSince : now, offlineSince: null, offlineAlertAt: null };
+      next = { ...s, online: true, lastHeardAt: cell.lastHeardAt, onlineSince: continuous ? s.onlineSince : now, offlineSince: null, offlineAlertAt: null };
       if (s.offlineAlertAt !== null) {
         const quiet = n.alertsMuted || !operator || inDowntime(ctx, n.id, now) !== null;
         if (!quiet) {
@@ -155,19 +159,34 @@ export async function watchTick(ctx: Ctx): Promise<{ offline: number[]; back: nu
           back.push(n.id);
         }
       }
+    } else if (cell.lastHeardAt === null) {
+      // It has never connected: waiting for setup, as its card says. Nothing is down, so nothing is sent or counted.
+      next = { ...s, online: null, lastHeardAt: null, onlineSince: null, offlineSince: null };
     } else {
       // First seen offline. Not the core's lastHeardAt, whatever decision 19 hoped:
       // a real core writes it only at HELLO, so for a node up for days it says
       // nothing about when the link dropped, and would alert at the first sample.
       const offlineSince = s.offlineSince ?? now;
-      next = { online: false, lastHeardAt: cell.lastHeardAt, onlineSince: null, offlineSince, offlineAlertAt: s.offlineAlertAt };
+      next = { ...s, online: false, lastHeardAt: cell.lastHeardAt, onlineSince: null, offlineSince };
       const notice = inDowntime(ctx, n.id, now);
       const from = Math.max(offlineSince, lastWindowEnd(ctx, n.id, offlineSince, now) ?? offlineSince);
       if (next.offlineAlertAt === null && !notice && now - from >= OFFLINE_ALERT_MS && !n.alertsMuted && operator) {
-        const m = nodeOfflineMail(operator.name, n.siteName, offlineSince, link(n.id), ctx.config.origin);
-        ctx.mailQueue.send({ to: operator.email, subject: m.subject, text: m.text });
-        next.offlineAlertAt = now;
-        offline.push(n.id);
+        // This episode was already counted as held: it isn't any more.
+        const wasHeld = s.alertHeldAt !== null && s.alertHeldAt >= offlineSince;
+        if (hit(ctx, 'node_alert', String(n.id)).ok) {
+          const m = nodeOfflineMail(operator.name, n.siteName, offlineSince, link(n.id), ctx.config.origin);
+          ctx.mailQueue.send({ to: operator.email, subject: m.subject, text: m.text });
+          next.offlineAlertAt = now;
+          if (wasHeld) {
+            next.alertsHeld = Math.max(0, s.alertsHeld - 1);
+            next.alertHeldAt = null;
+          }
+          offline.push(n.id);
+        } else if (!wasHeld) {
+          // A node flapping past the limit: the card and the digest say so.
+          next.alertsHeld = s.alertsHeld + 1;
+          next.alertHeldAt = now;
+        }
       }
     }
     ctx.db

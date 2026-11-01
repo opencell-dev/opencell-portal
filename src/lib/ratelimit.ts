@@ -112,6 +112,14 @@ export const LIMITS = {
     windowS: 3600,
     message: 'Too many setup attempts from this network. Please try again in about an hour.',
   },
+  // Portal P3: a node's offline mail, by node (its back mail only ever follows one,
+  // so this is one pair). What it holds back shows on the card and in the digest.
+  node_alert: {
+    perIp: false,
+    max: 1,
+    windowS: 3600,
+    message: 'This node has already had its alert this hour.',
+  },
   // NOC design §11: a staff number lookup (a number's status and calls).
   noc_lookup: {
     perIp: false,

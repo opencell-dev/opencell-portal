@@ -127,6 +127,8 @@ export interface NodeCard {
   cert: { fpr: string; expiresAt: number } | null;
   setup: { expiresAt: number } | null;
   alertsMuted: boolean;
+  /** Outages not mailed since this morning's digest: the node passed its alert limit. */
+  alertsHeld: number;
   downtime: DowntimeWindow[];
   agreementBehind: boolean;
 }
@@ -176,6 +178,7 @@ function cardOf(ctx: Ctx, n: Node, snap: CellSnapshot | null): NodeCard {
     cert: n.certFpr !== null && n.certExpiresAt !== null ? { fpr: n.certFpr, expiresAt: n.certExpiresAt } : null,
     setup: setup ?? null,
     alertsMuted: n.alertsMuted,
+    alertsHeld: s?.alertsHeld ?? 0,
     downtime: downtimeOf(ctx, n.id),
     agreementBehind: n.userId !== null && needsAgreement(ctx, n.userId),
   };

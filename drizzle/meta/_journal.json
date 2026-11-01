@@ -43,6 +43,13 @@
       "when": 1793551234932,
       "tag": "0005_p3_operators",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1793555909454,
+      "tag": "0006_p3_alert_limit",
+      "breakpoints": true
     }
   ]
 }

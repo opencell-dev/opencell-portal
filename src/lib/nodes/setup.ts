@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { eq } from 'drizzle-orm';
 import { credentialPath } from '@/core/tls-client';
+import { type CoreHandle, isCoreError } from '@/core/types';
 import { issuedCerts, nodes, nodeState } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import { type CellCa, checkCsr, CSR_MAX_BYTES, loadCellCa, type SignedCell, signCellCert } from '@/lib/ca/cell-ca';
@@ -131,46 +132,100 @@ export async function issueForToken(ctx: Ctx, token: string, csrPem: string, met
   const claim = claimToken(ctx, token);
   if (!claim.ok) return REFUSED[claim.why];
   const { node, tokenId } = claim;
-  const check = await checkCsr(csrPem);
-  if (!check.ok) {
-    releaseClaim(ctx, tokenId);
-    return { status: 400, body: `${check.why}\n` };
-  }
   const handle = ctx.cores.find((h) => h.id === node.coreId);
-  if (!handle?.cellAddr) {
-    releaseClaim(ctx, tokenId);
-    return { status: 503, body: NO_ANSWER };
-  }
-  let signed: SignedCell;
+  // Set once the core holds the new pin and until the portal has recorded it.
+  let pinnedUnrecorded = false;
   try {
-    signed = await signCellCert(ca, csrPem, node.certCn);
+    const check = await checkCsr(csrPem);
+    if (!check.ok) {
+      releaseClaim(ctx, tokenId);
+      return { status: 400, body: `${check.why}\n` };
+    }
+    if (!handle?.cellAddr) {
+      giveBack(ctx, tokenId);
+      return { status: 503, body: NO_ANSWER };
+    }
+    let signed: SignedCell;
+    try {
+      signed = await signCellCert(ca, csrPem, node.certCn);
+    } catch (e) {
+      console.error(`oc-portal: signing a cell certificate for node ${node.id} failed (${errorKind(e)})`);
+      giveBack(ctx, tokenId);
+      return { status: 503, body: NO_CERTS };
+    }
+    const now = ctx.now();
+    ctx.db.insert(issuedCerts).values({ nodeId: node.id, serial: signed.serial, fpr: signed.fpr, cn: node.certCn, notBefore: signed.notBefore, notAfter: signed.notAfter, pem: signed.pem, pinned: false, issuedAt: now }).run();
+    const notPinned = () => writeAudit(ctx, { actorId: node.userId, action: 'node.cert_unpinned', target: `node:${node.id}`, detail: { fpr: signed.fpr, serial: signed.serial }, ip: meta.ip });
+    const actor = coreActor(ctx.config.site, node.userId ?? 0);
+    const pinned = await tryWithin(handle, 'cell.set_cert', () => handle.core.cellSetCert(actor, node.cellId, signed.fpr), WRITE_MS);
+    if (!pinned.ok) {
+      notPinned();
+      // A well-formed fingerprint is refused only for a revoked cell, or one the core no longer has: revoked while this CSR was in flight.
+      if ('error' in pinned && isCoreError(pinned.error) && (pinned.error.code === 'invalid' || pinned.error.code === 'not_found')) return REFUSED.revoked;
+      giveBack(ctx, tokenId);
+      return { status: 503, body: NO_ANSWER };
+    }
+    pinnedUnrecorded = true;
+    // Made first: nothing may fail between the certificate being on record and the Pi getting it.
+    const body = bundleText({ cert: signed.pem, chain: ca.certPem, ca: root, conf: cellConf(node, handle.cellAddr) });
+    const recorded = ctx.db.transaction(() => {
+      // Revoked just after the pin (cell.revoke unpins it): no certificate for this node, and no bundle.
+      if (ctx.db.select({ revokedAt: nodes.revokedAt }).from(nodes).where(eq(nodes.id, node.id)).get()?.revokedAt != null) return false;
+      ctx.db.update(issuedCerts).set({ pinned: true }).where(eq(issuedCerts.fpr, signed.fpr)).run();
+      ctx.db.update(nodes).set({ certFpr: signed.fpr, certIssuedAt: now, certExpiresAt: signed.notAfter }).where(eq(nodes.id, node.id)).run();
+      ctx.db.update(nodeState).set({ online: null, onlineSince: null, offlineSince: null, offlineAlertAt: null, checkedAt: now }).where(eq(nodeState.nodeId, node.id)).run();
+      writeAudit(ctx, { actorId: node.userId, action: 'node.cert', target: `node:${node.id}`, detail: { fpr: signed.fpr, serial: signed.serial }, ip: meta.ip });
+      return true;
+    });
+    pinnedUnrecorded = false;
+    if (!recorded) {
+      notPinned();
+      return REFUSED.revoked;
+    }
+    tellOperator(ctx, node, signed.notAfter);
+    return { status: 200, body };
   } catch (e) {
-    console.error(`oc-portal: signing a cell certificate for node ${node.id} failed (${errorKind(e)})`);
-    releaseClaim(ctx, tokenId);
-    return { status: 503, body: NO_CERTS };
-  }
-  const now = ctx.now();
-  ctx.db.insert(issuedCerts).values({ nodeId: node.id, serial: signed.serial, fpr: signed.fpr, cn: node.certCn, notBefore: signed.notBefore, notAfter: signed.notAfter, pem: signed.pem, pinned: false, issuedAt: now }).run();
-  const actor = coreActor(ctx.config.site, node.userId ?? 0);
-  const pinned = await tryWithin(handle, 'cell.set_cert', () => handle.core.cellSetCert(actor, node.cellId, signed.fpr), WRITE_MS);
-  if (!pinned.ok) {
-    releaseClaim(ctx, tokenId);
-    writeAudit(ctx, { actorId: node.userId, action: 'node.cert_unpinned', target: `node:${node.id}`, detail: { fpr: signed.fpr, serial: signed.serial }, ip: meta.ip });
+    // The database, most likely: a 503 the operator can retry, not a 500 with the token spent.
+    console.error(`oc-portal: a CSR for node ${node.id} failed after its claim (${errorKind(e)})`);
+    if (pinnedUnrecorded && handle) await restorePin(handle, node);
+    giveBack(ctx, tokenId);
     return { status: 503, body: NO_ANSWER };
   }
-  ctx.db.transaction(() => {
-    ctx.db.update(issuedCerts).set({ pinned: true }).where(eq(issuedCerts.fpr, signed.fpr)).run();
-    ctx.db.update(nodes).set({ certFpr: signed.fpr, certIssuedAt: now, certExpiresAt: signed.notAfter }).where(eq(nodes.id, node.id)).run();
-    ctx.db.update(nodeState).set({ online: null, onlineSince: null, offlineSince: null, offlineAlertAt: null, checkedAt: now }).where(eq(nodeState.nodeId, node.id)).run();
-    writeAudit(ctx, { actorId: node.userId, action: 'node.cert', target: `node:${node.id}`, detail: { fpr: signed.fpr, serial: signed.serial }, ip: meta.ip });
-  });
-  forgetPublicNodes(ctx);
-  const u = node.userId === null ? undefined : getUser(ctx, node.userId);
-  if (u) {
-    const m = nodeCertMail(u.name, node.siteName, signed.notAfter, `${ctx.config.origin}/nodes/${node.id}`, ctx.config.origin);
-    ctx.mailQueue.send({ to: u.email, subject: m.subject, text: m.text });
+}
+
+/** The claim goes back at no cost. Never throws: this is already the way out of a failure. */
+function giveBack(ctx: Ctx, tokenId: string): void {
+  try {
+    releaseClaim(ctx, tokenId, { refund: true });
+  } catch (e) {
+    console.error(`oc-portal: a setup token's claim could not be given back (${errorKind(e)})`);
   }
-  return { status: 200, body: bundleText({ cert: signed.pem, chain: ca.certPem, ca: root, conf: cellConf(node, handle.cellAddr) }) };
+}
+
+/**
+ * The core holds a pin for a certificate the Pi will never receive. A node with
+ * an earlier certificate gets its pin back, so it keeps its link; one with none
+ * has nothing to lose, and the next run of the command pins over it.
+ */
+async function restorePin(handle: CoreHandle, node: Node): Promise<void> {
+  if (node.certFpr === null) return;
+  const old = node.certFpr;
+  const r = await tryWithin(handle, 'cell.set_cert', () => handle.core.cellSetCert(0, node.cellId, old), WRITE_MS);
+  if (!r.ok) console.error(`oc-portal: node ${node.id}'s earlier pin could not be put back; it needs a new setup command`);
+}
+
+/** After the certificate is on record: nothing here may cost the Pi its certificate. */
+function tellOperator(ctx: Ctx, node: Node, notAfter: number): void {
+  try {
+    forgetPublicNodes(ctx);
+    const u = node.userId === null ? undefined : getUser(ctx, node.userId);
+    if (u) {
+      const m = nodeCertMail(u.name, node.siteName, notAfter, `${ctx.config.origin}/nodes/${node.id}`, ctx.config.origin);
+      ctx.mailQueue.send({ to: u.email, subject: m.subject, text: m.text });
+    }
+  } catch (e) {
+    console.error(`oc-portal: node ${node.id} has its certificate, but its operator was not told (${errorKind(e)})`);
+  }
 }
 
 /** Not a server action, and not a browser with its session: the CSR route is for the script (decision 13). */

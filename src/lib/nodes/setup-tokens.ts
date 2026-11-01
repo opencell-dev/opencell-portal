@@ -89,7 +89,15 @@ export function voidTokensOfUser(ctx: Ctx, userId: number): void {
   }
 }
 
-/** Signing or pinning failed: the operator can run the command again. */
-export function releaseClaim(ctx: Ctx, tokenId: string): void {
-  ctx.db.update(setupTokens).set({ usedAt: null }).where(eq(setupTokens.id, tokenId)).run();
+/**
+ * The operator can run the command again. `refund`: the failure was ours or the
+ * network's, not this request's (no core answer, the database), so it costs no
+ * try: five 503s while a core is down must not kill the token. A bad CSR does cost one.
+ */
+export function releaseClaim(ctx: Ctx, tokenId: string, o: { refund?: boolean } = {}): void {
+  ctx.db
+    .update(setupTokens)
+    .set({ usedAt: null, ...(o.refund ? { csrTries: sql`max(${setupTokens.csrTries} - 1, 0)` } : {}) })
+    .where(eq(setupTokens.id, tokenId))
+    .run();
 }
