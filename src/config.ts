@@ -31,6 +31,10 @@ const envSchema = z
     // The route delegate's private key (OCSS spec §5.4), which signs new NPAs
     // for the weekly refresh: a path, or (no '/') a systemd credential.
     OC_ROUTE_DELEGATE_KEY: z.string().min(1).optional(),
+    // The online cell intermediate (portal spec §8.3): its certificate and key,
+    // paths or (no '/') systemd credentials. Unset: no certificates are issued.
+    OC_CELL_CA_CERT: z.string().min(1).optional(),
+    OC_CELL_CA_KEY: z.string().min(1).optional(),
     // OC_CORE=fake only (NOC design §10): how many fake cores (fake, fake2, …)
     // and whether each starts with the demo network. Never in production,
     // which runs OC_CORE=tls: either one with tls is a configuration error.
@@ -64,6 +68,9 @@ const envSchema = z
       for (const k of ['OC_FAKE_CORES', 'OC_FAKE_DEMO'] as const) {
         if (env[k] !== undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is for the fake core only (OC_CORE=fake)` });
       }
+    }
+    if ((env.OC_CELL_CA_CERT === undefined) !== (env.OC_CELL_CA_KEY === undefined)) {
+      ctx.addIssue({ code: 'custom', path: ['OC_CELL_CA_KEY'], message: 'OC_CELL_CA_CERT and OC_CELL_CA_KEY go together' });
     }
     if (env.OC_MAIL === 'smtp') {
       for (const k of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TOKEN'] as const) {
@@ -180,6 +187,8 @@ export type Config = {
   cores: CoreEndpoint[];
   /** Where the route delegate's key is, a path or a credential's name; absent: new NPAs are not signed. */
   routeDelegateKey?: string;
+  /** The online cell intermediate's files, paths or credentials' names; absent: no certificates are issued (plan P3, decision 28). */
+  cellCa?: { cert: string; key: string };
   /** OC_CORE=fake: how many fake cores, and whether they start with the demo network (NOC design §10). */
   fake: { cores: number; demo: boolean };
   secureCookies: boolean;
@@ -212,6 +221,7 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     core: e.OC_CORE,
     cores,
     routeDelegateKey: e.OC_ROUTE_DELEGATE_KEY,
+    ...(e.OC_CELL_CA_CERT && e.OC_CELL_CA_KEY ? { cellCa: { cert: e.OC_CELL_CA_CERT, key: e.OC_CELL_CA_KEY } } : {}),
     fake: { cores: e.OC_FAKE_CORES ?? 1, demo: e.OC_FAKE_DEMO === '1' },
     secureCookies: secure,
     sessionCookie: secure ? '__Host-oc_session' : 'oc_session',

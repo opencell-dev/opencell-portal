@@ -2,10 +2,11 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { replyAction, withdrawRequestAction } from '@/app/actions/nodes';
-import { requestStatusLabel, WithdrawForm } from '@/components/nodes/request-status';
+import { WithdrawForm } from '@/components/nodes/request-status';
 import { MessageForm, Thread } from '@/components/nodes/thread';
 import { LocalTime } from '@/components/numbers/local-time';
 import { appCtx } from '@/lib/ctx';
+import { requestStatusLabel } from '@/lib/nodes/labels';
 import { getMyRequest } from '@/lib/nodes/requests';
 import { requireUser } from '@/server/request';
 

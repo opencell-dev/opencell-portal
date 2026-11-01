@@ -4,19 +4,7 @@ import { useActionState } from 'react';
 import type { FormState } from '@/app/actions/auth';
 import { FormMessage } from '@/components/numbers/form-message';
 
-const LABELS: Record<string, string> = {
-  pending: 'Waiting for an admin',
-  question: 'An admin has a question for you',
-  approved: 'Approved',
-  declined: 'Declined',
-  withdrawn: 'Withdrawn',
-};
-
-/** A request's status in words. */
-export function requestStatusLabel(status: string): string {
-  return LABELS[status] ?? status;
-}
-
+/** Withdraw an open request. */
 export function WithdrawForm({ id, action }: { id: number; action: (prev: FormState, form: FormData) => Promise<FormState> }) {
   const [state, run, pending] = useActionState<FormState, FormData>(action, null);
   return (
