@@ -152,6 +152,8 @@ export const numbers = sqliteTable(
     disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
     registered: integer('registered', { mode: 'boolean' }).notNull().default(false),
     cellId: integer('cell_id'),
+    // The core whose cell cellId is (OCSS spec §5.6): cell ids are per core. Null: not registered, or a v0.7.0 core.
+    servingCore: integer('serving_core'),
     tmidPrefix: text('tmid_prefix'),
     lastSeenAt: integer('last_seen_at'),
     statusAt: integer('status_at'),
@@ -181,6 +183,10 @@ export const npas = sqliteTable('npas', {
   npa: text('npa').primaryKey(),
   // A US state / Canadian province / Caribbean country code (PA, ON, JM); '' when unknown.
   region: text('region').notNull(),
+  // The routing table's code (OCSS spec §3.3: US-KY, CA-ON, KY), which region
+  // can't be: KY and MS each mean two places. Null: non-geographic, unknown,
+  // or a row from before this column until the next refresh.
+  stateCode: text('state_code'),
   geographic: integer('geographic', { mode: 'boolean' }).notNull(),
   inService: integer('in_service', { mode: 'boolean' }).notNull(),
   updatedAt: integer('updated_at').notNull(),

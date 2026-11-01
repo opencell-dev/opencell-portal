@@ -34,6 +34,16 @@ beforeEach(() => {
 });
 
 describe('applyNanpa', () => {
+  it('stores each NPA\'s state code, and fills it in on a row from before state codes', () => {
+    applyNanpa(ctx, files());
+    const row = (npa: string) => ctx.db.select().from(npas).where(eq(npas.npa, npa)).get();
+    expect(row('717')).toMatchObject({ region: 'PA', stateCode: 'US-PA' });
+    expect(row('902')).toMatchObject({ region: 'NS', stateCode: 'CA-NS' });
+    ctx.db.update(npas).set({ stateCode: null }).where(eq(npas.npa, '717')).run();
+    applyNanpa(ctx, files());
+    expect(row('717')?.stateCode).toBe('US-PA');
+  });
+
   it('fills the tables on the first run', () => {
     const r = applyNanpa(ctx, files());
     expect(r.newExchanges).toBe(46); // 33 US + 13 Canadian

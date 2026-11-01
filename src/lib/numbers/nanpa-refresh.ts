@@ -189,15 +189,15 @@ export function applyNanpa(ctx: Ctx, files: NanpaFiles): RefreshResult {
     const firstImport = tx.select({ n: count() }).from(npas).get()!.n === 0;
     const before = new Map(tx.select().from(npas).all().map((r) => [r.npa, r]));
     const upsertNpa = client.prepare(
-      `INSERT INTO npas (npa, region, geographic, in_service, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(npa) DO UPDATE SET region = excluded.region, geographic = excluded.geographic, in_service = excluded.in_service, updated_at = excluded.updated_at`,
+      `INSERT INTO npas (npa, region, state_code, geographic, in_service, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(npa) DO UPDATE SET region = excluded.region, state_code = excluded.state_code, geographic = excluded.geographic, in_service = excluded.in_service, updated_at = excluded.updated_at`,
     );
     const newNpas: string[] = [];
     for (const n of npaRows) {
       const old = before.get(n.npa);
       if (!firstImport && n.geographic && !old?.geographic) newNpas.push(n.npa);
-      if (!old || old.region !== n.region || old.geographic !== n.geographic || old.inService !== n.inService) {
-        upsertNpa.run(n.npa, n.region, n.geographic ? 1 : 0, n.inService ? 1 : 0, now);
+      if (!old || old.region !== n.region || old.stateCode !== n.stateCode || old.geographic !== n.geographic || old.inService !== n.inService) {
+        upsertNpa.run(n.npa, n.region, n.stateCode, n.geographic ? 1 : 0, n.inService ? 1 : 0, now);
       }
     }
 

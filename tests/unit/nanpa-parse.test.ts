@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { sideOfStateCode } from '@/lib/numbers/homing';
 import { lcgRegions, parseCnacCodes, parseCoCodes, parseNpas, parseRateCenters, rcKey, splitCsv } from '@/lib/numbers/nanpa-parse';
 
 // Trimmed real files (portal P2 plan, "Data sources"), headers and quirks kept.
@@ -94,7 +95,7 @@ describe('parseNpas', () => {
 
   it('reads the header on line 2, after the File Date preamble', () => {
     expect(rows).toHaveLength(41); // 43 rows less 611 (N11) and 883
-    expect(by('717')).toEqual({ npa: '717', region: 'PA', geographic: true, inService: true });
+    expect(by('717')).toEqual({ npa: '717', region: 'PA', stateCode: 'US-PA', geographic: true, inService: true });
   });
 
   it('maps provinces and countries to codes', () => {
@@ -124,6 +125,65 @@ describe('parseNpas', () => {
   it('refuses a changed header', () => {
     expect(() => parseNpas('NPA_ID,USE\r\n717,G\r\n')).toThrow(/nanpa: unexpected header/);
     expect(() => parseNpas('File Date,10/31/2026\r\nNPA,USE\r\n')).toThrow(/nanpa: unexpected header/);
+  });
+});
+
+describe('NpaRow.stateCode (OCSS spec §3.3)', () => {
+  const rows = parseNpas(read('npas.csv'));
+  const code = (npa: string) => rows.find((r) => r.npa === npa)?.stateCode;
+
+  it('US-XX, CA-XX, a country alpha-2; 902 is CA-NS and 867 CA-NT', () => {
+    expect(code('717')).toBe('US-PA');
+    expect(code('202')).toBe('US-DC');
+    expect(code('204')).toBe('CA-MB');
+    expect(code('902')).toBe('CA-NS');
+    expect(code('867')).toBe('CA-NT');
+    expect(code('876')).toBe('JM');
+    expect(code('649')).toBe('TC');
+  });
+
+  it('non-geographic or not assigned yet is null', () => {
+    expect(code('200')).toBeNull();
+    expect(code('221')).toBeNull();
+  });
+
+  it('keeps Kentucky and the Cayman Islands, Mississippi and Montserrat apart', () => {
+    const head = 'File Date,11/01/2026\nNPA_ID,USE,LOCATION,COUNTRY,IN_SERVICE\n';
+    const r = parseNpas(`${head}606,G,KY,US,Y\n345,G,CAYMAN ISLANDS,CAYMAN ISLANDS,Y\n228,G,MS,US,Y\n664,G,MONTSERRAT,MONTSERRAT,Y\n670,G,CNMI,US,Y\n222,G,ATLANTIS,ATLANTIS,Y\n`);
+    expect(r.map((x) => [x.npa, x.region, x.stateCode])).toEqual([
+      ['606', 'KY', 'US-KY'],
+      ['345', 'KY', 'KY'],
+      ['228', 'MS', 'US-MS'],
+      ['664', 'MS', 'MS'],
+      ['670', 'MP', 'US-MP'],
+      ['222', '', null], // an unknown name
+    ]);
+  });
+});
+
+/** The cross-check (plan P5, Task 4): the portal's reading of NANPA's report is the routing table's, or portal and table disagree on a home. */
+describe('parseNpas on the real report, against the routing table', () => {
+  // The route CSV is the deployed table's source (File Date 10/31/2026; 454 NPAs). The report was
+  // fetched on 2026-11-01 and is dated 11/01/2026, a day later, with the same 454: compare only NPAs in both.
+  const table = new Map(
+    read('route-npa-2026-10-31.csv')
+      .split('\n')
+      .filter((l) => l !== '' && !l.startsWith('#'))
+      .map((l) => l.split(',') as [string, string]),
+  );
+  const rows = parseNpas(read('npa_report-2026-11-01.csv')).filter((r) => r.geographic && r.inService);
+
+  it('reads every state code the table has', () => {
+    expect(table.size).toBe(454);
+    const both = rows.filter((r) => table.has(r.npa));
+    expect(both.length).toBe(454);
+    expect(both.map((r) => [r.npa, r.stateCode])).toEqual(both.map((r) => [r.npa, table.get(r.npa)]));
+  });
+
+  it('every code is on a side of the split, and the split is the table count (282 East, 172 West)', () => {
+    const sides = rows.map((r) => sideOfStateCode(r.stateCode ?? ''));
+    expect(sides.filter((s) => s === 'east')).toHaveLength(282);
+    expect(sides.filter((s) => s === 'west')).toHaveLength(172);
   });
 });
 

@@ -237,6 +237,7 @@ function applyStatus(ctx: Ctx, row: NumberRow, st: SubStatus): NumberRow {
     disabled: st.disabled,
     registered: st.registered,
     cellId: st.cellId,
+    servingCore: st.servingCore,
     tmidPrefix: st.tmidPrefix,
     lastSeenAt: st.lastSeenAt,
     tokenExpiresAt: st.state === 'unactivated' ? st.tokenExpiresAt : null,
@@ -259,18 +260,18 @@ export async function syncNumber(ctx: Ctx, row: NumberRow): Promise<NumberRow | 
 }
 
 /** syncNumber, also saying whether the core failed to answer. */
-async function syncOne(ctx: Ctx, row: NumberRow): Promise<{ row: NumberRow | null; failed: boolean }> {
+async function syncOne(ctx: Ctx, row: NumberRow): Promise<{ row: NumberRow | null; failed: boolean; core: string }> {
   const h = coreFor(ctx, row.number);
   const r = await tryWithin(h, 'sub.status', () => h.core.subStatus(coreActor(ctx.config.site, row.userId), row.number), CORE_DEADLINE_MS);
-  if (r.ok) return { row: applyStatus(ctx, row, r.value), failed: false };
+  if (r.ok) return { row: applyStatus(ctx, row, r.value), failed: false, core: h.id };
   const notFound = !('late' in r) && isCoreError(r.error) && r.error.code === 'not_found';
   // Two cores and only the state rule to go by (no table yet): a table may
   // home this NPA elsewhere, so this core's not_found says nothing yet.
-  if (notFound && ctx.cores.length > 1 && !blocksKnown(ctx)) return { row, failed: true };
+  if (notFound && ctx.cores.length > 1 && !blocksKnown(ctx)) return { row, failed: true, core: h.id };
   if (notFound && row.state === 'unactivated') {
     ctx.db.delete(numbers).where(and(eq(numbers.number, row.number), eq(numbers.userId, row.userId))).run();
     writeAudit(ctx, { actorId: null, action: 'number.expired', target: `number:${row.number}`, detail: { user: row.userId } });
-    return { row: null, failed: false };
+    return { row: null, failed: false, core: h.id };
   }
   // An activated number the core does not know is not something the portal can fix: keep the card, say so in the log.
   if (notFound) console.error(`oc-portal: core ${h.id} has no subscriber for an activated number of account ${row.userId}`);
@@ -278,22 +279,24 @@ async function syncOne(ctx: Ctx, row: NumberRow): Promise<{ row: NumberRow | nul
   // everyone, so a core down or limiting is not asked more than once per 5 s.
   const statusAt = ctx.now();
   ctx.db.update(numbers).set({ statusAt }).where(eq(numbers.number, row.number)).run();
-  return { row: { ...row, statusAt }, failed: !notFound };
+  return { row: { ...row, statusAt }, failed: !notFound, core: h.id };
 }
 
 /**
  * Sync an account's rows whose last ask is older than maxAgeMs, all at once,
  * each bounded by the 3 s deadline; the rows after it, and whether a core
- * failed to answer. P2 decision 3: at most one sub.status per number per 5 s.
+ * failed to answer (which: `failedCores`, handle ids). P2 decision 3: at most
+ * one sub.status per number per 5 s.
  */
-export async function syncAccount(ctx: Ctx, userId: number, maxAgeMs = 5000): Promise<{ rows: NumberRow[]; unavailable: boolean }> {
+export async function syncAccount(ctx: Ctx, userId: number, maxAgeMs = 5000): Promise<{ rows: NumberRow[]; unavailable: boolean; failedCores: Set<string> }> {
   const due = ctx.db
     .select()
     .from(numbers)
     .where(and(eq(numbers.userId, userId), or(isNull(numbers.statusAt), lt(numbers.statusAt, ctx.now() - maxAgeMs + 1))))
     .all();
   const after = await Promise.all(due.map((row) => syncOne(ctx, row)));
-  return { rows: listNumbers(ctx, userId), unavailable: after.some((a) => a.failed) };
+  const failedCores = new Set(after.filter((a) => a.failed).map((a) => a.core));
+  return { rows: listNumbers(ctx, userId), unavailable: failedCores.size > 0, failedCores };
 }
 
 export async function syncDue(ctx: Ctx, userId: number, maxAgeMs = 5000): Promise<NumberRow[]> {
