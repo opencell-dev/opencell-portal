@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { addPasskey, addPasskeyDevice, liftLimits, portalAdmin, signInWithPasskey, signOut, signUpAndVerify, uniqueEmail } from './helpers';
+import { addPasskey, addPasskeyDevice, liftLimits, portalAdmin, signInWithPasskey, signOut, signUpAndVerify, uniqueEmail, watchCsp } from './helpers';
 
 // NOC design §N1.5: the subscriber portal has no NOC. The NOC is on its own
 // site (tests/e2e/noc.spec.ts), with its own accounts.
@@ -40,4 +40,19 @@ test("the portal has no NOC for its admins either: a 404, no tab, no link, no NO
   await expect(page.getByRole('heading', { name: 'Make an admin' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'NOC operators' })).toHaveCount(0);
   expect(() => portalAdmin('noc-grant', email)).toThrow(/the NOC role is given on the NOC site/);
+});
+
+test('the coverage map is public, drawn on the server, with no outside request and no CSP violation', async ({ page }) => {
+  const violations = await watchCsp(page);
+  const foreign: string[] = [];
+  page.on('request', (r) => {
+    if (!r.url().startsWith('http://localhost:3100/') && !r.url().startsWith('data:')) foreign.push(r.url());
+  });
+  await page.goto('/coverage');
+  await expect(page.getByRole('heading', { name: 'Coverage' })).toBeVisible();
+  const map = page.getByRole('img', { name: 'Coverage map' });
+  await expect(map).toBeVisible();
+  expect(await map.locator('path').count()).toBeGreaterThanOrEqual(60);
+  expect(violations).toEqual([]);
+  expect(foreign).toEqual([]);
 });

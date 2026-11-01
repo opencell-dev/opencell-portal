@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { fitView, MAP_VIEWBOX, project } from '@/lib/map-projection';
 
 const input = 'mt-1 w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 dark:bg-slate-900';
 
@@ -9,7 +10,7 @@ const input = 'mt-1 w-full rounded border border-slate-300 px-3 py-2 dark:border
  * latitude and longitude, or this device's location. It is stored exactly and
  * only ever shown publicly rounded to about a kilometre.
  */
-export function PinInput({ preview }: { preview?: (lat: number, lon: number) => React.ReactNode }) {
+export function PinInput() {
   const [lat, setLat] = useState('');
   const [lon, setLon] = useState('');
   const [message, setMessage] = useState('');
@@ -52,7 +53,20 @@ export function PinInput({ preview }: { preview?: (lat: number, lon: number) => 
         </p>
       )}
       <p className="text-sm text-slate-500">The public map shows it rounded to about a kilometre. Only you and the admins see the exact position.</p>
-      {preview && lat && lon && Number.isFinite(la) && Number.isFinite(lo) ? preview(la, lo) : null}
+      {lat !== '' && lon !== '' && la >= 14 && la <= 72 && lo >= -180 && lo <= -50 && <PinPreview lat={la} lon={lo} />}
     </fieldset>
+  );
+}
+
+/** Where that is, on the bundled basemap: no map service, nothing leaves this page. */
+function PinPreview({ lat, lon }: { lat: number; lon: number }) {
+  const [x, y, w, h] = fitView([{ lat, lon }]);
+  const [cx, cy] = project(lat, lon);
+  const [mx, my, mw, mh] = MAP_VIEWBOX;
+  return (
+    <svg role="img" aria-label="Preview of the position" viewBox={`${x} ${y} ${w} ${h}`} className="max-h-64 w-full rounded border border-slate-200 bg-sky-50 dark:border-slate-800 dark:bg-slate-900">
+      <image href="/coverage/basemap.svg" x={mx} y={my} width={mw} height={mh} />
+      <circle cx={cx} cy={cy} r={Math.max(w, h) / 60} className="fill-red-600 stroke-white" />
+    </svg>
   );
 }

@@ -7,6 +7,7 @@ import { issuedCerts, nodes, nodeState } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import { type CellCa, checkCsr, CSR_MAX_BYTES, loadCellCa, type SignedCell, signCellCert } from '@/lib/ca/cell-ca';
 import { tryWithin } from '@/lib/core-ask';
+import { forgetPublicNodes } from '@/lib/coverage';
 import type { Ctx } from '@/lib/ctx';
 import { errorKind } from '@/lib/errors';
 import { nodeCertMail } from '@/lib/mail-templates';
@@ -163,6 +164,7 @@ export async function issueForToken(ctx: Ctx, token: string, csrPem: string, met
     ctx.db.update(nodeState).set({ online: null, onlineSince: null, offlineSince: null, offlineAlertAt: null, checkedAt: now }).where(eq(nodeState.nodeId, node.id)).run();
     writeAudit(ctx, { actorId: node.userId, action: 'node.cert', target: `node:${node.id}`, detail: { fpr: signed.fpr, serial: signed.serial }, ip: meta.ip });
   });
+  forgetPublicNodes(ctx);
   const u = node.userId === null ? undefined : getUser(ctx, node.userId);
   if (u) {
     const m = nodeCertMail(u.name, node.siteName, signed.notAfter, `${ctx.config.origin}/nodes/${node.id}`, ctx.config.origin);
