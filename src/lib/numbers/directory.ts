@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { numbers, users } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 import { MAX_TYPED } from './input';
@@ -35,6 +35,7 @@ export function directory(ctx: Ctx, q: string, page: number): { rows: { name: st
       and(
         eq(users.directoryListed, true),
         isNotNull(users.emailVerifiedAt),
+        isNull(users.disabledAt),
         eq(numbers.listed, true),
         eq(numbers.state, 'activated'),
         eq(numbers.disabled, false),

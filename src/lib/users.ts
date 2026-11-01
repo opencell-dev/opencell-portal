@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { passkeys, sessions, userRoles, users } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
@@ -41,6 +41,9 @@ export function isStaff(ctx: Ctx, userId: number): boolean {
   return r.includes('admin') || r.includes('noc');
 }
 
+/** What a disabled account is told, at sign-in and on its next request (plan P3, decision 22). */
+export const ACCOUNT_DISABLED = 'This account is disabled. Write to opencell@k4ozi.com.';
+
 /** What an account the NOC's site does not admit is told (NOC design §N1.5). */
 export const STAFF_ONLY = 'This site is for OpenCell staff only, and this account has no staff role here.';
 
@@ -80,12 +83,22 @@ export function grantRole(ctx: Ctx, userId: number, role: GrantedRole, byId: num
   return added;
 }
 
+/** Every admin's name and address: who a request for an admin's decision is mailed to. */
+export function adminContacts(ctx: Ctx): { id: number; name: string; email: string }[] {
+  return ctx.db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(userRoles)
+    .innerJoin(users, eq(users.id, userRoles.userId))
+    .where(and(eq(userRoles.role, 'admin'), isNull(users.disabledAt)))
+    .all();
+}
+
 export type RoleResult = { ok: true } | { ok: false; error: string };
 
-/** Whether `userId` is the only admin left (used to guard both revoking the role and deleting the account). */
+/** Whether `userId` is the only usable admin left: a disabled one cannot sign in, so does not count (used to guard both revoking the role and deleting the account). */
 export function isLastAdmin(ctx: Ctx, userId: number): boolean {
-  const admins = ctx.db.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, 'admin')).all();
-  return admins.length <= 1 && admins.some((a) => a.userId === userId);
+  const admins = adminContacts(ctx);
+  return admins.length <= 1 && admins.some((a) => a.id === userId);
 }
 
 /** Revoke a role. Refuses to leave the portal with no admin at all. */

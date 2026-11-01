@@ -1,0 +1,148 @@
+#!/bin/bash
+# The online cell intermediate CA (portal spec §8.3; plan P3, decision 6), from
+# the laptop that holds the OpenCell root:
+#   deploy/oc-portal-cell-ca init GUEST [ROOT_DIR]    a new key on the guest, signed here
+#   deploy/oc-portal-cell-ca renew GUEST [ROOT_DIR]   the same key and subject, signed again and
+#                                                     left waiting: nothing changes yet
+#   deploy/oc-portal-cell-ca install GUEST            the waiting certificate goes live
+# A renewal has two steps because cores check a cell's issuer against cell_issuers:
+# a leaf from the renewed certificate is refused until every core lists it, and by
+# then its setup token is spent and its pin moved. So: renew, update the cores as it
+# prints, then install.
+# ROOT_DIR is oc-ca's directory (default ~/.config/opencell/ca: ca.crt, ca.key,
+# issued/). The intermediate's key is made on the guest and never leaves it:
+# this script only ever carries its CSR out and its certificate in. The root's
+# key is used by openssl here and printed nowhere. A copy of each certificate
+# stays in ROOT_DIR/issued/.
+#
+# The profile (plan P3, Global Constraints), which loadCellCa checks at the portal:
+# CA:TRUE, pathlen:0, keyCertSign + cRLSign, EKU clientAuth, the cell policy,
+# 365 days, ECDSA P-256 / SHA-256, /O=OpenCell/CN=OpenCell Cell CA 1.
+#
+# GUEST is an SSH alias from OC_SSH_CONFIG (default ~/.ssh/cm/oc-portal.conf).
+# Tests: OC_CELL_CA_LOCAL=ROOT runs the guest's side here under ROOT, with no ssh.
+set -euo pipefail
+
+POLICY=2.25.39025894690731581968303886031091540846.1.3
+SUBJECT=/O=OpenCell/CN=OpenCell\ Cell\ CA\ 1
+DAYS=365
+
+die() {
+  echo "oc-portal-cell-ca: $*" >&2
+  exit 1
+}
+
+usage() {
+  echo "usage: oc-portal-cell-ca init|renew GUEST [ROOT_DIR]; oc-portal-cell-ca install GUEST" >&2
+  exit 2
+}
+
+[ $# -ge 2 ] && [ $# -le 3 ] || usage
+cmd=$1
+guest=$2
+root_dir=${3:-$HOME/.config/opencell/ca}
+case "$cmd" in init | renew | install) ;; *) usage ;; esac
+[[ $guest =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "'$guest': GUEST is an SSH host alias"
+# The guest's side, as a script on stdin: over ssh, or here under OC_CELL_CA_LOCAL.
+on_guest() {
+  if [ -n "${OC_CELL_CA_LOCAL:-}" ]; then
+    ROOT=$OC_CELL_CA_LOCAL bash -s
+  else
+    ssh -F "${OC_SSH_CONFIG:-$HOME/.ssh/cm/oc-portal.conf}" "$guest" 'if [ "$(id -u)" -eq 0 ]; then exec bash -s; else exec sudo -n bash -s; fi'
+  fi
+}
+
+# The certificate named goes live, with its drop-in, and the portal restarts.
+go_live() { # FILE ON THE GUEST, relative to ROOT
+  on_guest <<GUEST
+set -euo pipefail
+ROOT=\${ROOT:-}
+crt="\$ROOT/etc/opencell/tls/cell-ca.crt"
+next="\$ROOT/$1"
+[ -f "\$next" ] || { echo "\$next is not there: run renew first" >&2; exit 1; }
+chmod 0644 "\$next"
+mv -Tf "\$next" "\$crt"
+dropin="\$ROOT/etc/systemd/system/oc-portal.service.d/cell-ca.conf"
+if [ -f "\$ROOT/opt/oc-portal/current/deploy/oc-portal-cell-ca.conf" ] && [ ! -e "\$dropin" ]; then
+  install -D -m 0644 "\$ROOT/opt/oc-portal/current/deploy/oc-portal-cell-ca.conf" "\$dropin"
+  systemctl daemon-reload
+fi
+systemctl restart oc-portal
+GUEST
+}
+
+if [ "$cmd" = install ]; then
+  go_live etc/opencell/tls/cell-ca.crt.next
+  echo "the renewed intermediate is live on $guest"
+  exit 0
+fi
+
+[ -r "$root_dir/ca.crt" ] && [ -r "$root_dir/ca.key" ] || die "$root_dir: no OpenCell root here (ca.crt, ca.key)"
+
+TMP=$(mktemp -d)
+trap 'rm -rf -- "$TMP"' EXIT
+
+# 1. The key (init only) and a CSR for it.
+on_guest >"$TMP/csr" <<GUEST
+set -euo pipefail
+ROOT=\${ROOT:-}
+key="\$ROOT/etc/opencell/tls/cell-ca.key"
+if [ '$cmd' = init ]; then
+  if [ -e "\$key" ]; then echo "\$key exists: use renew" >&2; exit 1; fi
+  mkdir -p "\$(dirname "\$key")"
+  (umask 0277 && openssl ecparam -name prime256v1 -genkey -noout -out "\$key")
+  chmod 0400 "\$key"
+elif [ ! -e "\$key" ]; then
+  echo "\$key does not exist: use init" >&2
+  exit 1
+fi
+openssl req -new -key "\$key" -subj '$SUBJECT'
+GUEST
+openssl req -in "$TMP/csr" -noout -verify 2>/dev/null || die "the guest did not answer with a CSR"
+openssl req -in "$TMP/csr" -noout -text | grep -q 'ASN1 OID: prime256v1' || die "the guest's key is not ECDSA P-256"
+
+# 2. Signed here, by the root. The subject and extensions are this script's.
+cat >"$TMP/ext.cnf" <<EXT
+[ica]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+extendedKeyUsage = clientAuth
+certificatePolicies = $POLICY
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid
+EXT
+openssl x509 -req -in "$TMP/csr" -CA "$root_dir/ca.crt" -CAkey "$root_dir/ca.key" -sha256 -days "$DAYS" \
+  -set_serial "0x$(openssl rand -hex 15)" -subj "$SUBJECT" -extfile "$TMP/ext.cnf" -extensions ica -out "$TMP/cell-ca.crt" 2>/dev/null ||
+  die "signing failed"
+openssl verify -CAfile "$root_dir/ca.crt" "$TMP/cell-ca.crt" >/dev/null || die "the new certificate does not verify against the root"
+mkdir -p "$root_dir/issued"
+cp "$TMP/cell-ca.crt" "$root_dir/issued/cell-ca-$(date -u +%Y%m%dT%H%M%SZ).crt"
+
+# 3. On the guest, as cell-ca.crt.next. init: it goes live now (no core lists an issuer yet).
+b64=$(base64 -w0 <"$TMP/cell-ca.crt")
+old=""
+if [ "$cmd" = renew ]; then
+  on_guest >"$TMP/old.crt" <<GUEST
+cat "\${ROOT:-}/etc/opencell/tls/cell-ca.crt"
+GUEST
+  old=$(openssl x509 -in "$TMP/old.crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f')
+fi
+on_guest <<GUEST
+set -euo pipefail
+ROOT=\${ROOT:-}
+echo '$b64' | base64 -d >"\$ROOT/etc/opencell/tls/cell-ca.crt.next"
+chmod 0644 "\$ROOT/etc/opencell/tls/cell-ca.crt.next"
+GUEST
+
+fpr=$(openssl x509 -in "$TMP/cell-ca.crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d : | tr 'A-F' 'a-f')
+end=$(openssl x509 -in "$TMP/cell-ca.crt" -noout -enddate | cut -d= -f2)
+if [ "$cmd" = init ]; then
+  go_live etc/opencell/tls/cell-ca.crt.next
+  echo "cell intermediate on $guest: SHA-256 $fpr, valid until $end"
+  echo "on each core: cell_issuers = root,$fpr"
+else
+  echo "renewed, not live yet: SHA-256 $fpr, valid until $end"
+  echo "1. On each core, keeping the old one: cell_issuers = root,$old,$fpr"
+  echo "   and make cell_ca the bundle of the root and this certificate, then restart oc-core. Its copy: $(ls -t "$root_dir"/issued/cell-ca-*.crt | head -1)"
+  echo "2. Then: deploy/oc-portal-cell-ca install $guest"
+fi

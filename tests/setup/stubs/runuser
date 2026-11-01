@@ -1,0 +1,6 @@
+#!/bin/bash
+# A stub of runuser: logs who, then runs it as this user.
+echo "runuser $*" >> "$OC_STUB_LOG"
+[ "$1" = -u ] && [ "$3" = -- ] || exit 9
+shift 3
+exec "$@"

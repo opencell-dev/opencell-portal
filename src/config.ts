@@ -31,6 +31,12 @@ const envSchema = z
     // The route delegate's private key (OCSS spec §5.4), which signs new NPAs
     // for the weekly refresh: a path, or (no '/') a systemd credential.
     OC_ROUTE_DELEGATE_KEY: z.string().min(1).optional(),
+    // The online cell intermediate (portal spec §8.3): its certificate and key,
+    // paths or (no '/') systemd credentials. Unset: no certificates are issued.
+    OC_CELL_CA_CERT: z.string().min(1).optional(),
+    OC_CELL_CA_KEY: z.string().min(1).optional(),
+    // Where published oc-cell source releases live (oc-portal-admin cell-release).
+    OC_RELEASE_DIR: z.string().min(1).default('./data/releases'),
     // OC_CORE=fake only (NOC design §10): how many fake cores (fake, fake2, …)
     // and whether each starts with the demo network. Never in production,
     // which runs OC_CORE=tls: either one with tls is a configuration error.
@@ -65,6 +71,9 @@ const envSchema = z
         if (env[k] !== undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is for the fake core only (OC_CORE=fake)` });
       }
     }
+    if ((env.OC_CELL_CA_CERT === undefined) !== (env.OC_CELL_CA_KEY === undefined)) {
+      ctx.addIssue({ code: 'custom', path: ['OC_CELL_CA_KEY'], message: 'OC_CELL_CA_CERT and OC_CELL_CA_KEY go together' });
+    }
     if (env.OC_MAIL === 'smtp') {
       for (const k of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_TOKEN'] as const) {
         if (!env[k]) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when OC_MAIL=smtp` });
@@ -84,6 +93,8 @@ export interface CoreEndpoint {
   ca: string;
   cert: string;
   key: string;
+  /** Where its cells dial it (OC_CORE_<ID>_CELLS, HOST:PORT); absent: this core takes no cells (plan P3, decision 8). */
+  cellAddr?: string;
 }
 
 const CORE_ID = /^[a-z][a-z0-9]{0,15}$/;
@@ -91,11 +102,22 @@ const CORE_ID = /^[a-z][a-z0-9]{0,15}$/;
 // unlisted core's key (OC_CORE_CORE_3_ADDR, OC_CORE_core3_ADDR) must still
 // be caught below, not silently ignored because it doesn't look like a
 // normal per-core key. Never matches OC_CORE_ADDR/OC_CORE_NAME themselves.
-const PER_CORE = /^OC_CORE_(.+)_(ADDR|NAME)$/i;
+const PER_CORE = /^OC_CORE_(.+)_(ADDR|NAME|CELLS)$/i;
 
-function endpoint(id: string, addr: string, servername: string, e: Env): CoreEndpoint {
+/** A core's cell address, checked: a bad one goes to `issues` and the core has none. */
+function cellsOf(id: string, env: Record<string, string | undefined>, issues: string[]): string | undefined {
+  const k = `OC_CORE_${id.toUpperCase()}_CELLS`;
+  const v = env[k];
+  if (v === undefined) return undefined;
+  if (addrOk(v)) return v;
+  issues.push(`${k}: ${k} is HOST:PORT, e.g. core1.opencell.k4ozi.com:47443`);
+  return undefined;
+}
+
+function endpoint(id: string, addr: string, servername: string, e: Env, cellAddr?: string): CoreEndpoint {
   const at = addr.lastIndexOf(':');
   return {
+    ...(cellAddr === undefined ? {} : { cellAddr }),
     id,
     host: addr.slice(0, at),
     port: Number(addr.slice(at + 1)),
@@ -117,6 +139,8 @@ function readCores(e: Env, env: Record<string, string | undefined>, issues: stri
   // A per-core key for a core not listed is a typo that would hide a core.
   for (const k of Object.keys(env).sort()) {
     const m = PER_CORE.exec(k);
+    // A single OC_CORE_ADDR core is core1, and its cell address has no other name.
+    if (!listed && e.OC_CORE === 'tls' && k === 'OC_CORE_CORE1_CELLS') continue;
     if (m && env[k] !== undefined && !listed?.some((id) => id.toUpperCase() === m[1])) {
       issues.push(`${k}: ${m[1].toLowerCase()} is not in OC_CORES`);
     }
@@ -125,7 +149,7 @@ function readCores(e: Env, env: Record<string, string | undefined>, issues: stri
     if (listed) issues.push('OC_CORES: several cores need OC_CORE=tls');
     return [];
   }
-  if (!listed) return [endpoint('core1', e.OC_CORE_ADDR!, e.OC_CORE_NAME ?? 'core1.opencell.k4ozi.com', e)];
+  if (!listed) return [endpoint('core1', e.OC_CORE_ADDR!, e.OC_CORE_NAME ?? 'core1.opencell.k4ozi.com', e, cellsOf('core1', env, issues))];
   for (const k of ['OC_CORE_ADDR', 'OC_CORE_NAME'] as const) {
     if (e[k] !== undefined) issues.push(`${k}: with OC_CORES, each core has its own OC_CORE_<ID>_ADDR and _NAME`);
   }
@@ -147,7 +171,8 @@ function readCores(e: Env, env: Record<string, string | undefined>, issues: stri
     const ok = addr !== undefined && addrOk(addr);
     if (!ok) issues.push(`${p}ADDR: ${p}ADDR is HOST:PORT, e.g. 10.99.0.2:7444`);
     if (!name) issues.push(`${p}NAME: ${p}NAME is required (the name ${id}'s certificate carries)`);
-    if (ok && name) out.push(endpoint(id, addr, name, e));
+    const cells = cellsOf(id, env, issues);
+    if (ok && name) out.push(endpoint(id, addr, name, e, cells));
   }
   return out;
 }
@@ -164,6 +189,12 @@ export type Config = {
   cores: CoreEndpoint[];
   /** Where the route delegate's key is, a path or a credential's name; absent: new NPAs are not signed. */
   routeDelegateKey?: string;
+  /** The online cell intermediate's files, paths or credentials' names; absent: no certificates are issued (plan P3, decision 28). */
+  cellCa?: { cert: string; key: string };
+  /** The OpenCell root's file (OC_CORE_CA): what a new cell gets as its `ca`. */
+  coreCa?: string;
+  /** The published oc-cell source releases (plan P3, decision 3). */
+  releaseDir: string;
   /** OC_CORE=fake: how many fake cores, and whether they start with the demo network (NOC design §10). */
   fake: { cores: number; demo: boolean };
   secureCookies: boolean;
@@ -196,6 +227,9 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     core: e.OC_CORE,
     cores,
     routeDelegateKey: e.OC_ROUTE_DELEGATE_KEY,
+    releaseDir: e.OC_RELEASE_DIR,
+    ...(e.OC_CORE_CA ? { coreCa: e.OC_CORE_CA } : {}),
+    ...(e.OC_CELL_CA_CERT && e.OC_CELL_CA_KEY ? { cellCa: { cert: e.OC_CELL_CA_CERT, key: e.OC_CELL_CA_KEY } } : {}),
     fake: { cores: e.OC_FAKE_CORES ?? 1, demo: e.OC_FAKE_DEMO === '1' },
     secureCookies: secure,
     sessionCookie: secure ? '__Host-oc_session' : 'oc_session',

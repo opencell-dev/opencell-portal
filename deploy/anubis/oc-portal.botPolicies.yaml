@@ -63,7 +63,18 @@ bots:
         - path in ["/", "/coverage", "/operator-agreement"]
         - '!path.matches("/\\.\\.?(/|$)")'
 
-  # 5. The links the portal emails (/auth/email/<token>): the page and its
+  # 5. A base station's setup (portal spec §6.3): curl on a Raspberry Pi can't
+  #    do a proof of work. The script and the source tarball (GET), and the CSR
+  #    (POST, the one POST let through unchallenged, never a server action). The
+  #    token in the path is the bearer, and the routes check it; exact paths only.
+  - name: cell-setup
+    action: ALLOW
+    expression:
+      all:
+        - '((method == "GET" || method == "HEAD") && path.matches("^/setup/[A-Za-z0-9_-]{43}(/oc-cell\\.tgz)?$")) || (method == "POST" && path.matches("^/setup/[A-Za-z0-9_-]{43}/csr$") && !("Next-Action" in headers))'
+        - '!path.matches("/\\.\\.?(/|$)")'
+
+  # 6. The links the portal emails (/auth/email/<token>): the page and its
   #    Confirm button's POST. The no-JavaScript challenge, so a link opened
   #    in a mail client's browser or with scripts off still works: the page
   #    refreshes itself after 2 s. (The page only shows a button; the token
@@ -75,7 +86,7 @@ bots:
       algorithm: metarefresh
       difficulty: 1 # seconds to wait (the page refreshes after difficulty + 1)
 
-  # 6. Everything else, every method: /sign-in, /sign-up, /welcome, the
+  # 7. Everything else, every method: /sign-in, /sign-up, /welcome, the
   #    signed-in pages (/numbers, /calls, /directory, /nodes, /account,
   #    /admin/...), their server-action POSTs, /api/altcha, POSTs to the
   #    public pages, and any path not listed above (scanners' /wp-login.php

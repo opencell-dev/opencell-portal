@@ -1,0 +1,3 @@
+#!/bin/bash
+# A stub of uname: a Pi, unless the test says otherwise.
+echo "${OC_STUB_ARCH:-aarch64}"

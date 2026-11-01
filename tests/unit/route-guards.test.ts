@@ -204,6 +204,40 @@ describe('route guards', () => {
     expect(r.functions).toBeGreaterThanOrEqual(5);
   });
 
+  it('every node action checks for a signed-in user first (portal P3)', () => {
+    const r = actionProblems(readFileSync(join(ACTIONS, 'nodes.ts'), 'utf8'), ['requireUser'], 'nodes.ts');
+    expect(r.problems).toEqual([]);
+    expect(r.functions).toBeGreaterThanOrEqual(10);
+  });
+
+  it('every P3 page exists and is guarded: the operator pages by requireUser, the admin pages by requireAdmin', () => {
+    const user = ['nodes/page.tsx', 'nodes/agreement/page.tsx', 'nodes/request/page.tsx', 'nodes/requests/[id]/page.tsx', 'nodes/[id]/page.tsx'];
+    for (const p of user) expect(pageProblems(readFileSync(join(APP, p), 'utf8'), ['requireUser'], p)).toEqual([]);
+    const admin = ['admin/requests/page.tsx', 'admin/requests/[id]/page.tsx', 'admin/cells/page.tsx', 'admin/numbers/page.tsx', 'admin/calls/page.tsx', 'admin/audit/page.tsx', 'admin/agreement/page.tsx', 'admin/users/[id]/page.tsx'];
+    for (const p of admin) expect(pageProblems(readFileSync(join(APP, p), 'utf8'), ['requireAdmin'], p)).toEqual([]);
+  });
+
+  // The sensitive ones (portal spec §3; plan P3's Global Constraints): a fresh
+  // passkey first, in the action itself, and no other guard does.
+  it.each([
+    ['admin-nodes.ts', { approveAction: 'freshAdmin', declineAction: 'requireAdmin', askAction: 'requireAdmin' }],
+    ['admin-subscribers.ts', { disableAccountAction: 'freshAdmin', enableAccountAction: 'freshAdmin', numberDisabledAction: 'freshAdmin' }],
+    ['admin-cells.ts', { revokeCellAction: 'freshAdmin' }],
+    ['admin-blocks.ts', { npaOverrideAction: 'freshAdmin' }],
+  ] as [string, Record<string, string>][])('pins the exact guard of each export in %s', (file, want) => {
+    const src = readFileSync(join(ACTIONS, file), 'utf8');
+    const sf = parse(src, file);
+    const imported = requestImports(sf);
+    const seen: string[] = [];
+    for (const st of sf.statements) {
+      if (!ts.isFunctionDeclaration(st) || !st.name || !hasModifier(st, ts.SyntaxKind.ExportKeyword)) continue;
+      seen.push(st.name.text);
+      expect(Object.keys(want), `${st.name.text} needs a pinned guard here`).toContain(st.name.text);
+      expect(bodyProblem(st.body, [want[st.name.text]], imported), st.name.text).toBeUndefined();
+    }
+    expect(seen.sort()).toEqual(Object.keys(want).sort());
+  });
+
   it('every account action checks for a signed-in user first', () => {
     const r = actionProblems(readFileSync(join(ACTIONS, 'account.ts'), 'utf8'), ['requireUser'], 'account.ts');
     expect(r.problems).toEqual([]);

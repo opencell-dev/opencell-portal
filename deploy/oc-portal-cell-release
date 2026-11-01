@@ -1,0 +1,60 @@
+#!/bin/bash
+# Publish an opencell-pi tag for node setup (plan P3, decisions 3 and 4), from the
+# laptop:
+#   deploy/oc-portal-cell-release REPO_DIR TAG GUEST
+# Packs REPO_DIR's tagged tree with every submodule, exactly as tools/deploy/oc-deploy
+# in opencell-core packs it (`pack`, copied here), and hands it to the guest:
+# oc-portal-admin cell-release checks it and pins its SHA-256 in the setup script.
+# The tag must have oc-cell's TLS link (opencell-pi v0.2.0 or newer).
+#
+# GUEST is an SSH alias from OC_SSH_CONFIG (default ~/.ssh/cm/oc-portal.conf).
+# OC_CELL_RELEASE_OUT=FILE: only pack, to FILE (tests, or a look at what it holds).
+set -euo pipefail
+
+TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+$'
+
+die() {
+  echo "oc-portal-cell-release: $*" >&2
+  exit 1
+}
+
+[ $# -eq 3 ] || { echo "usage: oc-portal-cell-release REPO_DIR TAG GUEST" >&2; exit 2; }
+repo=$1
+tag=$2
+guest=$3
+[[ $tag =~ $TAG_RE ]] || die "'$tag': a release's tag is vX.Y.Z"
+[[ $guest =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "'$guest': GUEST is an SSH host alias"
+[ -d "$repo" ] || die "$repo: no such directory"
+repo=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || die "$repo is not in a git work tree"
+ref="refs/tags/$tag"
+git -C "$repo" rev-parse -q --verify "$ref^{commit}" >/dev/null || die "$repo has no tag $tag"
+git -C "$repo" cat-file -e "$ref:oc-cell/occ_main.c" 2>/dev/null || die "$repo at $tag is not opencell-pi"
+git -C "$repo" cat-file -e "$ref:dist/systemd/oc-cell.service" 2>/dev/null || die "$tag has no dist/systemd/oc-cell.service"
+
+# oc-deploy's pack(): the tree at REV, then each submodule it pins, at its pin.
+pack() { # REPO REV DEST PREFIX
+  local repo=$1 rev=$2 dest=$3 prefix=$4 type sha path
+  mkdir -p -- "$dest/$prefix"
+  git -C "$repo" archive --format=tar "$rev" | tar -x -C "$dest/$prefix"
+  while IFS=$' \t' read -r -d '' _ type sha path; do
+    [ "$type" = commit ] || continue
+    [ -e "$repo/$path/.git" ] || die "$repo/$path: submodule not checked out (git submodule update --init --recursive)"
+    git -C "$repo/$path" cat-file -e "$sha^{commit}" 2>/dev/null ||
+      die "$repo/$path lacks $sha, which $rev pins (git -C $repo submodule update --init --recursive)"
+    pack "$repo/$path" "$sha" "$dest" "$prefix$path/"
+  done < <(git -C "$repo" ls-tree -r -z "$rev")
+}
+
+TMP=$(mktemp -d)
+trap 'rm -rf -- "$TMP"' EXIT
+pack "$repo" "$ref^{commit}" "$TMP/tree" ""
+out=${OC_CELL_RELEASE_OUT:-$TMP/oc-cell-$tag.tgz}
+tar -czf "$out" -C "$TMP/tree" .
+echo "oc-cell $tag: $(du -h "$out" | cut -f1), SHA-256 $(sha256sum "$out" | cut -d' ' -f1)"
+[ -z "${OC_CELL_RELEASE_OUT:-}" ] || exit 0
+
+cfg=${OC_SSH_CONFIG:-$HOME/.ssh/cm/oc-portal.conf}
+remote="/tmp/oc-cell-$tag.tgz"
+scp -q -F "$cfg" "$out" "$guest:$remote"
+# As the service user, oc-portal-admin must be able to read it.
+ssh -F "$cfg" "$guest" "if [ \"\$(id -u)\" -eq 0 ]; then s=; else s='sudo -n'; fi; chmod 0644 '$remote' && \$s oc-portal-admin cell-release '$remote' '$tag'; rc=\$?; rm -f '$remote'; exit \$rc"

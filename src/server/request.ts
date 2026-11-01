@@ -1,7 +1,7 @@
 import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import { appCtx } from '@/lib/ctx';
-import { canUseAdmin, canUseNoc, isFresh, type RequestMeta, sessionFromToken } from '@/lib/sessions';
+import { canUseAdmin, canUseNoc, isFresh, type RequestMeta, sessionFromToken, wasEndedByDisable } from '@/lib/sessions';
 import { isAdmin, isStaff } from '@/lib/users';
 
 // Request-level helpers for pages and server actions. Every page and every
@@ -39,7 +39,7 @@ export async function currentSession() {
 /** The signed-in account, or a redirect to sign-in. */
 export async function requireUser() {
   const s = await currentSession();
-  if (!s) redirect('/sign-in');
+  if (!s) redirect(wasEndedByDisable(await sessionToken()) ? '/sign-in?disabled=1' : '/sign-in');
   return s;
 }
 

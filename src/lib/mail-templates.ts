@@ -105,3 +105,124 @@ export function limitDecisionMail(name: string, raised: boolean, limit: number, 
         `${note ? `\n\n${note}` : ''}${sig(origin)}`,
   };
 }
+
+// ---- Portal P3: nodes. A contact phone and an exact pin never go in a mail (spec §10). ----
+
+export function nodeRequestMail(adminName: string, who: string, siteName: string, region: string, link: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: a subscriber asks to host a base station',
+    text: `Hello ${adminName},\n\n${who} asks to host a base station: ${siteName} (${region}).\n\nReview it: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeReplyMail(adminName: string, who: string, siteName: string, link: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: a reply about a base station request',
+    text: `Hello ${adminName},\n\n${who} answered your question about ${siteName}.\n\nRead it: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeQuestionMail(name: string, siteName: string, question: string, link: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: a question about your base station request',
+    text: `Hello ${name},\n\nAn OpenCell admin has a question about your request for ${siteName}:\n\n${question}\n\nAnswer it in the portal: ${link}${sig(origin)}`,
+  };
+}
+
+const NO_RELEASE_YET = 'Setup opens when the cell software is published: your node page will offer the command then.';
+
+export function nodeApprovedMail(name: string, siteName: string, command: string | null, expiresAt: number | null, link: string, origin: string): Template {
+  const setup =
+    command !== null && expiresAt !== null
+      ? `Set it up with one command on the Raspberry Pi, with the W12 board on USB. It works once, until ${utc(expiresAt)}:\n\n${command}\n\nOpen the address in a browser first if you want to read the script. ` +
+        `Anyone with this command can set up your node, so don't forward this message. Your node page can make a new one if it runs out.`
+      : NO_RELEASE_YET;
+  return {
+    subject: `OpenCell: your base station ${siteName} is approved`,
+    text: `Hello ${name},\n\nYour base station ${siteName} is approved. Thank you for hosting it.\n\n${setup}\n\nYour node: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeDeclinedMail(name: string, siteName: string, note: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: your base station request',
+    text: `Hello ${name},\n\nWe can't approve your request for ${siteName} right now:\n\n${note}\n\nYou can answer by writing to opencell@k4ozi.com.${sig(origin)}`,
+  };
+}
+
+export function nodeCertMail(name: string, siteName: string, expiresAt: number, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: a new certificate for ${siteName}`,
+    text:
+      `Hello ${name},\n\nYour base station ${siteName} has a new certificate, valid until ${utc(expiresAt)}. ` +
+      `The node's old certificate, if it had one, no longer works.\n\nIf you didn't run the setup command, tell us at once: opencell@k4ozi.com.\n\nYour node: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeRetireMail(adminName: string, who: string, nodeId: number, siteName: string, note: string, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: an operator is retiring node ${nodeId}`,
+    text: `Hello ${adminName},\n\n${who} is retiring node ${nodeId} (${siteName}):\n\n${note}\n\nRevoke its cell when it is time: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeOfflineMail(name: string, siteName: string, since: number, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: your base station ${siteName} is offline`,
+    text:
+      `Hello ${name},\n\nYour base station ${siteName} has been offline since ${utc(since)}. Everyone it serves has lost service.\n\n` +
+      `Please check its power, its internet connection and its board. If this is planned, post a downtime notice, or mute its alerts: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeBackMail(name: string, siteName: string, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: your base station ${siteName} is back`,
+    text: `Hello ${name},\n\nYour base station ${siteName} is back online. Thank you.\n\nYour node: ${link}${sig(origin)}`,
+  };
+}
+
+export function offlineDigestMail(adminName: string, rows: { nodeId: number; siteName: string; coreId: string; cellId: number; since: number | null; operator: string | null }[], link: string, origin: string): Template {
+  const lines = rows.map((r) => `- Node ${r.nodeId} (${r.siteName}), cell ${r.cellId} on ${r.coreId}, offline since ${r.since === null ? 'unknown' : utc(r.since)}, operator ${r.operator ?? 'none'}`);
+  return {
+    subject: `OpenCell: ${rows.length} base station${rows.length === 1 ? ' is' : 's are'} offline`,
+    text: `Hello ${adminName},\n\nOffline this morning:\n\n${lines.join('\n')}\n\nCells: ${link}${sig(origin)}`,
+  };
+}
+
+export function cellCaExpiringMail(adminName: string, notAfter: number, origin: string): Template {
+  return {
+    subject: 'OpenCell: the cell intermediate CA is about to expire',
+    text:
+      `Hello ${adminName},\n\nThe portal's cell intermediate CA ends at ${utc(notAfter)}; after that no node can get a certificate. ` +
+      `Renew it on the laptop: deploy/oc-portal-cell-ca renew oc-portal, and follow what it prints.${sig(origin)}`,
+  };
+}
+
+export function accountDisabledMail(name: string, origin: string): Template {
+  return {
+    subject: 'Your OpenCell account has been disabled',
+    text: `Hello ${name},\n\nAn OpenCell admin has disabled your account, and its numbers with it. If you think this is a mistake, write to opencell@k4ozi.com.${sig(origin)}`,
+  };
+}
+
+export function accountEnabledMail(name: string, origin: string): Template {
+  return {
+    subject: 'Your OpenCell account has been enabled',
+    text: `Hello ${name},\n\nYour OpenCell account works again, and its numbers with it. Sign in: ${origin}/sign-in${sig(origin)}`,
+  };
+}
+
+export function nodeOrphanMail(adminName: string, nodeId: number, siteName: string, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: Node ${nodeId} has no operator`,
+    text: `Hello ${adminName},\n\nThe account that hosted node ${nodeId} (${siteName}) has been deleted. The node keeps serving; its site details are on the Cells page: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeRevokedMail(name: string, siteName: string, origin: string): Template {
+  return {
+    subject: `OpenCell: your base station ${siteName} has been revoked`,
+    text: `Hello ${name},\n\nAn OpenCell admin has revoked your base station ${siteName}: it can no longer connect to the network. If you think this is a mistake, write to opencell@k4ozi.com.${sig(origin)}`,
+  };
+}

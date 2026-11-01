@@ -26,7 +26,7 @@ const rewrittenTo = (res: Response) => res.headers.get('x-middleware-rewrite');
 const HTTP_NOT_FOUND = `http://noc.portal.test${SITE_NOT_FOUND}`;
 
 describe('proxy on the NOC site', () => {
-  it.each(['/numbers', '/calls', '/directory', '/nodes', '/welcome', '/sign-up', '/coverage', '/operator-agreement', '/api/altcha'])(
+  it.each(['/numbers', '/calls', '/directory', '/nodes', '/nodes/request', '/setup/abc', '/admin/requests', '/admin/cells', '/admin/numbers', '/admin/calls', '/admin/audit', '/admin/agreement', '/admin/limits', '/welcome', '/sign-up', '/coverage', '/operator-agreement', '/api/altcha'])(
     'shows the 404 page for the subscriber page %s',
     async (path) => {
       const res = await proxy(req('GET', path));

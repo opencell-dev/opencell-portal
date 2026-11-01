@@ -1,11 +1,11 @@
 import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import { z } from 'zod';
-import { audit, challenges, emailTokens, rateEvents, sessions, userRoles, users } from '@/db/schema';
+import { audit, challenges, emailTokens, nodes, rateEvents, sessions, userRoles, users } from '@/db/schema';
 import { writeAudit } from '@/lib/audit';
 import { errorKind } from '@/lib/errors';
 import { checkCaptcha } from '@/lib/captcha';
 import type { Ctx } from '@/lib/ctx';
-import { emailChangedNotice, emailChangeMail, magicLinkMail, type Template, verifyMail } from '@/lib/mail-templates';
+import { emailChangedNotice, emailChangeMail, magicLinkMail, nodeOrphanMail, type Template, verifyMail } from '@/lib/mail-templates';
 import { syncDue } from '@/lib/numbers/ownership';
 import { coreFor } from '@/lib/numbers/route';
 import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
@@ -13,7 +13,7 @@ import { hit, hitIp, longestWindowMs, rateKey } from '@/lib/ratelimit';
 import { createSession, type RequestMeta } from '@/lib/sessions';
 import { coreActor } from '@/lib/site';
 import { hashToken, newToken } from '@/lib/tokens';
-import { findUserByEmail, getUser, isLastAdmin, STAFF_ONLY, siteAdmits } from '@/lib/users';
+import { ACCOUNT_DISABLED, adminContacts, findUserByEmail, getUser, isLastAdmin, STAFF_ONLY, siteAdmits } from '@/lib/users';
 import { emailSchema, firstError, nameSchema } from '@/lib/validation';
 
 export type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
@@ -132,6 +132,8 @@ export async function signUp(
   }
 
   const existing = findUserByEmail(ctx, email);
+  // A disabled account gets no link (and the same answer): the link would open nothing.
+  if (existing?.disabledAt) return { ok: true };
   if (existing?.emailVerifiedAt) {
     mail(ctx, email, magicLinkMail(existing.name, linkFor(ctx, issueEmailToken(ctx, existing.id, 'magic')), ctx.config.origin, ctx.config.site));
     return { ok: true };
@@ -158,7 +160,7 @@ export async function requestMagicLink(ctx: Ctx, input: { email: unknown }, meta
   const lim = hit(ctx, 'magic_email', email);
   if (!lim.ok) return { ok: false, error: lim.message };
   const u = findUserByEmail(ctx, email);
-  if (!u) return { ok: true };
+  if (!u || u.disabledAt !== null) return { ok: true };
   // M5 (final review): an account this site would refuse at sign-in anyway
   // (a passkey, no staff role) gets no mail either — the token would only
   // be used up for a STAFF_ONLY refusal. The answer is the same either way,
@@ -213,6 +215,7 @@ export async function consumeEmailToken(
   if (claimed.changes !== 1) return { ok: false, error: TOKEN_ERRORS.used };
   const u = getUser(ctx, row.userId);
   if (!u) return { ok: false, error: TOKEN_ERRORS.unknown };
+  if (u.disabledAt !== null) return { ok: false, error: ACCOUNT_DISABLED };
   // The NOC's site signs in staff only, and an added account until its first passkey (NOC design §N1.5).
   if (!siteAdmits(ctx, u.id)) return { ok: false, error: STAFF_ONLY };
 
@@ -347,13 +350,15 @@ export async function deleteAccount(
     else if (choices[n.number] === 'disable') counts.disabled++;
     else counts.kept++;
   }
+  // Its nodes stay: the cells keep serving (plan P3, decision 23). Admins are told after the delete.
+  const hosted = ctx.db.select({ id: nodes.id, siteName: nodes.siteName }).from(nodes).where(and(eq(nodes.userId, userId), isNull(nodes.revokedAt))).all();
   // The last-admin guard is re-checked here, right after the last `await`
   // above, and the actual delete runs in the same transaction as that check:
   // nothing async happens between them, so a role change racing the core
   // calls (another admin demoted while this request was in flight) can't
   // slip past the guard.
   const result = ctx.db.transaction((tx) => {
-    const admins = tx.select({ userId: userRoles.userId }).from(userRoles).where(eq(userRoles.role, 'admin')).all();
+    const admins = tx.select({ userId: userRoles.userId }).from(userRoles).innerJoin(users, eq(users.id, userRoles.userId)).where(and(eq(userRoles.role, 'admin'), isNull(users.disabledAt))).all();
     if (admins.length <= 1 && admins.some((a) => a.userId === userId)) return lastAdminError;
     // No trace of the address should survive: rate-limit rows are keyed by a
     // hash of it, and past audit rows carry the IP the account acted from.
@@ -363,7 +368,7 @@ export async function deleteAccount(
           rateKey(ctx, 'signup_email', u.email),
           rateKey(ctx, 'magic_email', u.email),
           rateKey(ctx, 'email_change_user', String(userId)),
-          ...(['number_account', 'number_browse', 'number_reissue', 'calls_account', 'places_account', 'limit_request_account', 'qr_mail_account'] as const).map((n) =>
+          ...(['number_account', 'number_browse', 'number_reissue', 'calls_account', 'places_account', 'limit_request_account', 'qr_mail_account', 'node_request', 'node_message'] as const).map((n) =>
             rateKey(ctx, n, String(userId)),
           ),
         ]),
@@ -375,5 +380,10 @@ export async function deleteAccount(
   });
   if (!result.ok) return result;
   writeAudit(ctx, { actorId: userId, action: 'account.delete', target: `user:${userId}`, detail: { numbers: counts } });
+  for (const n of hosted) {
+    for (const a of adminContacts(ctx)) {
+      mail(ctx, a.email, nodeOrphanMail(a.name, n.id, n.siteName, `${ctx.config.origin}/admin/cells`, ctx.config.origin));
+    }
+  }
   return { ok: true };
 }

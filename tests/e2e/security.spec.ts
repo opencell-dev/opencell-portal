@@ -57,6 +57,16 @@ test('state-changing requests from another origin, or with none, are refused', a
   expect(none.status()).toBe(403);
 });
 
+test('every P3 page and the CSR route refuse a foreign Origin, and a CSR post with none (a server action posted anywhere)', async ({ request }) => {
+  const token = 'A'.repeat(43);
+  for (const path of ['/nodes', '/nodes/request', '/nodes/agreement', '/nodes/1', '/nodes/requests/1', '/admin/requests', '/admin/requests/1', '/admin/cells', '/admin/numbers', '/admin/calls', '/admin/audit', '/admin/agreement', '/admin/users/1', `/setup/${token}/csr`]) {
+    const evil = await request.post(path, { headers: { Origin: 'https://evil.example', 'Next-Action': 'abc' }, data: 'x' });
+    expect(evil.status(), path).toBe(403);
+  }
+  const none = await request.post(`/setup/${token}/csr`, { data: 'x' });
+  expect(none.status()).toBe(403);
+});
+
 test('a real same-origin form POST is accepted with no client JavaScript at all (the origin check does not block real browsers)', async ({
   page,
   browser,

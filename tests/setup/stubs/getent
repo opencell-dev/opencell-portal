@@ -1,0 +1,4 @@
+#!/bin/bash
+# A stub of getent: no oc-cell user yet.
+echo "getent $*" >> "$OC_STUB_LOG"
+exit 2

@@ -51,7 +51,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: `rm -rf ${E2E_DIR} ${E2E_NOC_DIR} ${E2E_PROTO_DIR} ${E2E_PROTO_LOG} ${E2E_NOC_PROTO_DIR} ${E2E_NOC_PROTO_LOG} && npm run build && node server.mjs`,
+      command: `rm -rf ${E2E_DIR} ${E2E_NOC_DIR} ${E2E_PROTO_DIR} ${E2E_PROTO_LOG} ${E2E_NOC_PROTO_DIR} ${E2E_NOC_PROTO_LOG} && bash tests/e2e/make-cell-pki.sh ${E2E_DIR}/pki && npm run build && node server.mjs`,
       url: `http://localhost:${E2E_PORT}/healthz`,
       reuseExistingServer: false,
       timeout: 300_000,
@@ -63,6 +63,11 @@ export default defineConfig({
         OC_SECRET: 'e2e-secret-e2e-secret-e2e-secret-0000',
         OC_DB_PATH: `${E2E_DIR}/portal.db`,
         OC_MAIL_OUTBOX: `${E2E_DIR}/outbox`,
+        // Plan P3: the portal's online intermediate and what a cell gets as its root (tests/e2e/nodes.spec.ts).
+        OC_CELL_CA_CERT: `${E2E_DIR}/pki/ica.crt`,
+        OC_CELL_CA_KEY: `${E2E_DIR}/pki/ica.key`,
+        OC_CORE_CA: `${E2E_DIR}/pki/root.crt`,
+        OC_RELEASE_DIR: `${E2E_DIR}/releases`,
       },
     },
     {

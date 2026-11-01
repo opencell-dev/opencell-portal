@@ -411,6 +411,21 @@ elif [ -e "\$rd_dropin" ]; then
   rm -f "\$rd_dropin"
   systemctl daemon-reload
 fi
+# The cell intermediate (portal plan P3): the portal's credentials when both of
+# its files are on this guest, and gone with them: a LoadCredential of a missing
+# file would fail the portal. Runbook: deploy/oc-portal-cell-ca.conf. Releases: the
+# oc-cell source a node's setup downloads (oc-portal-admin cell-release).
+cc_dropin="\$ROOT/etc/systemd/system/oc-portal.service.d/cell-ca.conf"
+if [ -f "\$ROOT/etc/opencell/tls/cell-ca.crt" ] && [ -f "\$ROOT/etc/opencell/tls/cell-ca.key" ] && [ -f "\$rel/deploy/oc-portal-cell-ca.conf" ]; then
+  install -D -m 0644 "\$rel/deploy/oc-portal-cell-ca.conf" "\$cc_dropin"
+  systemctl daemon-reload
+elif [ -e "\$cc_dropin" ]; then
+  rm -f "\$cc_dropin"
+  systemctl daemon-reload
+fi
+mkdir -p "\$ROOT/var/lib/oc-portal/releases"
+chmod 0755 "\$ROOT/var/lib/oc-portal/releases"
+chown oc-portal:oc-portal "\$ROOT/var/lib/oc-portal/releases"
 if [ -f "\$ROOT/var/lib/oc-portal/portal.db" ]; then
   runuser -u oc-portal -- sqlite3 "\$ROOT/var/lib/oc-portal/portal.db" ".backup '\$ROOT/var/lib/oc-portal/backups/pre-\$tag-\$(date -u +%Y%m%dT%H%M%SZ).db'"
   find "\$ROOT/var/lib/oc-portal/backups" -maxdepth 1 -type f -name 'pre-*.db' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +11 | cut -d' ' -f2- | xargs -r rm -f

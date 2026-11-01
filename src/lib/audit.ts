@@ -1,4 +1,4 @@
-import { and, asc, desc, gte, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, lt, lte } from 'drizzle-orm';
 import { audit } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 
@@ -40,4 +40,31 @@ export function auditBetween(ctx: Ctx, from: number, to: number, limit = 2000): 
     .orderBy(asc(audit.at), asc(audit.id))
     .limit(limit)
     .all();
+}
+
+export interface AuditFilter {
+  action?: string;
+  actor?: number;
+  target?: string;
+  /** Rows older than this id (the `next` of the page before). */
+  before?: number;
+}
+
+/** One page of the portal's audit, newest first, for /admin/audit. */
+export function auditPage(ctx: Ctx, f: AuditFilter, limit = 100): { rows: AuditRow[]; next: number | null } {
+  const rows = ctx.db
+    .select()
+    .from(audit)
+    .where(
+      and(
+        f.action ? eq(audit.action, f.action) : undefined,
+        f.actor !== undefined ? eq(audit.actorId, f.actor) : undefined,
+        f.target ? eq(audit.target, f.target) : undefined,
+        f.before !== undefined ? lt(audit.id, f.before) : undefined,
+      ),
+    )
+    .orderBy(desc(audit.id))
+    .limit(limit + 1)
+    .all();
+  return { rows: rows.slice(0, limit), next: rows.length > limit ? rows[limit - 1].id : null };
 }

@@ -32,7 +32,7 @@ export function testCtx(env: Record<string, string> = {}): TestCtx {
     mailer,
     mailQueue: createMailQueue(mailer),
     core,
-    cores: [{ id: 'fake', where: 'in-process', coreNo: 1, core }],
+    cores: [{ id: 'fake', where: 'in-process', coreNo: 1, cellAddr: 'cells.fake.invalid:7443', core }],
     now,
     clock,
   };

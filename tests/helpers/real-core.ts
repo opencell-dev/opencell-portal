@@ -109,9 +109,11 @@ export interface RealCoreOptions {
   extra?: string[];
   /** A signed table instead of `block =` lines (makeRouteTable); `block` then only names the echo's block. */
   table?: RouteTable;
+  /** Plan P3: the TLS cell listener on a free port, with the core's own certificate and the test root as cell_ca. */
+  cellListen?: boolean;
 }
 
-export type RealCore = ContractCore & { adminSocket: string; cellSocket: string; port: number; pid: number; log: () => string };
+export type RealCore = ContractCore & { adminSocket: string; cellSocket: string; port: number; pid: number; log: () => string; cellPort?: number };
 
 /**
  * oc-core on 127.0.0.1 with its admin API on, in a temp directory: the
@@ -134,6 +136,7 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
   writeFileSync(join(t, 'master.key'), randomBytes(32));
   chmodSync(join(t, 'master.key'), 0o400);
   const port = await freePort();
+  const cellPort = opts.cellListen ? await freePort() : undefined;
   writeFileSync(
     join(t, 'oc-core.conf'),
     [
@@ -151,6 +154,7 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
       `api_key = ${key}`,
       `api_ca = ${pki.caCrt}`,
       `api_portal_fpr = ${pki.portalFpr}`,
+      ...(cellPort ? [`cell_listen = 127.0.0.1:${cellPort}`, `cell_cert = ${crt}`, `cell_key = ${key}`, `cell_ca = ${pki.caCrt}`] : []),
       ...(opts.extra ?? []),
       '',
     ].join('\n'),
@@ -201,5 +205,5 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
       await new Promise((r) => setTimeout(r, 100));
     }
   }
-  return { core, done, log, port, pid: proc.pid!, adminSocket: join(t, 'admin.sock'), cellSocket: join(t, 'core.sock') };
+  return { core, done, log, port, pid: proc.pid!, adminSocket: join(t, 'admin.sock'), cellSocket: join(t, 'core.sock'), ...(cellPort ? { cellPort } : {}) };
 }

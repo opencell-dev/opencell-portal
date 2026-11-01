@@ -4,6 +4,7 @@ import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simp
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { consumeEmailToken, requestMagicLink, signUp } from '@/lib/accounts';
+import { postSignInPath } from '@/lib/agreement';
 import { appCtx } from '@/lib/ctx';
 import { publicMessage } from '@/lib/errors';
 import {
@@ -16,7 +17,7 @@ import {
   signInOptions,
 } from '@/lib/passkeys';
 import { SESSION_MS } from '@/lib/sessions';
-import { ADMIN_SESSION_MS, isStaff, STAFF_ONLY } from '@/lib/users';
+import { ACCOUNT_DISABLED, ADMIN_SESSION_MS, isStaff, STAFF_ONLY } from '@/lib/users';
 import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
 import { currentSession, requestMeta, requireUser, setSessionCookie } from '@/server/request';
 
@@ -73,6 +74,7 @@ export async function confirmEmailLinkAction(token: string): Promise<void> {
   const r = await consumeEmailToken(appCtx(), z.string().max(64).parse(token), await requestMeta());
   if (!r.ok) {
     if (r.error === STAFF_ONLY) redirect('/sign-in?staff=1');
+    if (r.error === ACCOUNT_DISABLED) redirect('/sign-in?disabled=1');
     // A second press (double click, or a retry after the first went through)
     // finds the link used; if this browser is already signed in, carry on.
     if (await currentSession()) redirect(nocSite ? '/account' : '/numbers');
@@ -82,18 +84,19 @@ export async function confirmEmailLinkAction(token: string): Promise<void> {
   if (r.purpose === 'email_change') redirect('/account?email=changed');
   if (nocSite) redirect('/account');
   if (r.purpose === 'verify') redirect('/welcome');
-  redirect('/numbers');
+  redirect(postSignInPath(appCtx(), r.userId, '/numbers'));
 }
 
 export async function passkeySignInStart() {
   return signInOptions(appCtx(), await requestMeta());
 }
 
-export async function passkeySignInFinish(id: string, response: AuthenticationResponseJSON) {
+/** `next`: where the page means to go; the answer says where to go, which is the agreement first when it is due (spec §6.4). */
+export async function passkeySignInFinish(id: string, response: AuthenticationResponseJSON, next = '/numbers') {
   const r = await finishSignIn(appCtx(), challengeId.parse(id), asAssertion(response), await requestMeta());
   if (!r.ok) return { ok: false as const, error: r.error };
   await setSessionCookie(r.sessionToken, cookieExpiry(r.userId));
-  return { ok: true as const };
+  return { ok: true as const, path: postSignInPath(appCtx(), r.userId, z.string().max(512).parse(next)) };
 }
 
 /**

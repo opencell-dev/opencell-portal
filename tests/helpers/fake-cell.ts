@@ -1,4 +1,5 @@
 import { connect, type Socket } from 'node:net';
+import { connect as tlsConnect, type TLSSocket } from 'node:tls';
 import { FrameReader } from '@/core/wire';
 
 // A cell on a real oc-core's cell socket (network-core §6, a Unix socket):
@@ -86,20 +87,42 @@ export class FakeCell {
       sock.once('connect', () => resolve());
       sock.once('error', reject);
     });
-    const cell = new FakeCell(sock);
+    return new FakeCell(sock).sayHello(cellId);
+  }
+
+  /**
+   * The same over TLS, as oc-cell dials `core = HOST:PORT` (network-core §17):
+   * ALPN oc-cell/1, its certificate file (leaf + intermediate) and key. Rejects
+   * when the core refuses: at the handshake ("TLS …"), or at HELLO. In TLS 1.3 a
+   * client certificate is judged after the client's side of the handshake ends,
+   * so a refusal shows up as the link closing before the answer.
+   */
+  static async helloTls(opts: { host: string; port: number; servername: string; ca: string; cert: string; key: string }, cellId: number): Promise<FakeCell> {
+    const sock: TLSSocket = tlsConnect({ host: opts.host, port: opts.port, servername: opts.servername, ca: opts.ca, cert: opts.cert, key: opts.key, ALPNProtocols: ['oc-cell/1'], minVersion: 'TLSv1.3' });
+    await new Promise<void>((resolve, reject) => {
+      sock.once('secureConnect', () => resolve());
+      sock.once('error', (e) => reject(new Error(`TLS: ${e.message}`)));
+    });
+    return new FakeCell(sock).sayHello(cellId);
+  }
+
+  private async sayHello(cellId: number): Promise<FakeCell> {
     const answer = new Promise<number>((resolve) => {
-      cell.waiting = (t) => {
+      this.waiting = (t) => {
         if (t === HELLO_ACK || t === HELLO_NAK) resolve(t);
       };
     });
+    const gone = this.closed.then(() => 'closed' as const);
     const body = new Bytes().u8(PROTO).u32(cellId).u32(1).u32(0).u8(0).u8(1).u8(2);
-    sock.write(frame(HELLO, body));
-    if ((await answer) !== HELLO_ACK) {
-      sock.destroy();
+    this.sock.write(frame(HELLO, body));
+    const got = await Promise.race([answer, gone]);
+    if (got === 'closed') throw new Error(`cell ${cellId}: the core closed the link`);
+    if (got !== HELLO_ACK) {
+      this.sock.destroy();
       throw new Error(`cell ${cellId}: HELLO refused`);
     }
-    cell.waiting = undefined;
-    return cell;
+    this.waiting = undefined;
+    return this;
   }
 
   /** One whole CELL_STATUS (a single, last part). */

@@ -10,7 +10,8 @@ import { CORE_DIR, startRealCore } from '../helpers/real-core';
 coreContract('fake core', async () => ({ core: new FakeCore(), done: async () => {} }));
 
 describe.skipIf(!CORE_DIR)('against a real oc-core', () => {
-  coreContract('oc-core over TLS', () => startRealCore());
+  // cell.add is 20/h, burst 5 at a real core: the contract adds more cells than that in a moment.
+  coreContract('oc-core over TLS', () => startRealCore(CORE_DIR, { extra: ['api_rate = cell.add 3600 100', 'api_rate = cell.set_cert 3600 100'] }));
 
   it('audits each call with the portal account it was for', async () => {
     const c = await startRealCore();

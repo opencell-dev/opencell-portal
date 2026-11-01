@@ -157,6 +157,37 @@ export function coreContract(name: string, make: () => Promise<ContractCore>) {
 
     // ---- the NOC's operations (core v0.4.0, NOC design §7.1)
 
+    it('gives each new cell its own id, and refuses a name over 31 characters', async () => {
+      const a = await c.core.cellAdd(7, 'P3 a', 'part15', 0);
+      const b = await c.core.cellAdd(7, 'P3 b', 'part15', 0);
+      expect(b).not.toBe(a);
+      expect(await c.core.cellAdd(7, 'x'.repeat(31), 'part15', 0)).toBeGreaterThan(b);
+      await expect(c.core.cellAdd(7, 'x'.repeat(32), 'part15', 0)).rejects.toMatchObject({ code: 'invalid' });
+      await expect(c.core.cellAdd(7, '', 'part15', 0)).rejects.toMatchObject({ code: 'invalid' });
+    });
+
+    it('pins only a 64-hex fingerprint, shows it, and drops it on revoke; a second revoke resolves', async () => {
+      const id = await c.core.cellAdd(7, 'P3 pin', 'part15', 0);
+      for (const bad of ['', 'abc', 'A'.repeat(64), 'g'.repeat(64), 'a'.repeat(63), 'a'.repeat(65)]) {
+        await expect(c.core.cellSetCert(7, id, bad)).rejects.toMatchObject({ code: 'invalid' });
+      }
+      const fpr = 'c'.repeat(64);
+      await c.core.cellSetCert(7, id, fpr);
+      expect((await c.core.cellStatus(7, id))[0].certFpr).toBe(fpr);
+      const second = 'd'.repeat(64);
+      await c.core.cellSetCert(7, id, second);
+      expect((await c.core.cellStatus(7, id))[0].certFpr).toBe(second);
+      await c.core.cellRevoke(7, id);
+      expect((await c.core.cellStatus(7, id))[0]).toMatchObject({ revoked: true, certFpr: null, online: false });
+      await c.core.cellRevoke(7, id);
+      await expect(c.core.cellSetCert(7, id, fpr)).rejects.toMatchObject({ code: 'invalid' });
+    });
+
+    it('says not_found for a pin or a revoke of no such cell', async () => {
+      await expect(c.core.cellSetCert(7, 999_999, 'c'.repeat(64))).rejects.toMatchObject({ code: 'not_found' });
+      await expect(c.core.cellRevoke(7, 999_999)).rejects.toMatchObject({ code: 'not_found' });
+    });
+
     it('reports no radios for a cell that is not linked, and not_found for no such cell', async () => {
       const id = await c.core.cellAdd(7, 'Radio test', 'part15', 1);
       expect(await c.core.cellRadio(7, id)).toEqual([]);

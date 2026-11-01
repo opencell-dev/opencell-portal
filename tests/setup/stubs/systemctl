@@ -1,0 +1,9 @@
+#!/bin/bash
+# A stub of systemctl: it logs, and the service is active once started.
+echo "systemctl $*" >> "$OC_STUB_LOG"
+if [ "${1:-}" = is-active ]; then
+  [ -e "$OC_STUB_LOG.active" ]
+  exit $?
+fi
+if [ "${1:-}" = enable ]; then touch "$OC_STUB_LOG.active"; fi
+exit 0

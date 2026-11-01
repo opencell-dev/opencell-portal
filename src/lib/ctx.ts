@@ -5,6 +5,7 @@ import { type Db, openDb } from '@/db';
 import { startHousekeeping } from '@/lib/housekeeping';
 import { createMailer, type Mailer } from '@/lib/mail';
 import { createMailQueue, type MailQueue } from '@/lib/mailqueue';
+import { startNodeWatch } from '@/lib/nodes/watch';
 
 /** Everything a service function needs. Tests build their own (tests/helpers/ctx.ts). */
 export interface Ctx {
@@ -39,13 +40,15 @@ export function createCtx(): Ctx {
 /**
  * The server process's context, built by its first request (the deploy's
  * /healthz check, right after start). Building it also starts housekeeping:
- * purgeStale at once, then hourly (housekeeping.ts). The admin CLI uses
- * createCtx() instead, so a CLI run purges nothing.
+ * purgeStale at once, then hourly (housekeeping.ts), and on the subscriber
+ * portal the node watcher (nodes/watch.ts). The admin CLI uses createCtx()
+ * instead, so a CLI run purges nothing and watches nothing.
  */
 export function appCtx(): Ctx {
   if (!g.__ocCtx) {
     g.__ocCtx = createCtx();
     startHousekeeping(g.__ocCtx);
+    if (g.__ocCtx.config.site === 'portal') startNodeWatch(g.__ocCtx);
   }
   return g.__ocCtx;
 }

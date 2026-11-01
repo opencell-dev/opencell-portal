@@ -9,8 +9,9 @@ import { RESULT_LABEL } from './activity';
 const LEG: Record<LegKind, string> = { cell: 'cell', echo: 'echo service', playback: 'playback service', peer: 'another core' };
 
 /** A leg: its cell (a link to the cell's page), or what it was. */
-export function Leg({ core, cell, kind }: { core: string; cell: number | null; kind: LegKind }) {
+export function Leg({ core, cell, kind, linked = true }: { core: string; cell: number | null; kind: LegKind; linked?: boolean }) {
   if (cell !== null) {
+    if (!linked) return <span>cell {cell}</span>;
     return (
       <Link href={`/noc/cells/${core}/${cell}`} prefetch={false} className="underline">
         cell {cell}
@@ -28,8 +29,8 @@ export function talkS(c: Pick<CallRecord, 'answerAt' | 'endAt'>): number {
   return c.answerAt === null ? 0 : Math.max(0, Math.round((c.endAt - c.answerAt) / 1000));
 }
 
-/** The Calls page's list (plan N2a): newest first, each row linking to the call. */
-export function CallTable({ rows }: { rows: CallRecord[] }) {
+/** The Calls page's list (plan N2a): newest first, each row linking to the call; `linked` false off the NOC's own site, which alone has those pages. */
+export function CallTable({ rows, linked = true }: { rows: CallRecord[]; linked?: boolean }) {
   if (rows.length === 0) return <p className="text-sm text-slate-500">No calls match.</p>;
   return (
     <div className="overflow-x-auto">
@@ -52,18 +53,22 @@ export function CallTable({ rows }: { rows: CallRecord[] }) {
           {rows.map((c) => (
             <tr key={`${c.core}-${c.id}`} className="border-b border-slate-100 dark:border-slate-900">
               <td className="py-1 pr-4 font-mono">
-                <Link href={`/noc/calls/${c.core}/${c.id}`} prefetch={false} className="underline">
-                  {exact(c.endAt).replace(' UTC', '')}
-                </Link>
+                {linked ? (
+                  <Link href={`/noc/calls/${c.core}/${c.id}`} prefetch={false} className="underline">
+                    {exact(c.endAt).replace(' UTC', '')}
+                  </Link>
+                ) : (
+                  exact(c.endAt).replace(' UTC', '')
+                )}
               </td>
               <td className="py-1 pr-4 font-mono">{c.core}</td>
               <td className="py-1 pr-4 font-mono">{groupNumber(c.caller)}</td>
               <td className="py-1 pr-4 font-mono">{groupNumber(c.called)}</td>
               <td className="py-1 pr-4">
-                <Leg core={c.core} cell={c.cellA} kind={c.legA} />
+                <Leg core={c.core} cell={c.cellA} kind={c.legA} linked={linked} />
               </td>
               <td className="py-1 pr-4">
-                <Leg core={c.core} cell={c.cellB} kind={c.legB} />
+                <Leg core={c.core} cell={c.cellB} kind={c.legB} linked={linked} />
               </td>
               <td className="py-1 pr-4 text-right font-mono">{ringS(c)} s</td>
               <td className="py-1 pr-4 text-right font-mono">{talkS(c)} s</td>

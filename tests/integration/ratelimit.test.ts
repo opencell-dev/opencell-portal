@@ -26,7 +26,7 @@ describe('rate limits (portal spec §3)', () => {
       .filter(([, l]) => l.perIp)
       .map(([n]) => n)
       .sort();
-    expect(perIp).toEqual(['magic_ip', 'signin_ip', 'signup_ip']);
+    expect(perIp).toEqual(['magic_ip', 'setup_ip', 'signin_ip', 'signup_ip']);
     expect(() => hit(ctx, 'signup_ip' as never, '192.0.2.1')).toThrow(/hitIp/);
     expect(() => hitIp(ctx, 'magic_email' as never, '192.0.2.1')).toThrow(/not a per-IP limit/);
     // Compile-time: `hit` does not accept a per-IP limit, nor `hitIp` a keyed one.
