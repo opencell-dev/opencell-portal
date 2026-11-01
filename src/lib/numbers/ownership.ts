@@ -154,6 +154,17 @@ export async function getNumber(ctx: Ctx, s: Who, input: { number: unknown; list
     putQr(s.id, token, now);
     writeAudit(ctx, { actorId: s.userId, action: 'number.get', target: `number:${number}`, detail: { core: h.id, listed, ...(late ? { late } : {}) }, ip: meta.ip });
   };
+  // The client gave up (TlsCore's 5 s) or the connection dropped with the
+  // request out: the core may have created the number, and only that answer
+  // had its token. Nobody can ever activate it, so it goes back now rather
+  // than sit taken for 72 h, unless someone holds it here by then.
+  const lost = (error: unknown) => {
+    if (!isCoreError(error) || error.code !== 'unavailable') return;
+    if (getting().has(number) || ctx.db.select().from(numbers).where(eq(numbers.number, number)).get()) return;
+    void tryWithin(h, 'sub.release', () => h.core.subRelease(actor, number), CORE_DEADLINE_MS).then((b) => {
+      if (b.ok) writeAudit(ctx, { actorId: s.userId, action: 'number.get_lost', target: `number:${number}`, detail: { core: h.id }, ip: meta.ip });
+    });
+  };
   getting().set(number, s.userId);
   const asked = Promise.resolve()
     .then(() => h.core.subCreate(actor, number))
@@ -162,8 +173,10 @@ export async function getNumber(ctx: Ctx, s: Who, input: { number: unknown; list
     // The core created it after the page gave up: it is this account's
     // (it holds the token), so record it; it shows on My numbers.
     if (late.ok) record(late.value, true);
+    else lost(late.error);
   });
   if (!r.ok) {
+    if (!('late' in r)) lost(r.error);
     // The core never answered: that attempt must not count against the day's 10.
     if ('late' in r || (isCoreError(r.error) && r.error.code === 'unavailable')) unhit(ctx, 'number_account', String(s.userId));
     if ('late' in r) return { ok: false, error: NO_ANSWER };
