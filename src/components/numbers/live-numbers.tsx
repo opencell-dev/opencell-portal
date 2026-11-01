@@ -6,6 +6,7 @@ import { releasedState } from '@/lib/numbers/card';
 import { activateHref, spacedNumber } from '@/lib/numbers/format';
 import type { NumberStatus } from '@/lib/numbers/status';
 import { ReissueForm, ReleaseForm, SimulateForm } from './qr-actions';
+import { LocalTime } from './local-time';
 
 /** The parts of a card the server knows and the poll doesn't change. */
 export interface CardInfo {
@@ -24,10 +25,6 @@ const FAST_S = 5;
 const SLOW_S = 30;
 /** How long after an activation the card keeps watching for its first registration. */
 const SETTLING_MS = 10 * 60_000;
-
-function lastSeen(t: number | null): string {
-  return t === null ? 'never' : new Date(t).toLocaleString();
-}
 
 /**
  * The cards of My numbers (portal spec §5), kept live by polling
@@ -103,7 +100,7 @@ export function LiveNumbers({ cards, initial, unavailable, fake }: { cards: Card
                 <dt className="text-slate-500">Terminal</dt>
                 <dd className="font-mono">{s.terminal ?? '—'}</dd>
                 <dt className="text-slate-500">Last seen</dt>
-                <dd suppressHydrationWarning>{lastSeen(s.lastSeenAt)}</dd>
+                <dd>{s.lastSeenAt === null ? 'never' : <LocalTime t={s.lastSeenAt} />}</dd>
               </dl>
             )}
             {!released && s && (
