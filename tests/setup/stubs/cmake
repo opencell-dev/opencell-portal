@@ -1,0 +1,22 @@
+#!/bin/bash
+# A stub of cmake: logs; configure remembers the version and the source, --install "builds" bin/oc-cell.
+echo "cmake $*" >> "$OC_STUB_LOG"
+case "${1:-}" in
+  -S)
+    src=$2 build=$4
+    ver=""
+    for a in "$@"; do case "$a" in -DOC_VERSION=*) ver=${a#-DOC_VERSION=} ;; esac; done
+    [ -f "$src/oc-cell/occ_main.c" ] || exit 1
+    mkdir -p "$build"
+    echo "$ver" > "$build/version"
+    ;;
+  --build) touch "$2/built" ;;
+  --install)
+    build=$2 prefix=$4
+    [ -e "$build/built" ] || exit 1
+    mkdir -p "$prefix/bin"
+    printf '#!/bin/sh\necho "oc-cell %s"\n' "$(cat "$build/version")" > "$prefix/bin/oc-cell"
+    chmod 0755 "$prefix/bin/oc-cell"
+    ;;
+  *) exit 1 ;;
+esac

@@ -1,0 +1,3 @@
+#!/bin/bash
+# A stub of a system command for the setup script's test: it logs its argv.
+echo "$(basename "$0") $*" >> "$OC_STUB_LOG"

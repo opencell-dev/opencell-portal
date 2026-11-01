@@ -149,3 +149,12 @@ export function nodeDeclinedMail(name: string, siteName: string, note: string, o
     text: `Hello ${name},\n\nWe can't approve your request for ${siteName} right now:\n\n${note}\n\nYou can answer by writing to opencell@k4ozi.com.${sig(origin)}`,
   };
 }
+
+export function nodeCertMail(name: string, siteName: string, expiresAt: number, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: a new certificate for ${siteName}`,
+    text:
+      `Hello ${name},\n\nYour base station ${siteName} has a new certificate, valid until ${utc(expiresAt)}. ` +
+      `The node's old certificate, if it had one, no longer works.\n\nIf you didn't run the setup command, tell us at once: opencell@k4ozi.com.\n\nYour node: ${link}${sig(origin)}`,
+  };
+}

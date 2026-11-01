@@ -1,0 +1,3 @@
+#!/bin/bash
+# A stub of id: the script runs as root, as it does on a Pi.
+echo 0

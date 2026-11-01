@@ -6,6 +6,7 @@ import type { Ctx } from '@/lib/ctx';
 import { errorKind } from '@/lib/errors';
 import { applyNanpa, fetchNanpa, liveExchanges, logFailedRefresh, logOffers, type NanpaFiles, readNanpaDir } from '@/lib/numbers/nanpa-refresh';
 import { type OfferResult, offerMissingNpas } from '@/lib/numbers/route-delegate';
+import { currentRelease, publishRelease } from '@/lib/nodes/release';
 import { listPasskeys } from '@/lib/passkeys';
 import { isLimitName, LIMITS, limitOf, setLimit } from '@/lib/ratelimit';
 import { findUserByEmail, grantRole, revokeRole, rolesOf } from '@/lib/users';
@@ -21,6 +22,8 @@ export const USAGE = `usage: oc-portal-admin COMMAND
   limit show                     show the rate limits
   limit set NAME MAX [WINDOW_S]  change a rate limit (${Object.keys(LIMITS).join(', ')})
   audit [N]                      the last N portal audit records (default 20)
+  cell-release [FILE TAG]        publish a packed opencell-pi tag for node setup (made by
+                                 deploy/oc-portal-cell-release); no arguments: what is published
   nanpa-refresh [--dir DIR]      import NANPA's exchanges (weekly timer), then sign and offer
                                  the new NPAs; --dir reads co-codes.txt, npas.csv,
                                  cnac.csv, rc_XX.xml from DIR`;
@@ -132,6 +135,19 @@ export function runAdmin(ctx: Ctx, argv: string[]): Out {
         return { code: 0, out: `${name}: ${l.max} per ${l.windowS} s` };
       }
       return { code: 2, out: USAGE };
+    }
+    case 'cell-release': {
+      if (args.length === 0) {
+        const r = currentRelease(ctx);
+        return { code: 0, out: r ? `${r.tag}  sha256 ${r.sha256}  ${r.bytes} bytes` : 'no release is published' };
+      }
+      if (args.length !== 2) return { code: 2, out: USAGE };
+      try {
+        const r = publishRelease(ctx, args[0], args[1]);
+        return { code: 0, out: `${r.tag} published: sha256 ${r.sha256}, ${r.bytes} bytes` };
+      } catch (e) {
+        return { code: 1, out: (e as Error).message };
+      }
     }
     case 'audit': {
       const n = args[0] === undefined ? 20 : Number(args[0]);

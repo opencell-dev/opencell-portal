@@ -105,6 +105,13 @@ export const LIMITS = {
     windowS: 3600,
     message: 'You have sent too many messages this hour. Please try again later.',
   },
+  // Portal P3 (decision 21): a CSR with a setup token, from one address.
+  setup_ip: {
+    perIp: true,
+    max: 30,
+    windowS: 3600,
+    message: 'Too many setup attempts from this network. Please try again in about an hour.',
+  },
   // NOC design §11: a staff number lookup (a number's status and calls).
   noc_lookup: {
     perIp: false,

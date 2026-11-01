@@ -32,6 +32,7 @@ const PORTAL_ONLY = [
   '/api/numbers',
   // Portal P3: the admin pages that read the portal's own accounts and nodes.
   '/admin/requests',
+  '/setup',
 ];
 
 export type SiteRoute = { kind: 'serve' } | { kind: 'not-found' } | { kind: 'redirect'; to: string };
