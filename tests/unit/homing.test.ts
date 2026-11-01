@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { npas } from '@/db/schema';
-import { listAudit } from '@/lib/audit';
-import { setNpaOverride, sideLabel, sideOfNpa, sideOfRegion } from '@/lib/numbers/homing';
-import { coreFor } from '@/lib/numbers/route';
+import { npas, settings } from '@/db/schema';
+import { sideLabel, sideOfNpa, sideOfRegion, sideOfStateCode } from '@/lib/numbers/homing';
 import { testCtx } from '../helpers/ctx';
 
 // Portal spec §4.3, the table verbatim.
@@ -16,8 +14,8 @@ const WEST = [
   'MN', 'IA', 'MO', 'AR', 'LA', 'AK', 'HI', 'GU', 'MP', 'AS', 'MB', 'SK', 'AB', 'BC', 'YT', 'NT', 'NU',
 ];
 
-function withNpa(ctx: ReturnType<typeof testCtx>, npa: string, region: string, geographic = true) {
-  ctx.db.insert(npas).values({ npa, region, geographic, inService: true, updatedAt: 1 }).run();
+function withNpa(ctx: ReturnType<typeof testCtx>, npa: string, region: string, geographic = true, stateCode: string | null = null) {
+  ctx.db.insert(npas).values({ npa, region, stateCode, geographic, inService: true, updatedAt: 1 }).run();
 }
 
 describe('the Mississippi split (spec §4.3)', () => {
@@ -36,25 +34,30 @@ describe('the Mississippi split (spec §4.3)', () => {
     expect(sideOfRegion('pa')).toBeNull(); // codes are upper case, as the importer stores them
   });
 
-  it('an NPA takes its region’s side; an override beats it; non-geographic or unknown NPAs have none', () => {
+  it('an NPA takes its state code’s side; non-geographic or unknown NPAs have none', () => {
     const ctx = testCtx();
-    withNpa(ctx, '717', 'PA');
-    withNpa(ctx, '612', 'MN');
+    withNpa(ctx, '717', 'PA', true, 'US-PA');
+    withNpa(ctx, '612', 'MN', true, 'US-MN');
     withNpa(ctx, '500', '', false);
-    withNpa(ctx, '999', 'PA', false);
+    withNpa(ctx, '999', 'PA', false, 'US-PA');
     expect(sideOfNpa(ctx, '717')).toBe('east');
     expect(sideOfNpa(ctx, '612')).toBe('west');
     expect(sideOfNpa(ctx, '500')).toBeNull();
     expect(sideOfNpa(ctx, '999')).toBeNull();
     expect(sideOfNpa(ctx, '201')).toBeNull(); // not in the table
-    setNpaOverride(ctx, '717', 'west', 7);
-    expect(sideOfNpa(ctx, '717')).toBe('west');
-    expect(listAudit(ctx, 1)[0]).toMatchObject({ actorId: 7, action: 'npa.home_override', target: 'npa:717' });
-    setNpaOverride(ctx, '717', null, 7);
+  });
+
+  it('a row from before state codes goes by its region until the next refresh fills the code in', () => {
+    const ctx = testCtx();
+    withNpa(ctx, '717', 'PA');
     expect(sideOfNpa(ctx, '717')).toBe('east');
-    // An override never makes a non-geographic NPA a block.
-    setNpaOverride(ctx, '500', 'east', 7);
-    expect(sideOfNpa(ctx, '500')).toBeNull();
+  });
+
+  it('there is no portal override any more: nothing in the settings table moves a home', () => {
+    const ctx = testCtx();
+    withNpa(ctx, '717', 'PA', true, 'US-PA');
+    ctx.db.insert(settings).values({ key: 'npa_home:717', value: 'west' }).run();
+    expect(sideOfNpa(ctx, '717')).toBe('east');
   });
 
   it('labels', () => {
@@ -63,12 +66,20 @@ describe('the Mississippi split (spec §4.3)', () => {
   });
 });
 
-describe('coreFor (the P5 seam)', () => {
-  it('routes every number to the first core in P2', () => {
-    const ctx = testCtx();
-    const second = { id: 'fake2', where: 'in-process', core: ctx.core };
-    ctx.cores.push(second);
-    expect(coreFor(ctx, '+883171746412345')).toBe(ctx.cores[0]);
-    expect(coreFor(ctx, '+883161255501234')).toBe(ctx.cores[0]);
+describe('sideOfStateCode (OCSS spec §3.3)', () => {
+  const east = 'US-AL US-CT US-DC US-DE US-FL US-GA US-IL US-IN US-KY US-MA US-MD US-ME US-MI US-MS US-NC US-NH US-NJ US-NY US-OH US-PA US-RI US-SC US-TN US-VA US-VT US-WI US-WV US-PR US-VI CA-ON CA-QC CA-NB CA-NS CA-PE CA-NL AG AI BB BM BS DM DO GD JM KN KY LC MS SX TC TT VC VG';
+  const west = 'US-AK US-AR US-AZ US-CA US-CO US-HI US-IA US-ID US-KS US-LA US-MN US-MO US-MT US-ND US-NE US-NM US-NV US-OK US-OR US-SD US-TX US-UT US-WA US-WY US-GU US-MP US-AS CA-MB CA-SK CA-AB CA-BC CA-YT CA-NT CA-NU';
+  it.each(east.split(' '))('%s → east', (c) => expect(sideOfStateCode(c)).toBe('east'));
+  it.each(west.split(' '))('%s → west', (c) => expect(sideOfStateCode(c)).toBe('west'));
+  it('the ones that matter', () => {
+    expect(sideOfStateCode('US-KY')).toBe('east');
+    expect(sideOfStateCode('US-LA')).toBe('west');
+    expect(sideOfStateCode('KY')).toBe('east');
+    expect(sideOfStateCode('CA-NT')).toBe('west');
+  });
+  it('a bare state, a code in neither list or nothing is no side', () => {
+    expect(sideOfStateCode('PA')).toBeNull();
+    expect(sideOfStateCode('US-ZZ')).toBeNull();
+    expect(sideOfStateCode('')).toBeNull();
   });
 });

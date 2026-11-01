@@ -14,6 +14,16 @@
 # only argv and prompts for nothing).
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+# nanpa-refresh (--dir, by hand) goes on to the cores and the delegate key, as it
+# does under its timer; no other command gets them. A file not here is left out:
+# the transient unit would fail (243/CREDENTIALS), and the refresh says what it missed.
+creds=()
+if [ "${1:-}" = nanpa-refresh ]; then
+  for c in core-ca.crt:ca.crt core-client.crt:portal.crt core-client.key:portal.key route-delegate.key:route-delegate.key; do
+    f="/etc/opencell/tls/${c#*:}"
+    if [ -r "$f" ]; then creds+=(-p "LoadCredential=${c%%:*}:$f"); fi
+  done
+fi
 exec systemd-run --quiet --wait --pipe --collect \
   -p User=oc-portal \
   -p Group=oc-portal \
@@ -21,4 +31,5 @@ exec systemd-run --quiet --wait --pipe --collect \
   -p WorkingDirectory=/opt/oc-portal/current \
   -p EnvironmentFile=/etc/opencell/portal.env \
   -p EnvironmentFile=/etc/opencell/portal-smtp.env \
+  "${creds[@]}" \
   -- /usr/bin/env HOME=/var/lib/oc-portal node ./node_modules/.bin/tsx scripts/oc-portal-admin.ts "$@"

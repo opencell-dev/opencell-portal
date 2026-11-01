@@ -28,6 +28,9 @@ const envSchema = z
     OC_CORE_CA: z.string().min(1).optional(),
     OC_CORE_CERT: z.string().min(1).optional(),
     OC_CORE_KEY: z.string().min(1).optional(),
+    // The route delegate's private key (OCSS spec §5.4), which signs new NPAs
+    // for the weekly refresh: a path, or (no '/') a systemd credential.
+    OC_ROUTE_DELEGATE_KEY: z.string().min(1).optional(),
     // OC_CORE=fake only (NOC design §10): how many fake cores (fake, fake2, …)
     // and whether each starts with the demo network. Never in production,
     // which runs OC_CORE=tls: either one with tls is a configuration error.
@@ -104,9 +107,9 @@ function endpoint(id: string, addr: string, servername: string, e: Env): CoreEnd
 }
 
 /**
- * The cores, in order (OC_CORE=tls; none for the fake core). The first one
- * takes every number and subscriber operation until P5 routes each block to
- * its home core (portal spec §4.3, §12); the admin dashboard shows them all.
+ * The cores, in order (OC_CORE=tls; none for the fake core). A number's
+ * operations go to its block's home core (coreFor, lib/numbers/route.ts);
+ * the admin dashboard shows them all.
  * Problems go to `issues` as `KEY: message` lines.
  */
 function readCores(e: Env, env: Record<string, string | undefined>, issues: string[]): CoreEndpoint[] {
@@ -157,8 +160,10 @@ export type Config = {
   secret: string;
   dbPath: string;
   core: 'fake' | 'tls';
-  /** OC_CORE=tls: one or more, the first takes the number and subscriber operations; the fake core: none. */
+  /** OC_CORE=tls: one or more; the fake core: none. */
   cores: CoreEndpoint[];
+  /** Where the route delegate's key is, a path or a credential's name; absent: new NPAs are not signed. */
+  routeDelegateKey?: string;
   /** OC_CORE=fake: how many fake cores, and whether they start with the demo network (NOC design §10). */
   fake: { cores: number; demo: boolean };
   secureCookies: boolean;
@@ -190,6 +195,7 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     dbPath: e.OC_DB_PATH,
     core: e.OC_CORE,
     cores,
+    routeDelegateKey: e.OC_ROUTE_DELEGATE_KEY,
     fake: { cores: e.OC_FAKE_CORES ?? 1, demo: e.OC_FAKE_DEMO === '1' },
     secureCookies: secure,
     sessionCookie: secure ? '__Host-oc_session' : 'oc_session',

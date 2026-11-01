@@ -279,7 +279,7 @@ beforeAll(async () => {
     mailer,
     mailQueue: createMailQueue(mailer),
     core,
-    cores: [{ id: 'fake', where: 'in-process', core }],
+    cores: [{ id: 'fake', where: 'in-process', coreNo: 1, core }],
     now: () => Date.now(),
   } as Ctx;
 }, 180_000);

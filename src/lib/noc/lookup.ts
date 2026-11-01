@@ -3,12 +3,13 @@ import { isFullNumber } from '@/core/numbers';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
 import { errorKind } from '@/lib/errors';
+import { coreFor } from '@/lib/numbers/route';
 import { hit } from '@/lib/ratelimit';
 import { coreActor } from '@/lib/site';
 
 // A staff number lookup (NOC design §9.5, §11): sub.status and the last
-// 30 days of cdr.list for one number, from the core that holds numbers
-// (core 1 until P5). Open to admins and NOC operators, unmasked (ruling
+// 30 days of cdr.list for one number, from its home core.
+// Open to admins and NOC operators, unmasked (ruling
 // 2026-10-01 #8/#9: an explicit override of portal spec §10). Each lookup is
 // in the portal's audit, and each core call in the core's, under the same
 // account id.
@@ -47,7 +48,7 @@ export async function lookupNumber(ctx: Ctx, actor: number, typed: string, ip: s
     writeAudit(ctx, { actorId: actor, action: 'noc.lookup.limited', target: `number:${number}`, ip });
     return { ok: false, message: lim.message };
   }
-  const h = ctx.cores[0];
+  const h = coreFor(ctx, number);
   const since = ctx.now() - LOOKUP_DAYS * 86400_000;
   // What the core's audit records (NOC design §N1.5): the NOC site's account ids are offset.
   const coreAs = coreActor(ctx.config.site, actor);

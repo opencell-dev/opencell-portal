@@ -152,6 +152,8 @@ export const numbers = sqliteTable(
     disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
     registered: integer('registered', { mode: 'boolean' }).notNull().default(false),
     cellId: integer('cell_id'),
+    // The core whose cell cellId is (OCSS spec §5.6): cell ids are per core. Null: not registered, or a v0.7.0 core.
+    servingCore: integer('serving_core'),
     tmidPrefix: text('tmid_prefix'),
     lastSeenAt: integer('last_seen_at'),
     statusAt: integer('status_at'),
@@ -181,6 +183,10 @@ export const npas = sqliteTable('npas', {
   npa: text('npa').primaryKey(),
   // A US state / Canadian province / Caribbean country code (PA, ON, JM); '' when unknown.
   region: text('region').notNull(),
+  // The routing table's code (OCSS spec §3.3: US-KY, CA-ON, KY), which region
+  // can't be: KY and MS each mean two places. Null: non-geographic, unknown,
+  // or a row from before this column until the next refresh.
+  stateCode: text('state_code'),
   geographic: integer('geographic', { mode: 'boolean' }).notNull(),
   inService: integer('in_service', { mode: 'boolean' }).notNull(),
   updatedAt: integer('updated_at').notNull(),
@@ -220,6 +226,24 @@ export const rateCenters = sqliteTable(
     lon: real('lon'),
   },
   (t) => [primaryKey({ columns: [t.region, t.name] })],
+);
+
+/**
+ * Every addition the portal's delegate signed (OCSS spec §5.4), so a core that
+ * is behind can be replayed in order. A row is written before it is offered,
+ * so one seq is never signed twice. The key itself is never here.
+ */
+export const routeAdditions = sqliteTable(
+  'route_additions',
+  {
+    rootVersion: integer('root_version').notNull(),
+    seq: integer('seq').notNull(),
+    blob: blob('blob', { mode: 'buffer' }).notNull(),
+    sig: blob('sig', { mode: 'buffer' }).notNull(),
+    npas: text('npas').notNull(), // JSON array
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.rootVersion, t.seq] })],
 );
 
 /** One row per weekly NANPA refresh (spec §4.4: "the changes are logged on the admin page"). */

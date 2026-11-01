@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { lookupNumberAction } from '@/app/actions/admin-noc';
 import type { LookupResult } from '@/lib/noc/lookup';
-import { exact, groupNumber } from '@/lib/noc/format';
+import { exact, groupNumber, registeredOn } from '@/lib/noc/format';
 import { keepOnFailure } from '@/lib/noc/change-ui';
 import { SubscriberControls } from './subscriber-controls';
 
@@ -62,7 +62,7 @@ export function NumberLookup({ serviceNumbers }: { serviceNumbers: string[] }) {
           <dl role="status" className="grid max-w-2xl grid-cols-[auto_1fr] gap-x-6 gap-y-1 text-sm">
             <dt className="text-slate-500">Number</dt>
             <dd className="font-mono">{groupNumber(r.number)}</dd>
-            <dt className="text-slate-500">Core</dt>
+            <dt className="text-slate-500">Home core</dt>
             <dd className="font-mono">{r.core}</dd>
             <dt className="text-slate-500">State</dt>
             <dd>
@@ -70,7 +70,7 @@ export function NumberLookup({ serviceNumbers }: { serviceNumbers: string[] }) {
               {r.status.disabled ? ', disabled' : ''}
             </dd>
             <dt className="text-slate-500">Registered</dt>
-            <dd>{r.status.registered ? `yes, on cell ${r.status.cellId}` : 'no'}</dd>
+            <dd>{registeredOn(r.status)}</dd>
             <dt className="text-slate-500">Terminal (TMID prefix)</dt>
             <dd className="font-mono">{r.status.tmidPrefix ?? '—'}</dd>
             <dt className="text-slate-500">Last seen</dt>

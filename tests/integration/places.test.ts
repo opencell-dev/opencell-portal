@@ -1,9 +1,8 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { exchanges, npas } from '@/db/schema';
-import { setNpaOverride } from '@/lib/numbers/homing';
 import { applyNanpa, readNanpaDir } from '@/lib/numbers/nanpa-refresh';
-import { exchangeOffered, exchangesOfPlace, searchPlaces } from '@/lib/numbers/places';
+import { exchangeOffered, exchangesOfPlace, searchPlaces, whyNotOffered } from '@/lib/numbers/places';
 import { type TestCtx, testCtx } from '../helpers/ctx';
 
 let ctx: TestCtx;
@@ -71,10 +70,14 @@ describe('searchPlaces (spec §4.1 "Where?")', () => {
     expect(exchangeOffered(ctx, '+8831717464')).toMatchObject({ region: 'PA', rateCenter: 'LANCASTER', side: 'east' });
   });
 
-  it('an override moves the side', () => {
-    setNpaOverride(ctx, '570', 'west', 1);
-    expect(searchPlaces(ctx, 'rush')[0].side).toBe('west');
-    setNpaOverride(ctx, '570', null, 1);
+  it('an NPA assigned but not in service is never offered (OCSS spec §12 decision 11)', () => {
+    ctx.db.update(npas).set({ inService: false }).where(eq(npas.npa, '570')).run();
+    expect(labels('wilkes')).toEqual([]);
+    expect(searchPlaces(ctx, '570')).toEqual([]);
+    expect(exchangeOffered(ctx, '+8831570200')).toBeNull();
+    expect(whyNotOffered(ctx, '+8831570200')).toBe("Numbers in area code 570 aren't offered yet.");
+    ctx.db.update(npas).set({ inService: true }).where(eq(npas.npa, '570')).run();
+    expect(labels('wilkes')).toEqual(['Wilkes-Barre, PA (570-200)']);
   });
 
   it('an NPA with no known region is never offered', () => {
@@ -104,5 +107,45 @@ describe('searchPlaces (spec §4.1 "Where?")', () => {
 
   it('respects the limit', () => {
     expect(searchPlaces(ctx, 'PA', 2)).toHaveLength(2);
+  });
+});
+
+// KY is Kentucky and the Cayman Islands, MS Mississippi and Montserrat (OCSS spec §3.3).
+// Checked on 2026-11-01: NANPA's utilized CO-code file and CNAC's hold no exchange in 345
+// or 664, nor in any other Caribbean country's NPA (only US territories: 340, 787, 939), so
+// neither country is ever offered today. If one ever came, this is what must hold.
+describe('a region code that is also a country', () => {
+  let c: TestCtx;
+  beforeAll(() => {
+    c = testCtx();
+    const row = (npaNxx: string, region: string, rateCenter: string) => ({ npaNxx, npa: npaNxx.slice(0, 3), nxx: npaNxx.slice(3), region, rateCenter, firstSeenAt: 1 });
+    c.db
+      .insert(npas)
+      .values([
+        { npa: '606', region: 'KY', stateCode: 'US-KY', geographic: true, inService: true, updatedAt: 1 },
+        { npa: '345', region: 'KY', stateCode: 'KY', geographic: true, inService: true, updatedAt: 1 },
+        { npa: '228', region: 'MS', stateCode: 'US-MS', geographic: true, inService: true, updatedAt: 1 },
+        { npa: '664', region: 'MS', stateCode: 'MS', geographic: true, inService: true, updatedAt: 1 },
+      ])
+      .run();
+    c.db.insert(exchanges).values([row('606464', 'KY', 'PIKEVILLE'), row('345222', 'KY', 'GEORGE TOWN'), row('228222', 'MS', 'BILOXI'), row('664222', 'MS', 'BRADES')]).run();
+  });
+  const places = (q: string) => searchPlaces(c, q).map((p) => p.rateCenter);
+
+  it('the code and the state name mean the state, not the country', () => {
+    expect(places('KY')).toEqual(['PIKEVILLE']);
+    expect(places('Kentucky')).toEqual(['PIKEVILLE']);
+    expect(places('MS')).toEqual(['BILOXI']);
+    expect(places('Mississippi')).toEqual(['BILOXI']);
+  });
+
+  it('the name means the country', () => {
+    expect(places('Cayman Islands')).toEqual(['GEORGE TOWN']);
+    expect(places('Montserrat')).toEqual(['BRADES']);
+  });
+
+  it('its own area code and place still find it', () => {
+    expect(places('345')).toEqual(['GEORGE TOWN']);
+    expect(places('george town')).toEqual(['GEORGE TOWN']);
   });
 });

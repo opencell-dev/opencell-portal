@@ -3,7 +3,11 @@ Description=OpenCell portal: weekly NANPA exchange refresh (portal spec §4.4)
 # Downloads NANPA's and CNAC's CO-code reports, NANPA's NPA list and Local
 # Calling Guide's rate centers (one region every 1.5 s: about 3 minutes),
 # and imports them in one transaction. A failed or refused run changes
-# nothing and is logged (journal, the admin page's refresh log).
+# nothing and is logged (journal, the admin page's refresh log). It then signs
+# what the cores' block tables lack and offers it to every core (portal plan
+# P5), which is why it has the cores' TLS files. The delegate key that signs
+# comes by a drop-in, only when it is on the guest: see the runbook in
+# oc-portal-route-delegate.conf.
 After=network-online.target
 Wants=network-online.target
 
@@ -17,6 +21,10 @@ WorkingDirectory=/opt/oc-portal/current
 EnvironmentFile=/etc/opencell/portal.env
 EnvironmentFile=/etc/opencell/portal-smtp.env
 Environment=HOME=/var/lib/oc-portal
+# As oc-portal-core-tls.conf gives oc-portal.service: portal.env names these.
+LoadCredential=core-ca.crt:/etc/opencell/tls/ca.crt
+LoadCredential=core-client.crt:/etc/opencell/tls/portal.crt
+LoadCredential=core-client.key:/etc/opencell/tls/portal.key
 ExecStart=/usr/bin/node ./node_modules/.bin/tsx scripts/oc-portal-admin.ts nanpa-refresh
 TimeoutStartSec=30min
 Nice=10

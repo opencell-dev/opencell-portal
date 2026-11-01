@@ -227,6 +227,73 @@ describe('expiry, sync, re-issue, release', () => {
   });
 });
 
+describe('an answer the client gave up on (P2 report: TlsCore 5 s)', () => {
+  const gaveUp = () => new CoreError('unavailable', 'the core did not answer in time');
+
+  it('the core created it but the answer was lost, past the page: the number goes back, not 72 h held by nobody', async () => {
+    vi.useFakeTimers();
+    try {
+      const real = ctx.core.subCreate.bind(ctx.core);
+      ctx.core.subCreate = async (a, num) => {
+        await real(a, num);
+        await new Promise((r) => setTimeout(r, 5000));
+        throw gaveUp();
+      };
+      const first = get();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await first).toMatchObject({ ok: false, error: "The network didn't answer. Please try again in a minute." });
+      expect(await ctx.core.numCheck(0, N)).toBe('taken');
+      await vi.advanceTimersByTimeAsync(2100);
+      await vi.waitFor(async () => expect(await ctx.core.numCheck(0, N)).toBe('free'));
+      expect(listNumbers(ctx, ada.userId)).toEqual([]);
+      expect(listAudit(ctx, 1)[0]).toMatchObject({ action: 'number.get_lost', target: `number:${N}` });
+      ctx.core.subCreate = real;
+      expect(await get()).toMatchObject({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the same within the 3 s: the connection dropped after the request went out', async () => {
+    const real = ctx.core.subCreate.bind(ctx.core);
+    ctx.core.subCreate = async (a, num) => {
+      await real(a, num);
+      throw gaveUp();
+    };
+    expect(await get()).toMatchObject({ ok: false, error: "The network didn't answer. Please try again in a minute." });
+    await vi.waitFor(async () => expect(await ctx.core.numCheck(0, N)).toBe('free'));
+    expect(listNumbers(ctx, ada.userId)).toEqual([]);
+  });
+
+  it('a core plainly down: one release is tried and failing it is only logged', async () => {
+    ctx.core.simDown('refuse');
+    expect(await get()).toMatchObject({ ok: false, error: "The network didn't answer. Please try again in a minute." });
+    await new Promise((r) => setTimeout(r, 5));
+    ctx.core.simDown(null);
+    expect(await ctx.core.numCheck(0, N)).toBe('free');
+  });
+
+  it('never releases what someone holds by then', async () => {
+    ctx.core.subCreate = async () => {
+      // The core never did this one; meanwhile the row says Bob has it.
+      ctx.db.insert(numbers).values({ number: N, userId: bob.userId, coreId: 'fake', listed: false, createdAt: 1, state: 'unactivated', tokenExpiresAt: ctx.now() + 1000, statusAt: ctx.now() }).run();
+      throw gaveUp();
+    };
+    const release = vi.spyOn(ctx.core, 'subRelease');
+    await get();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it("a refusal is an answer: nothing was created, so there's nothing to release", async () => {
+    await ctx.core.subCreate(0, N);
+    const release = vi.spyOn(ctx.core, 'subRelease');
+    expect(await get()).toMatchObject({ ok: false });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(release).not.toHaveBeenCalled();
+  });
+});
+
 describe('after the whole-branch review', () => {
   it('a slow core: the number stays in flight until the core answers, so a retry makes no second sub.create and the cap holds', async () => {
     vi.useFakeTimers();

@@ -38,7 +38,8 @@ describe('the deploy files for two cores', () => {
     const differ = Object.keys({ ...portal, ...noc })
       .filter((k) => portal[k] !== noc[k])
       .sort();
-    expect(differ).toEqual(['OC_ORIGIN', 'OC_SITE']);
+    // The NOC site holds no numbers, so it signs none: the delegate key is the portal's alone.
+    expect(differ).toEqual(['OC_ORIGIN', 'OC_ROUTE_DELEGATE_KEY', 'OC_SITE']);
   });
 
   it("oc-cores-route.service routes the cores' WireGuard network through oc-core-1", () => {
@@ -52,5 +53,29 @@ describe('the deploy files for two cores', () => {
     // restores the route on stop/restart, not on a plain `start` after
     // `stop`, or after eth0 itself goes down and up.
     expect(unit).toMatch(/^WantedBy=multi-user\.target networking\.service$/m);
+  });
+
+  // Plan P5: the weekly refresh talks to the cores and signs with the delegate key.
+  const creds = (name: string) => readFileSync(join(DEPLOY, name), 'utf8').split('\n').filter((l) => l.startsWith('LoadCredential='));
+
+  it('oc-portal-nanpa.service has the core TLS credentials portal.env names', () => {
+    expect(creds('oc-portal-nanpa.service')).toEqual(creds('oc-portal-core-tls.conf'));
+    const env = envFile('portal.env.example');
+    const given = creds('oc-portal-nanpa.service').map((l) => l.slice('LoadCredential='.length).split(':')[0]);
+    expect(given).toEqual([env.OC_CORE_CA, env.OC_CORE_CERT, env.OC_CORE_KEY]);
+  });
+
+  it('the delegate key comes by a drop-in, not the unit: LoadCredential of a missing file fails a unit (243/CREDENTIALS), and a refresh must run without it', () => {
+    expect(creds('oc-portal-route-delegate.conf')).toEqual(['LoadCredential=route-delegate.key:/etc/opencell/tls/route-delegate.key']);
+    expect(envFile('portal.env.example').OC_ROUTE_DELEGATE_KEY).toBe('route-delegate.key');
+    for (const unit of ['oc-portal-nanpa.service', 'oc-portal.service', 'oc-portal-core-tls.conf']) {
+      expect(readFileSync(join(DEPLOY, unit), 'utf8')).not.toMatch(/^LoadCredential=route-delegate/m);
+    }
+  });
+
+  it('oc-portal-admin gives nanpa-refresh the credentials it would have under its timer, and no other command', () => {
+    const text = readFileSync(join(DEPLOY, 'oc-portal-admin'), 'utf8');
+    expect(text).toContain('[ "${1:-}" = nanpa-refresh ]');
+    for (const f of ['ca.crt', 'portal.crt', 'portal.key', 'route-delegate.key']) expect(text).toContain(f);
   });
 });

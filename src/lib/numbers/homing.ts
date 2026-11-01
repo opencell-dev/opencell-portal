@@ -1,19 +1,22 @@
 import { eq } from 'drizzle-orm';
-import { npas, settings } from '@/db/schema';
-import { writeAudit } from '@/lib/audit';
+import { EAST_STATES, WEST_STATES } from '@/core/state-codes';
+import { npas } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 
 // Where a number is homed (portal spec §4.3): every geographic NPA is its
 // own block, homed by its state or province, split at the Mississippi. East
-// is core 1 (Virginia), West core 2 (Oregon). Until P5 every block still
-// lives on core 1 (coreFor, route.ts); P2 shows the side on the confirm step.
+// is core 1 (Virginia), West core 2 (Oregon). The cores' signed table is the
+// truth (blocks.ts); this rule is what it was built by, and the answer until
+// the portal has heard it.
 
 export type Side = 'east' | 'west';
 
-// The §4.3 table verbatim. Region codes are what the NANPA importer stores:
-// US state and territory codes, Canadian province codes, and ISO-style codes
-// for the other NANP countries. Two codes mean two places (KY: Kentucky and
-// the Cayman Islands; MS: Mississippi and Montserrat) — both are East either way.
+// The §4.3 table verbatim, by the plain region a person picks. Region codes are
+// what the NANPA importer stores: US state and territory codes, Canadian
+// province codes, and ISO-style codes for the other NANP countries. Two codes
+// mean two places (KY: Kentucky and the Cayman Islands; MS: Mississippi and
+// Montserrat) — both are East either way. An NPA's own code is its stateCode
+// (sideOfStateCode).
 const EAST = new Set([
   // States wholly east of the Mississippi.
   'ME', 'NH', 'VT', 'MA', 'RI', 'CT', 'NY', 'NJ', 'PA', 'DE', 'MD', 'VA', 'WV', 'NC', 'SC', 'GA', 'FL', 'AL', 'OH', 'MI', 'IN',
@@ -39,38 +42,28 @@ export function sideOfRegion(region: string): Side | null {
   return null;
 }
 
-const overrideKey = (npa: string) => `npa_home:${npa}`;
+/** A routing-table state code's side (OCSS spec §3.3), or null for one in neither list. */
+export function sideOfStateCode(code: string): Side | null {
+  if (EAST_STATES.has(code)) return 'east';
+  if (WEST_STATES.has(code)) return 'west';
+  return null;
+}
 
 /**
- * An NPA's home side: an admin's override (settings `npa_home:<npa>`) first,
- * else its region's. Null for an NPA NANPA doesn't list, or one that is not
- * geographic (500, 8xx: never a block, spec §4.3), whatever an override says.
+ * An NPA's home side by the state rule. Null for an NPA NANPA doesn't list, or
+ * one that is not geographic (500, 8xx: never a block, spec §4.3). A row with
+ * no state code yet (imported before P5) goes by its region: KY and MS collide
+ * there, but each pair is East either way.
  */
 export function sideOfNpa(ctx: Ctx, npa: string): Side | null {
   const row = ctx.db.select().from(npas).where(eq(npas.npa, npa)).get();
   if (!row?.geographic) return null;
-  const o = ctx.db.select().from(settings).where(eq(settings.key, overrideKey(npa))).get();
-  if (o?.value === 'east' || o?.value === 'west') return o.value;
-  return sideOfRegion(row.region);
+  return row.stateCode ? sideOfStateCode(row.stateCode) : sideOfRegion(row.region);
 }
 
-/**
- * Set (or with null, clear) an NPA's home override. Recorded here only: on
- * the cores an override is a routing-table change, signed offline (spec
- * §4.3), which P5 wires up.
- */
-export function setNpaOverride(ctx: Ctx, npa: string, side: Side | null, actorId: number): void {
-  if (!/^[2-9]\d{2}$/.test(npa)) throw new Error('npa must be 3 digits');
-  if (side === null) {
-    ctx.db.delete(settings).where(eq(settings.key, overrideKey(npa))).run();
-  } else {
-    ctx.db
-      .insert(settings)
-      .values({ key: overrideKey(npa), value: side })
-      .onConflictDoUpdate({ target: settings.key, set: { value: side } })
-      .run();
-  }
-  writeAudit(ctx, { actorId, action: 'npa.home_override', target: `npa:${npa}`, detail: { side } });
+/** The side a home core serves, as the confirm page labels it: core 1 is East, any other West. */
+export function sideOfHome(homeCore: number): Side {
+  return homeCore === 1 ? 'east' : 'west';
 }
 
 /** The serving core as the confirm step names it (P2 decision 7). */

@@ -72,6 +72,7 @@ export function coreContract(name: string, make: () => Promise<ContractCore>) {
         cellId: null,
         tmidPrefix: null,
         lastSeenAt: null,
+        servingCore: null,
       });
       expect(Math.abs((st.tokenExpiresAt ?? 0) - first.expiresAt)).toBeLessThan(1000);
       const second = await c.core.subReissue(7, n);
@@ -213,6 +214,11 @@ export function coreContract(name: string, make: () => Promise<ContractCore>) {
       await c.core.cellRevoke(7, id);
       await expect(c.core.cellMode(7, id, 'part97')).rejects.toMatchObject({ code: 'invalid' });
       expect((await c.core.cellStatus(7, id))[0].mode).toBe('part15');
+    });
+
+    it('says it runs no signed table with block lines, and takes no route offer (OCSS spec §5.1, §5.2)', async () => {
+      expect(await c.core.routeStatus(7)).toEqual({ signed: false, rootVersion: 0, seq: 0, blocks: 1, maxIdx: 1, delegateNotAfter: null });
+      await expect(c.core.routeOffer(7, 1, new Uint8Array(59), new Uint8Array(64))).rejects.toMatchObject({ code: 'unsupported' });
     });
 
     it('reports its status', async () => {

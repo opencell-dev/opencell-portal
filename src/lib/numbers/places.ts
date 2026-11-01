@@ -2,14 +2,16 @@ import { and, asc, eq, gte, isNull, lt, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { exchanges, npas, rateCenters } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
-import { type Side, sideOfNpa } from './homing';
+import { homeCoreOf } from './blocks';
+import { type Side, sideOfHome } from './homing';
 import { parseTyped } from './input';
 import { rcKey } from './nanpa-parse';
 
 // Place search (portal spec §4.1 "Where?"): a city, a state, an area code or
 // an exchange becomes a list of places, each a rate center with the real
 // exchanges it has (§4.4). Only exchanges that are offered for new numbers
-// count: not withdrawn, in a geographic NPA with a known home side (§4.3).
+// count: not withdrawn, in a geographic NPA in service (OCSS spec §12 decision
+// 11) with a known home side (§4.3).
 
 export interface Place {
   /** "Lancaster, PA (717-291, +4 more)" */
@@ -48,6 +50,14 @@ const REGION_NAMES: Record<string, string> = {
   SASKATCHEWAN: 'SK', YUKON: 'YT',
 };
 
+// Two region codes are also countries' (OCSS spec §3.3): KY and MS searched for
+// mean the states, and these names the countries. Neither country has an
+// exchange in NANPA's or CNAC's files today, so neither is offered yet.
+const COUNTRIES = ['KY', 'MS'];
+const COUNTRY_NAMES: Record<string, string> = { 'CAYMAN ISLANDS': 'KY', MONTSERRAT: 'MS' };
+/** Exchanges in a region, without a country that shares its code. */
+const inRegion = (region: string) => and(eq(exchanges.region, region), sql`coalesce(${npas.stateCode}, '') NOT IN (${sql.join(COUNTRIES.map((c) => sql`${c}`), sql`, `)})`);
+
 /** "LANCASTER" → "Lancaster", "WILKES-BARRE" → "Wilkes-Barre": for a rate center Local Calling Guide has no name for. */
 function titleCase(s: string): string {
   return s.toLowerCase().replace(/(^|[\s\-'/])(\p{L})/gu, (_, sep: string, c: string) => sep + c.toUpperCase());
@@ -66,11 +76,11 @@ const MAX_MATCHES = 500;
  * it runs on the portal's one thread.
  */
 function namedPlaces(ctx: Ctx, name: string, region: string | null) {
-  const inRegion = (col: typeof exchanges.region | typeof rateCenters.region) => (region ? eq(col, region) : undefined);
+  const within = (col: typeof exchanges.region | typeof rateCenters.region) => (region ? eq(col, region) : undefined);
   const byKey = ctx.db
     .selectDistinct({ region: exchanges.region, rateCenter: exchanges.rateCenter })
     .from(exchanges)
-    .where(and(gte(exchanges.rateCenter, name), lt(exchanges.rateCenter, `${name}\uffff`), inRegion(exchanges.region)))
+    .where(and(gte(exchanges.rateCenter, name), lt(exchanges.rateCenter, `${name}\uffff`), within(exchanges.region)))
     .orderBy(asc(exchanges.rateCenter))
     .limit(MAX_MATCHES)
     .all();
@@ -81,7 +91,7 @@ function namedPlaces(ctx: Ctx, name: string, region: string | null) {
     .where(
       and(
         sql`(replace(${rateCenters.name}, '-', ' ') LIKE ${pattern} ESCAPE '\\' OR replace(upper(replace(${rateCenters.display}, '.', ' ')), '-', ' ') LIKE ${pattern} ESCAPE '\\')`,
-        inRegion(rateCenters.region),
+        within(rateCenters.region),
       ),
     )
     .orderBy(asc(rateCenters.name))
@@ -113,7 +123,7 @@ function offered(ctx: Ctx, where: SQL | undefined) {
     .from(exchanges)
     .innerJoin(npas, eq(npas.npa, exchanges.npa))
     .leftJoin(rateCenters, and(eq(rateCenters.region, exchanges.region), eq(rateCenters.name, exchanges.rateCenter)))
-    .where(and(isNull(exchanges.withdrawnAt), eq(npas.geographic, true), sql`${npas.region} <> ''`, where))
+    .where(and(isNull(exchanges.withdrawnAt), eq(npas.geographic, true), eq(npas.inService, true), sql`${npas.region} <> ''`, where))
     .orderBy(asc(exchanges.npaNxx))
     .all() as Row[];
 }
@@ -127,15 +137,21 @@ interface Group {
   rows: Row[];
 }
 
+/** Which side homes an NPA: from the table, or the state rule until it is known (blocks.ts). */
+function sideOf(ctx: Ctx, npa: string): Side | null {
+  const home = homeCoreOf(ctx, npa);
+  return home === null ? null : sideOfHome(home);
+}
+
 function group(ctx: Ctx, rows: Row[]): Group[] {
   const sides = new Map<string, Side | null>();
-  const sideOf = (npa: string) => {
-    if (!sides.has(npa)) sides.set(npa, sideOfNpa(ctx, npa));
+  const sideOfRow = (npa: string) => {
+    if (!sides.has(npa)) sides.set(npa, sideOf(ctx, npa));
     return sides.get(npa)!;
   };
   const out = new Map<string, Group>();
   for (const r of rows) {
-    if (sideOf(r.npa) === null) continue;
+    if (sideOfRow(r.npa) === null) continue;
     const k = `${r.region}|${r.rateCenter}`;
     let g = out.get(k);
     if (!g) {
@@ -160,7 +176,7 @@ function toPlace(ctx: Ctx, g: Group, first?: string): Place {
     region: g.region,
     rateCenter: g.rateCenter,
     exchanges: codes.map(ex),
-    side: sideOfNpa(ctx, head.slice(0, 3))!,
+    side: sideOf(ctx, head.slice(0, 3))!,
   };
 }
 
@@ -210,8 +226,10 @@ export function searchPlaces(ctx: Ctx, q: string, limit = 10): Place[] {
       return group(ctx, offered(ctx, and(eq(exchanges.region, p.region), eq(exchanges.rateCenter, p.rateCenter)))).map((g) => toPlace(ctx, g, code));
     }
     case 'text': {
+      const country = COUNTRY_NAMES[rcKey(t.text).replace(/-/g, ' ')];
+      if (country) return rank(group(ctx, offered(ctx, eq(npas.stateCode, country)))).slice(0, limit).map((g) => toPlace(ctx, g));
       const region = regionCode(t.text);
-      const inIt = region ? rank(group(ctx, offered(ctx, eq(exchanges.region, region)))) : [];
+      const inIt = region ? rank(group(ctx, offered(ctx, inRegion(region)))) : [];
       // Two letters that are a region's code mean the region; a full name
       // can be a place as well (Ohio is a state; Washington a state and a city).
       if (inIt.length > 0 && /^\p{L}{2}$/u.test(t.text)) return inIt.slice(0, limit).map((g) => toPlace(ctx, g));
@@ -244,7 +262,7 @@ export function exchangeOffered(ctx: Ctx, exchange: string): { region: string; r
   if (!/^\+8831\d{6}$/.test(exchange)) return null;
   const [row] = offered(ctx, and(eq(exchanges.npaNxx, exchange.slice(5))));
   if (!row) return null;
-  const side = sideOfNpa(ctx, row.npa);
+  const side = sideOf(ctx, row.npa);
   if (!side) return null;
   return { region: row.region, rateCenter: row.rateCenter, display: row.display ?? titleCase(row.rateCenter), side };
 }

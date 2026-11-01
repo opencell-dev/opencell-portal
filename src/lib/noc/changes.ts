@@ -3,6 +3,7 @@ import { isCoreError } from '@/core/types';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
 import { errorKind } from '@/lib/errors';
+import { coreFor } from '@/lib/numbers/route';
 import { hit } from '@/lib/ratelimit';
 import { coreActor } from '@/lib/site';
 import { groupNumber, modeLabel } from './format';
@@ -21,8 +22,7 @@ function outcomeOf(e: unknown): string {
 }
 
 /**
- * Disable or enable a subscriber on the core that holds numbers (core 1
- * until P5): sub.disable / sub.enable. A disabled terminal is deregistered
+ * Disable or enable a subscriber on its home core: sub.disable / sub.enable. A disabled terminal is deregistered
  * and can neither register nor call until enabled. Both are idempotent.
  */
 export async function changeSubscriber(ctx: Ctx, userId: number, number: string, enable: boolean, reason: string, ip: string): Promise<ChangeResult> {
@@ -32,7 +32,7 @@ export async function changeSubscriber(ctx: Ctx, userId: number, number: string,
     writeAudit(ctx, { actorId: userId, action: `${action}.limited`, target: `number:${number}`, detail: { reason }, ip });
     return { ok: false, message: lim.message };
   }
-  const h = ctx.cores[0];
+  const h = coreFor(ctx, number);
   const as = coreActor(ctx.config.site, userId);
   let outcome = 'ok';
   try {

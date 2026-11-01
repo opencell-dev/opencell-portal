@@ -25,26 +25,32 @@ export interface AccountStatus {
 /**
  * An account's numbers as the cards show them, after a sync (at most one
  * sub.status per number per 5 s). Within one 3 s deadline in all (Review
- * Focus): with a core that just failed nobody asks it for cell names, and the
- * lookup after a good sync gets what is left of the 3 s.
+ * Focus): nobody asks a core that just failed for cell names, and the lookup
+ * after a sync gets what is left of the 3 s. A cell's name comes from the core
+ * it is a cell of (OCSS spec §5.6): the serving core, or, when a v0.7.0 core
+ * doesn't say, the number's home. No handle for it: the card says "cell <id>".
  */
 export async function accountStatus(ctx: Ctx, userId: number): Promise<AccountStatus> {
   const t0 = Date.now();
-  const { rows, unavailable } = await syncAccount(ctx, userId);
-  const cores = [...new Set(rows.filter((r) => r.registered && r.cellId !== null).map((r) => coreFor(ctx, r.number).id))];
+  const { rows, unavailable, failedCores } = await syncAccount(ctx, userId);
+  const cellCore = (r: NumberRow) => (r.servingCore === null ? coreFor(ctx, r.number).id : ctx.cores.find((h) => h.coreNo === r.servingCore)?.id);
+  const cores = [...new Set(rows.filter((r) => r.registered && r.cellId !== null).flatMap((r) => cellCore(r) ?? []))];
   const left = () => Math.max(100, CORE_DEADLINE_MS - (Date.now() - t0));
-  const names = new Map(await Promise.all(cores.map(async (id) => [id, unavailable ? knownCellNames(id) : await cellNames(ctx, id, left())] as const)));
+  const names = new Map(await Promise.all(cores.map(async (id) => [id, failedCores.has(id) ? knownCellNames(id) : await cellNames(ctx, id, left())] as const)));
   const now = ctx.now();
-  const numbers = rows.map((r) => ({
-    number: r.number,
-    state: r.state,
-    disabled: r.disabled,
-    registered: r.registered,
-    activatedAt: r.activatedAt,
-    ...cardState(r, now, (id) => names.get(coreFor(ctx, r.number).id)?.get(id)),
-    tokenExpiresAt: r.tokenExpiresAt,
-    terminal: r.tmidPrefix,
-    lastSeenAt: r.lastSeenAt,
-  }));
+  const numbers = rows.map((r) => {
+    const core = cellCore(r);
+    return {
+      number: r.number,
+      state: r.state,
+      disabled: r.disabled,
+      registered: r.registered,
+      activatedAt: r.activatedAt,
+      ...cardState(r, now, (id) => (core === undefined ? undefined : names.get(core)?.get(id))),
+      tokenExpiresAt: r.tokenExpiresAt,
+      terminal: r.tmidPrefix,
+      lastSeenAt: r.lastSeenAt,
+    };
+  });
   return { numbers, unavailable };
 }

@@ -12,7 +12,7 @@ export interface Ctx {
   db: Db;
   mailer: Mailer;
   mailQueue: MailQueue;
-  /** Every number and subscriber operation's core: cores[0] until P5 (the East/West split). */
+  /** The first core. A number's operations go to its home core instead: coreFor (lib/numbers/route.ts). */
   core: CoreAdmin;
   /** Every core, in config order (the admin dashboard). */
   cores: CoreHandle[];

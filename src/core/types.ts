@@ -23,6 +23,13 @@ export interface SubStatus {
   /** The first 2 bytes of the bound TMID, hex, or null before activation. */
   tmidPrefix: string | null;
   lastSeenAt: number | null;
+  /**
+   * The core whose cell `cellId` is (OCSS spec §5.6): read the two as a pair,
+   * since cell ids are per core. This core for its own cell, the visited core
+   * for a visitor; null when not registered, or from a v0.7.0 core, which does
+   * not say.
+   */
+  servingCore: number | null;
 }
 
 export interface Cdr {
@@ -198,8 +205,31 @@ export type CoreErrorCode =
   | 'not_unactivated'
   | 'rate_limited'
   | 'unavailable'
-  /** The core doesn't do this yet: route.offer until P5. */
+  /** The core doesn't do this: an older one, or route.offer without a signed table. */
   | 'unsupported';
+
+/** route.status (OCSS spec §5.2). */
+export interface RouteStatus {
+  /** false: `block =` lines, which take no additions. */
+  signed: boolean;
+  rootVersion: number;
+  seq: number;
+  blocks: number;
+  /** The highest index in use or ever assigned: a new block takes maxIdx + 1. */
+  maxIdx: number;
+  /** When the latest valid delegation ends (unix ms); null: none. */
+  delegateNotAfter: number | null;
+}
+
+/** route.offer's answer (OCSS spec §5.1). */
+export interface RouteOffered {
+  rootVersion: number;
+  seq: number;
+  /** In the effective table now. */
+  blocks: number;
+  /** false: the core held this addition already. */
+  isNew: boolean;
+}
 
 const CORE_ERROR = Symbol.for('opencell.CoreError');
 
@@ -231,13 +261,16 @@ export function isCoreError(e: unknown): e is CoreError {
 
 /**
  * A core the portal knows (plan P4b): its id in the config (core1, core2;
- * 'fake' for the fake core), where it listens (for the admin page), and its
- * client. The admin dashboard shows every core; number and subscriber
- * operations go to the first until P5.
+ * 'fake' for the fake core), where it listens (for the admin page), its number
+ * on the network (the home core and serving core ids in core.blocks and
+ * sub.status), and its client. Number and subscriber operations pick a handle
+ * with coreFor (lib/numbers/route.ts); the admin dashboard shows every core.
  */
 export interface CoreHandle {
   id: string;
   where: string;
+  /** core<N> → N; a TLS id without a trailing number, or a fake core → its position + 1. */
+  coreNo: number;
   core: CoreAdmin;
 }
 
@@ -263,7 +296,9 @@ export interface CoreAdmin {
   cellRevoke(actor: number, cellId: number): Promise<void>;
   cellStatus(actor: number, cellId?: number): Promise<CellStatus[]>;
   coreStatus(actor: number): Promise<CoreStatus>;
-  routeOffer(actor: number, tableVersion: number, blob: Uint8Array, sig: Uint8Array): Promise<void>;
+  /** A delegate-signed addition (OCSS spec §3.5, §5.1): 'taken' and 'invalid' carry the rule that failed. */
+  routeOffer(actor: number, tableVersion: number, blob: Uint8Array, sig: Uint8Array): Promise<RouteOffered>;
+  routeStatus(actor: number): Promise<RouteStatus>;
   // ---- the NOC's operations (core v0.4.0; NOC design §7.1). An older core
   // answers each with CoreError 'unsupported'.
   /** Each radio of each linked cell that has reported (one cell, or every cell). */

@@ -113,6 +113,7 @@ case "$1" in
     echo active > "$state/active"
     ;;
   is-active) cat "$state/active" 2>/dev/null || echo inactive ;;
+  daemon-reload) echo daemon-reload >> "$state/daemon-reload.log" ;;
   *) : ;;
 esac
 SH
@@ -569,6 +570,26 @@ else
 fi
 simassert "M1: ...current is now v1.0.12" [ "$(current_tag)" = v1.0.12 ]
 rm -f "$sim_root/fake-systemd/site"
+
+# Plan P5: the route delegate's drop-in follows the key file on the guest, and
+# goes on oc-portal-nanpa.service only. A LoadCredential of a missing file would
+# fail the weekly refresh (243/CREDENTIALS), so it's only there with the key.
+rd_dropin="$sim_root/etc/systemd/system/oc-portal-nanpa.service.d/route-delegate.conf"
+rd_key="$sim_root/etc/opencell/tls/route-delegate.key"
+rm -f "$sim_root/fake-systemd/daemon-reload.log"
+for t in v1.1.0 v1.1.1 v1.1.2; do git -C "$sim_repo" tag "$t"; done
+simcheck 0 "route delegate: deploy with no key on the guest" "$D_SIM" deploy v1.1.0
+simassert "route delegate: ...places no drop-in" [ ! -e "$rd_dropin" ]
+mkdir -p "$(dirname "$rd_key")"
+echo not-a-real-key > "$rd_key"
+chmod 0400 "$rd_key"
+simcheck 0 "route delegate: deploy with the key on the guest" "$D_SIM" deploy v1.1.1
+simassert "route delegate: ...places the drop-in on the refresh" cmp -s "$sim_repo/deploy/oc-portal-route-delegate.conf" "$rd_dropin"
+simassert "route delegate: ...and tells systemd" grep -q daemon-reload "$sim_root/fake-systemd/daemon-reload.log"
+simassert "route delegate: ...not on the portal itself" [ ! -e "$sim_root/etc/systemd/system/oc-portal.service.d/route-delegate.conf" ]
+rm -f "$rd_key"
+simcheck 0 "route delegate: deploy after the key was removed" "$D_SIM" deploy v1.1.2
+simassert "route delegate: ...takes the drop-in away again" [ ! -e "$rd_dropin" ]
 
 # The default SSH command (no OC_PORTAL_SSH): the `oc-portal` host from the
 # operator's own SSH config (OC_SSH_CONFIG, default ~/.ssh/cm/oc-portal.conf

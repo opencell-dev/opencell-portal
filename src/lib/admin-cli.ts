@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { userRoles, users } from '@/db/schema';
 import { listAudit, writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
-import { applyNanpa, fetchNanpa, liveExchanges, logFailedRefresh, type NanpaFiles, readNanpaDir } from '@/lib/numbers/nanpa-refresh';
+import { errorKind } from '@/lib/errors';
+import { applyNanpa, fetchNanpa, liveExchanges, logFailedRefresh, logOffers, type NanpaFiles, readNanpaDir } from '@/lib/numbers/nanpa-refresh';
+import { type OfferResult, offerMissingNpas } from '@/lib/numbers/route-delegate';
 import { listPasskeys } from '@/lib/passkeys';
 import { isLimitName, LIMITS, limitOf, setLimit } from '@/lib/ratelimit';
 import { findUserByEmail, grantRole, revokeRole, rolesOf } from '@/lib/users';
@@ -19,8 +21,9 @@ export const USAGE = `usage: oc-portal-admin COMMAND
   limit show                     show the rate limits
   limit set NAME MAX [WINDOW_S]  change a rate limit (${Object.keys(LIMITS).join(', ')})
   audit [N]                      the last N portal audit records (default 20)
-  nanpa-refresh [--dir DIR]      import NANPA's exchanges (weekly timer); --dir reads
-                                 co-codes.txt, npas.csv, cnac.csv, rc_XX.xml from DIR`;
+  nanpa-refresh [--dir DIR]      import NANPA's exchanges (weekly timer), then sign and offer
+                                 the new NPAs; --dir reads co-codes.txt, npas.csv,
+                                 cnac.csv, rc_XX.xml from DIR`;
 
 type Out = { code: number; out: string };
 
@@ -160,11 +163,20 @@ export async function runAdminAsync(ctx: Ctx, argv: string[], fetchFiles: () => 
   try {
     const files = args.length === 2 ? readNanpaDir(args[1]) : await fetchFiles();
     const r = applyNanpa(ctx, files);
-    // P2 only reports new NPAs; P5 signs and offers them as blocks (spec §4.4, §8.2).
+    // The import stands whatever happens next: a table problem is logged and the run exits normally.
+    const offers: OfferResult = await offerMissingNpas(ctx).catch((e: unknown) => ({ offered: [], replayed: 0, errors: [`the offers failed (${errorKind(e)})`] }));
+    try {
+      logOffers(ctx, offers);
+    } catch (e) {
+      offers.errors.push(`the refresh log was not updated (${errorKind(e)})`);
+    }
     const lines = [
       `nanpa: ${r.newExchanges} new exchanges, ${r.withdrawn} withdrawn, ${r.restored} restored, ${r.rateCenters} rate centers; ${liveExchanges(ctx)} live`,
       ...(r.newNpas.length > 0 ? [`nanpa: new NPAs ${r.newNpas.join(' ')}`] : []),
       ...r.errors.map((e) => `nanpa: ${e}`),
+      ...(offers.offered.length > 0 ? [`route: offered NPAs ${offers.offered.join(' ')}`] : []),
+      ...(offers.replayed > 0 ? [`route: ${offers.replayed} additions replayed`] : []),
+      ...offers.errors.map((e) => `route: ${e}`),
     ];
     return { code: 0, out: lines.join('\n') };
   } catch (e) {

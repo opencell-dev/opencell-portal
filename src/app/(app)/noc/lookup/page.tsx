@@ -31,7 +31,7 @@ export default async function NocLookup() {
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">Number lookup</h1>
       <p className="text-sm text-slate-600 dark:text-slate-300">
-        A number&apos;s state, registration and calls of the last 30 days, from the core that holds numbers. Each lookup is recorded
+        A number&apos;s state, registration and calls of the last 30 days, from its home core. Each lookup is recorded
         in the portal&apos;s audit and the core&apos;s.
       </p>
       {tryThese.length > 0 && (

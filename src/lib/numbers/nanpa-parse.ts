@@ -20,6 +20,8 @@ export interface NpaRow {
   npa: string;
   /** A state, province or country code; '' when the name is not one this file knows. */
   region: string;
+  /** The routing table's code (OCSS spec §3.3): US-XX, CA-XX, a country's ISO alpha-2. Null: non-geographic, or an unknown name. */
+  stateCode: string | null;
   geographic: boolean;
   inService: boolean;
 }
@@ -230,6 +232,14 @@ function regionOf(location: string): string {
   return REGION_OF[placeName(location)] ?? '';
 }
 
+/** 902/782 are CA-NS and 867 CA-NT because REGION_OF takes the first province of each. */
+function stateCodeOf(region: string, country: string): string | null {
+  if (region === '') return null;
+  if (country === 'US') return `US-${region}`;
+  if (country === 'CANADA') return `CA-${region}`;
+  return region;
+}
+
 /**
  * NANPA's NPA list (npa_report.csv): line 1 is a `File Date,…` preamble, the
  * header is line 2. Geographic means USE = G with a country (a G code with no
@@ -249,7 +259,8 @@ export function parseNpas(text: string): NpaRow[] {
     const country = c[iCountry]?.trim() ?? '';
     const location = c[iLoc]?.trim() ?? '';
     const geographic = c[iUse]?.trim() === 'G' && country !== '';
-    out.push({ npa, region: geographic ? regionOf(location) : '', geographic, inService: c[iIn]?.trim() === 'Y' });
+    const region = geographic ? regionOf(location) : '';
+    out.push({ npa, region, stateCode: stateCodeOf(region, country), geographic, inService: c[iIn]?.trim() === 'Y' });
   }
   return out;
 }
