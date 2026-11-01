@@ -17,7 +17,7 @@ import {
   signInOptions,
 } from '@/lib/passkeys';
 import { SESSION_MS } from '@/lib/sessions';
-import { ADMIN_SESSION_MS, isStaff, STAFF_ONLY } from '@/lib/users';
+import { ACCOUNT_DISABLED, ADMIN_SESSION_MS, isStaff, STAFF_ONLY } from '@/lib/users';
 import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
 import { currentSession, requestMeta, requireUser, setSessionCookie } from '@/server/request';
 
@@ -74,6 +74,7 @@ export async function confirmEmailLinkAction(token: string): Promise<void> {
   const r = await consumeEmailToken(appCtx(), z.string().max(64).parse(token), await requestMeta());
   if (!r.ok) {
     if (r.error === STAFF_ONLY) redirect('/sign-in?staff=1');
+    if (r.error === ACCOUNT_DISABLED) redirect('/sign-in?disabled=1');
     // A second press (double click, or a retry after the first went through)
     // finds the link used; if this browser is already signed in, carry on.
     if (await currentSession()) redirect(nocSite ? '/account' : '/numbers');

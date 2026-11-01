@@ -248,6 +248,8 @@ function applyStatus(ctx: Ctx, row: NumberRow, st: SubStatus): NumberRow {
   const set = {
     state: st.state,
     disabled: st.disabled,
+    // Enabled from elsewhere (the NOC, oc-core admin): no longer the account's or the admin's doing.
+    disabledBy: st.disabled ? row.disabledBy : null,
     registered: st.registered,
     cellId: st.cellId,
     servingCore: st.servingCore,

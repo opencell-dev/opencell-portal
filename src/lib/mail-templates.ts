@@ -198,3 +198,24 @@ export function cellCaExpiringMail(adminName: string, notAfter: number, origin: 
       `Renew it on the laptop: deploy/oc-portal-cell-ca renew oc-portal${sig(origin)}`,
   };
 }
+
+export function accountDisabledMail(name: string, origin: string): Template {
+  return {
+    subject: 'Your OpenCell account has been disabled',
+    text: `Hello ${name},\n\nAn OpenCell admin has disabled your account, and its numbers with it. If you think this is a mistake, write to opencell@k4ozi.com.${sig(origin)}`,
+  };
+}
+
+export function accountEnabledMail(name: string, origin: string): Template {
+  return {
+    subject: 'Your OpenCell account has been enabled',
+    text: `Hello ${name},\n\nYour OpenCell account works again, and its numbers with it. Sign in: ${origin}/sign-in${sig(origin)}`,
+  };
+}
+
+export function nodeOrphanMail(adminName: string, nodeId: number, siteName: string, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: Node ${nodeId} has no operator`,
+    text: `Hello ${adminName},\n\nThe account that hosted node ${nodeId} (${siteName}) has been deleted. The node keeps serving; its site details are on the Cells page: ${link}${sig(origin)}`,
+  };
+}

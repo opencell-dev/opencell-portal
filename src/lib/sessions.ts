@@ -54,6 +54,11 @@ export function sessionFromToken(ctx: Ctx, token: string | undefined): { session
   }
   const user = getUser(ctx, session.userId);
   if (!user) return null;
+  // A disabled account has no session (plan P3, decision 22): disabling ends them all; this holds whatever else made one.
+  if (user.disabledAt !== null) {
+    ctx.db.delete(sessions).where(eq(sessions.id, session.id)).run();
+    return null;
+  }
   // The NOC's site (NOC design §N1.5): an account it no longer admits (its
   // staff role was taken away) is signed out here, session by session.
   if (!siteAdmits(ctx, user.id)) {
@@ -61,6 +66,23 @@ export function sessionFromToken(ctx: Ctx, token: string | undefined): { session
     return null;
   }
   return { session, user };
+}
+
+// Sessions ended because their account was disabled, so its next request can
+// say why. In memory: after a restart it only loses the message, and the
+// sign-in page says it anyway. One per process, as __ocCores is.
+const g = globalThis as typeof globalThis & { __ocEndedByDisable?: Set<string> };
+
+/** End every session of an account being disabled. */
+export function endSessionsOfDisabled(ctx: Ctx, userId: number): void {
+  g.__ocEndedByDisable ??= new Set();
+  for (const s of ctx.db.delete(sessions).where(eq(sessions.userId, userId)).returning({ id: sessions.id }).all()) g.__ocEndedByDisable.add(s.id);
+}
+
+/** Whether this cookie's session was ended by its account being disabled (told once). */
+export function wasEndedByDisable(token: string | undefined): boolean {
+  if (!token || token.length > 64) return false;
+  return g.__ocEndedByDisable?.delete(hashToken(token)) ?? false;
 }
 
 export function endSession(ctx: Ctx, token: string): void {

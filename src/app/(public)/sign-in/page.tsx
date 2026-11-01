@@ -4,12 +4,12 @@ import { MagicLinkForm } from '@/components/magic-link-form';
 import { PasskeySignIn } from '@/components/passkey-sign-in';
 import { appCtx } from '@/lib/ctx';
 import { siteHome } from '@/lib/site';
-import { STAFF_ONLY } from '@/lib/users';
+import { ACCOUNT_DISABLED, STAFF_ONLY } from '@/lib/users';
 
 export const metadata: Metadata = { title: 'Sign in' };
 
-export default async function SignIn({ searchParams }: { searchParams: Promise<{ admin?: string; noc?: string; staff?: string }> }) {
-  const { admin, noc, staff } = await searchParams;
+export default async function SignIn({ searchParams }: { searchParams: Promise<{ admin?: string; noc?: string; staff?: string; disabled?: string }> }) {
+  const { admin, noc, staff, disabled } = await searchParams;
   // NOC design §N1.5: the NOC's own site signs in staff only, and has no sign-up.
   const site = appCtx().config.site;
   const nocSite = site === 'noc';
@@ -19,6 +19,11 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<{
       {nocSite && (
         <p className="text-sm text-slate-600 dark:text-slate-300">
           For OpenCell staff. An administrator makes your account. Subscribers sign in on the OpenCell portal.
+        </p>
+      )}
+      {disabled && (
+        <p role="status" className="rounded border border-amber-500 p-3 text-sm" data-testid="account-disabled">
+          {ACCOUNT_DISABLED}
         </p>
       )}
       {nocSite && staff && (

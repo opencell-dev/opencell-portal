@@ -41,6 +41,9 @@ export function isStaff(ctx: Ctx, userId: number): boolean {
   return r.includes('admin') || r.includes('noc');
 }
 
+/** What a disabled account is told, at sign-in and on its next request (plan P3, decision 22). */
+export const ACCOUNT_DISABLED = 'This account is disabled. Write to opencell@k4ozi.com.';
+
 /** What an account the NOC's site does not admit is told (NOC design §N1.5). */
 export const STAFF_ONLY = 'This site is for OpenCell staff only, and this account has no staff role here.';
 

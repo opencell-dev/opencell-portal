@@ -17,7 +17,7 @@ import type { Ctx } from '@/lib/ctx';
 import { hitIp } from '@/lib/ratelimit';
 import { createSession, isFresh, markReauth, type RequestMeta, type Session } from '@/lib/sessions';
 import { newToken } from '@/lib/tokens';
-import { getUser, isAdmin, isStaff, STAFF_ONLY, siteAdmits } from '@/lib/users';
+import { ACCOUNT_DISABLED, getUser, isAdmin, isStaff, STAFF_ONLY, siteAdmits } from '@/lib/users';
 import { firstError, optionalPasskeyNameSchema, passkeyTransportsSchema } from '@/lib/validation';
 
 // Passkeys (spec §3) with SimpleWebAuthn: discoverable credentials, so sign-in
@@ -299,6 +299,7 @@ export async function finishSignIn(
   // admin session from a non-UV assertion is simply not admin-capable (see sessions.ts).
   const check = await checkAssertion(ctx, p, response, expectedChallenge, false, meta);
   if (!check) return { ok: false, error: 'The passkey could not be checked. Please try again.' };
+  if (getUser(ctx, p.userId)?.disabledAt) return { ok: false, error: ACCOUNT_DISABLED };
   // The NOC's site signs in staff only (NOC design §N1.5).
   if (!siteAdmits(ctx, p.userId)) return { ok: false, error: STAFF_ONLY };
   const { token } = createSession(ctx, p.userId, 'passkey', meta, { uv: check.userVerified, credentialId: p.id });
