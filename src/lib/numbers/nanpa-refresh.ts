@@ -1,0 +1,240 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { count, isNull } from 'drizzle-orm';
+import { unzipSync } from 'fflate';
+import { exchanges, nanpaRefreshes, npas } from '@/db/schema';
+import { writeAudit } from '@/lib/audit';
+import type { Ctx } from '@/lib/ctx';
+import { type ExchangeRow, lcgRegions, parseCnacCodes, parseCoCodes, parseNpas, parseRateCenters, type RateCenterRow } from './nanpa-parse';
+
+// The weekly NANPA refresh (portal spec §4.4): new NXX assignments become
+// searchable, a code that leaves NANPA's file is withdrawn (kept for the
+// numbers already issued in it, never offered again), a new geographic NPA
+// is reported for P5 to sign and offer as a block. Run by
+// `oc-portal-admin nanpa-refresh` from oc-portal-nanpa.timer.
+
+/** Where the files come from (the P2 plan's "Data sources" appendix). Every one is a plain GET. */
+export const NANPA_URLS = {
+  coCodes: 'https://reports.nanpa.com/public/CoCodeAssignment_Utilized_AllStates_Public.zip',
+  cnac: 'https://www.cnac.ca/data/COCodeStatus_ALL.zip',
+  npas: 'https://reports.nanpa.com/public/npa_report.csv',
+  lcgRegions: 'https://www.localcallingguide.com/lca_listregion.php',
+  lcgRc: 'https://www.localcallingguide.com/xmlrc.php?region=',
+};
+export type NanpaUrls = typeof NANPA_URLS;
+
+export const USER_AGENT = 'OpenCell-portal (opencell@k4ozi.com)';
+const FILE_TIMEOUT_MS = 60_000;
+/** Local Calling Guide asks for restraint: one region at a time, 1.5 s apart. */
+const LCG_DELAY_MS = 1500;
+/** A refresh that would leave fewer live exchanges than this share of today's is a truncated download. */
+const MIN_SHARE = 0.9;
+
+const CANADA = new Set(['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT']);
+
+export interface NanpaFiles {
+  coCodes: string;
+  /** Canada's codes. Missing: the Canadian exchanges are left as they are. */
+  cnac?: string;
+  npas: string;
+  /** One Local Calling Guide XML per region. Missing: the rate centers are left as they are. */
+  rateCenters?: string[];
+  /** What could not be fetched (and so was left as it was). */
+  errors?: string[];
+}
+
+export interface RefreshResult {
+  /**
+   * Geographic NPAs this refresh saw for the first time: the hook P5 signs
+   * and offers new blocks from (spec §4.4, §8.2). Empty on the first import,
+   * whose whole table P5 signs at setup.
+   */
+  newNpas: string[];
+  newExchanges: number;
+  withdrawn: number;
+  restored: number;
+  rateCenters: number;
+  errors: string[];
+}
+
+type FetchImpl = typeof fetch;
+
+async function get(url: string, fetchImpl: FetchImpl): Promise<Uint8Array> {
+  const res = await fetchImpl(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(FILE_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`nanpa: GET ${url}: HTTP ${res.status}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/** The one text file inside a zip (or the body itself when it is not one: PK\x03\x04 is a zip's signature). */
+function unzipText(body: Uint8Array, encoding: 'latin1' | 'utf-8'): string {
+  const isZip = body[0] === 0x50 && body[1] === 0x4b && body[2] === 0x03 && body[3] === 0x04;
+  let data = body;
+  if (isZip) {
+    const entries = Object.entries(unzipSync(body)).filter(([name]) => /\.(txt|csv)$/i.test(name));
+    if (entries.length !== 1) throw new Error(`nanpa: expected one .txt or .csv in the zip, found ${entries.length}`);
+    data = entries[0][1];
+  }
+  return new TextDecoder(encoding).decode(data);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Download the files. The US CO codes and the NPA list are required (a
+ * failure throws: nothing to refresh from). Canada's codes and the rate
+ * centers are each skipped on failure, with the reason in `errors`, so the
+ * last good copy stays.
+ */
+export async function fetchNanpa(urls: NanpaUrls = NANPA_URLS, fetchImpl: FetchImpl = fetch, opts = { delayMs: LCG_DELAY_MS }): Promise<NanpaFiles> {
+  const errors: string[] = [];
+  const coCodes = unzipText(await get(urls.coCodes, fetchImpl), 'latin1');
+  const npaText = new TextDecoder('utf-8').decode(await get(urls.npas, fetchImpl));
+  let cnac: string | undefined;
+  try {
+    cnac = unzipText(await get(urls.cnac, fetchImpl), 'utf-8');
+  } catch (e) {
+    errors.push(`cnac skipped: ${(e as Error).message}`);
+  }
+  let rateCenters: string[] | undefined;
+  let region = '(list)';
+  try {
+    const regions = lcgRegions(new TextDecoder('utf-8').decode(await get(urls.lcgRegions, fetchImpl)));
+    if (regions.length === 0) throw new Error('no regions on the list page');
+    const texts: string[] = [];
+    for (const r of regions) {
+      region = r;
+      await sleep(opts.delayMs);
+      texts.push(new TextDecoder('utf-8').decode(await get(urls.lcgRc + r, fetchImpl)));
+    }
+    rateCenters = texts;
+  } catch (e) {
+    errors.push(`rate centers skipped (region ${region}): ${(e as Error).message}`);
+  }
+  return { coCodes, cnac, npas: npaText, rateCenters, errors };
+}
+
+/**
+ * The same files from a directory (`nanpa-refresh --dir`): co-codes.txt and
+ * npas.csv required; cnac.csv and rc_*.xml (one per region) optional.
+ */
+export function readNanpaDir(dir: string): NanpaFiles {
+  const names = readdirSync(dir);
+  const rc = names.filter((n) => /^rc_[A-Z]{2}\.xml$/.test(n)).sort();
+  return {
+    coCodes: readFileSync(join(dir, 'co-codes.txt'), 'latin1'),
+    cnac: names.includes('cnac.csv') ? readFileSync(join(dir, 'cnac.csv'), 'utf8') : undefined,
+    npas: readFileSync(join(dir, 'npas.csv'), 'utf8'),
+    rateCenters: rc.length > 0 ? rc.map((n) => readFileSync(join(dir, n), 'utf8')) : undefined,
+    errors: [],
+  };
+}
+
+/**
+ * Bring the tables up to date from `files`, in one transaction: upsert the
+ * NPAs; add new exchanges; withdraw those missing from this run (only within
+ * what this run covers: Canada only when CNAC's file is here); restore those
+ * that came back; upsert the rate centers when they are here. Refuses (throws,
+ * nothing written) when the run would leave under 90 % of today's live
+ * exchanges: a truncated download must not withdraw the country. Logs the
+ * result to nanpa_refreshes and the audit.
+ */
+export function applyNanpa(ctx: Ctx, files: NanpaFiles): RefreshResult {
+  // Parse everything first: a format change throws before any write.
+  const npaRows = parseNpas(files.npas);
+  const rows = new Map<string, ExchangeRow>();
+  for (const r of parseCoCodes(files.coCodes)) if (!rows.has(r.npaNxx)) rows.set(r.npaNxx, r);
+  if (files.cnac !== undefined) for (const r of parseCnacCodes(files.cnac)) if (!rows.has(r.npaNxx)) rows.set(r.npaNxx, r);
+  const rcRows = new Map<string, RateCenterRow>();
+  for (const text of files.rateCenters ?? []) {
+    for (const r of parseRateCenters(text)) if (!rcRows.has(`${r.region}|${r.name}`)) rcRows.set(`${r.region}|${r.name}`, r);
+  }
+  const now = ctx.now();
+  const errors = [...(files.errors ?? [])];
+  for (const n of npaRows) if (n.geographic && n.inService && n.region === '') errors.push(`npa ${n.npa}: its region is not one the portal knows`);
+  const inScope = (region: string) => files.cnac !== undefined || !CANADA.has(region);
+  const client = ctx.db.$client;
+
+  const result = ctx.db.transaction((tx) => {
+    // ---- NPAs ----
+    const firstImport = tx.select({ n: count() }).from(npas).get()!.n === 0;
+    const before = new Map(tx.select().from(npas).all().map((r) => [r.npa, r]));
+    const upsertNpa = client.prepare(
+      `INSERT INTO npas (npa, region, geographic, in_service, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(npa) DO UPDATE SET region = excluded.region, geographic = excluded.geographic, in_service = excluded.in_service, updated_at = excluded.updated_at`,
+    );
+    const newNpas: string[] = [];
+    for (const n of npaRows) {
+      const old = before.get(n.npa);
+      if (!firstImport && n.geographic && !old?.geographic) newNpas.push(n.npa);
+      if (!old || old.region !== n.region || old.geographic !== n.geographic || old.inService !== n.inService) {
+        upsertNpa.run(n.npa, n.region, n.geographic ? 1 : 0, n.inService ? 1 : 0, now);
+      }
+    }
+
+    // ---- exchanges ----
+    const current = tx.select().from(exchanges).all();
+    const liveInScope = current.filter((e) => e.withdrawnAt === null && inScope(e.region)).length;
+    const incoming = [...rows.values()].filter((r) => inScope(r.region)).length;
+    if (liveInScope > 0 && incoming < MIN_SHARE * liveInScope) {
+      throw new Error(`nanpa: this run has ${incoming} exchanges, under 90 % of the ${liveInScope} live ones; refusing (a truncated download?)`);
+    }
+    const byCode = new Map(current.map((e) => [e.npaNxx, e]));
+    const insert = client.prepare(
+      'INSERT INTO exchanges (npa_nxx, npa, nxx, region, rate_center, ocn, company, first_seen_at, withdrawn_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+    );
+    const update = client.prepare('UPDATE exchanges SET region = ?, rate_center = ?, ocn = ?, company = ?, withdrawn_at = NULL WHERE npa_nxx = ?');
+    const withdraw = client.prepare('UPDATE exchanges SET withdrawn_at = ? WHERE npa_nxx = ?');
+    let newExchanges = 0;
+    let restored = 0;
+    let withdrawn = 0;
+    for (const r of rows.values()) {
+      const old = byCode.get(r.npaNxx);
+      if (!old) {
+        insert.run(r.npaNxx, r.npa, r.nxx, r.region, r.rateCenter, r.ocn, r.company, now);
+        newExchanges++;
+        continue;
+      }
+      if (old.withdrawnAt !== null) restored++;
+      if (old.withdrawnAt !== null || old.region !== r.region || old.rateCenter !== r.rateCenter || old.ocn !== r.ocn || old.company !== r.company) {
+        update.run(r.region, r.rateCenter, r.ocn, r.company, r.npaNxx);
+      }
+    }
+    for (const e of current) {
+      if (e.withdrawnAt === null && inScope(e.region) && !rows.has(e.npaNxx)) {
+        withdraw.run(now, e.npaNxx);
+        withdrawn++;
+      }
+    }
+
+    // ---- rate centers ----
+    if (files.rateCenters !== undefined) {
+      const upsertRc = client.prepare(
+        `INSERT INTO rate_centers (region, name, display, lat, lon) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(region, name) DO UPDATE SET display = excluded.display, lat = excluded.lat, lon = excluded.lon`,
+      );
+      for (const r of rcRows.values()) upsertRc.run(r.region, r.name, r.display, r.lat, r.lon);
+    }
+
+    const out: RefreshResult = { newNpas, newExchanges, withdrawn, restored, rateCenters: files.rateCenters === undefined ? 0 : rcRows.size, errors };
+    tx.insert(nanpaRefreshes).values({ at: now, ok: true, detail: JSON.stringify(out) }).run();
+    return out;
+  });
+  writeAudit(ctx, {
+    actorId: null,
+    action: 'nanpa.refresh',
+    detail: { ...result, errors: result.errors.length },
+  });
+  return result;
+}
+
+/** A refresh that failed, for the admin page's log: why, and nothing else changed. */
+export function logFailedRefresh(ctx: Ctx, e: unknown): void {
+  const detail = { newNpas: [], newExchanges: 0, withdrawn: 0, restored: 0, rateCenters: 0, errors: [(e as Error)?.message ?? String(e)] };
+  ctx.db.insert(nanpaRefreshes).values({ at: ctx.now(), ok: false, detail: JSON.stringify(detail) }).run();
+  writeAudit(ctx, { actorId: null, action: 'nanpa.refresh_failed', detail: { error: detail.errors[0].slice(0, 300) } });
+}
+
+/** The live (not withdrawn) exchange count, for the CLI's summary. */
+export function liveExchanges(ctx: Ctx): number {
+  return ctx.db.select({ n: count() }).from(exchanges).where(isNull(exchanges.withdrawnAt)).get()!.n;
+}

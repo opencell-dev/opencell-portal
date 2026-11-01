@@ -1,0 +1,34 @@
+[Unit]
+Description=OpenCell portal: weekly NANPA exchange refresh (portal spec §4.4)
+# Downloads NANPA's and CNAC's CO-code reports, NANPA's NPA list and Local
+# Calling Guide's rate centers (one region every 1.5 s: about 3 minutes),
+# and imports them in one transaction. A failed or refused run changes
+# nothing and is logged (journal, the admin page's refresh log).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=oc-portal
+Group=oc-portal
+UMask=0077
+WorkingDirectory=/opt/oc-portal/current
+# The portal's own configuration, as oc-portal.service and oc-portal-admin read it.
+EnvironmentFile=/etc/opencell/portal.env
+EnvironmentFile=/etc/opencell/portal-smtp.env
+Environment=HOME=/var/lib/oc-portal
+ExecStart=/usr/bin/node ./node_modules/.bin/tsx scripts/oc-portal-admin.ts nanpa-refresh
+TimeoutStartSec=30min
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/oc-portal
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=

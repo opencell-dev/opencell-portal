@@ -1,0 +1,10 @@
+[Unit]
+Description=OpenCell portal: weekly NANPA exchange refresh (Sundays)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:20:00 America/New_York
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
