@@ -125,3 +125,32 @@ test('a subscriber gets a 404 on the admin pages for number limits', async ({ pa
   const res = await page.goto('/admin/limits');
   expect(res?.status()).toBe(404);
 });
+
+test('the directory shows activated, listed numbers to signed-in subscribers only; Calls never another’s', async ({ page, browser }, info) => {
+  const tag = `Zed${Math.floor(Math.random() * 1e9)}`;
+  await freshUser(page, info, tag);
+  const url = await getLancasterNumber(page);
+  const number = decodeURIComponent(new URL(url).pathname.split('/')[2]);
+  const spaced = number.replace(/^\+883(1)(\d{3})(\d{3})(\d{5})$/, '+883 $1 $2 $3 $4');
+  // Waiting for activation: nobody's yet, so not listed.
+  const bob = await otherUser(browser, info);
+  await bob.page.goto(`/directory?q=${tag}`);
+  await expect(bob.page.getByText('Nobody listed matches.')).toBeVisible();
+  // Activated: listed (the box was ticked).
+  await page.getByRole('button', { name: 'Simulate a terminal activating it (fake core)' }).click();
+  await expect(page.getByText('This number is active on a terminal.')).toBeVisible();
+  await bob.page.goto(`/directory?q=${tag}`);
+  await expect(bob.page.getByRole('cell', { name: spaced })).toBeVisible();
+  await bob.page.goto(`/directory?q=${number.slice(-9)}`);
+  await expect(bob.page.getByRole('cell', { name: tag })).toBeVisible();
+  // Bob asking for Zed's calls gets none of them.
+  await bob.page.goto(`/calls?number=${encodeURIComponent(number)}`);
+  await expect(bob.page.getByText('You have no numbers yet.')).toBeVisible();
+  await bob.ctx.close();
+  // Signed out: the sign-in page, never the list.
+  const anon = await browser.newContext();
+  const p = await anon.newPage();
+  await p.goto('/directory');
+  await expect(p).toHaveURL(/\/sign-in$/);
+  await anon.close();
+});

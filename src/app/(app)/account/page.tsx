@@ -51,7 +51,7 @@ export default async function Account({ searchParams }: { searchParams: Promise<
           <h2 className="text-lg font-semibold">Directory</h2>
           <p>
             {user.directoryListed
-              ? 'You are listed: signed-in subscribers can find your name and numbers.'
+              ? 'You are listed: signed-in subscribers can find your name and the activated numbers you chose to list (the box when you got each one).'
               : 'You are not listed in the directory.'}
           </p>
           <form action={setDirectoryAction}>
