@@ -271,6 +271,8 @@ export interface CoreHandle {
   where: string;
   /** core<N> → N; a TLS id without a trailing number, or a fake core → its position + 1. */
   coreNo: number;
+  /** HOST:PORT where its cells dial it (OC_CORE_<ID>_CELLS); absent: it takes no cells (plan P3). */
+  cellAddr?: string;
   core: CoreAdmin;
 }
 

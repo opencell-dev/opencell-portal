@@ -23,11 +23,11 @@ function coreNoOf(id: string, position: number): number {
  * design §10). None connects yet: each TlsCore connects on its first call.
  */
 export function makeCores(c: Config): CoreHandle[] {
-  if (c.core === 'tls') return c.cores.map((e, i) => ({ id: e.id, where: `${e.host}:${e.port}`, coreNo: coreNoOf(e.id, i), core: new TlsCore(e) }));
+  if (c.core === 'tls') return c.cores.map((e, i) => ({ id: e.id, where: `${e.host}:${e.port}`, coreNo: coreNoOf(e.id, i), ...(e.cellAddr ? { cellAddr: e.cellAddr } : {}), core: new TlsCore(e) }));
   return Array.from({ length: c.fake.cores }, (_, i) => {
     const core = new FakeCore(Date.now, { coreId: i + 1, name: i === 0 ? 'fake-core' : `fake-core-${i + 1}` });
     if (c.fake.demo) seedDemo(core, i, Date.now(), c.fake.cores);
-    return { id: i === 0 ? 'fake' : `fake${i + 1}`, where: 'in-process', coreNo: i + 1, core };
+    return { id: i === 0 ? 'fake' : `fake${i + 1}`, where: 'in-process', coreNo: i + 1, cellAddr: 'cells.fake.invalid:7443', core };
   });
 }
 

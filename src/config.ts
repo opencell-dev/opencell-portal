@@ -84,6 +84,8 @@ export interface CoreEndpoint {
   ca: string;
   cert: string;
   key: string;
+  /** Where its cells dial it (OC_CORE_<ID>_CELLS, HOST:PORT); absent: this core takes no cells (plan P3, decision 8). */
+  cellAddr?: string;
 }
 
 const CORE_ID = /^[a-z][a-z0-9]{0,15}$/;
@@ -91,11 +93,22 @@ const CORE_ID = /^[a-z][a-z0-9]{0,15}$/;
 // unlisted core's key (OC_CORE_CORE_3_ADDR, OC_CORE_core3_ADDR) must still
 // be caught below, not silently ignored because it doesn't look like a
 // normal per-core key. Never matches OC_CORE_ADDR/OC_CORE_NAME themselves.
-const PER_CORE = /^OC_CORE_(.+)_(ADDR|NAME)$/i;
+const PER_CORE = /^OC_CORE_(.+)_(ADDR|NAME|CELLS)$/i;
 
-function endpoint(id: string, addr: string, servername: string, e: Env): CoreEndpoint {
+/** A core's cell address, checked: a bad one goes to `issues` and the core has none. */
+function cellsOf(id: string, env: Record<string, string | undefined>, issues: string[]): string | undefined {
+  const k = `OC_CORE_${id.toUpperCase()}_CELLS`;
+  const v = env[k];
+  if (v === undefined) return undefined;
+  if (addrOk(v)) return v;
+  issues.push(`${k}: ${k} is HOST:PORT, e.g. core1.opencell.k4ozi.com:47443`);
+  return undefined;
+}
+
+function endpoint(id: string, addr: string, servername: string, e: Env, cellAddr?: string): CoreEndpoint {
   const at = addr.lastIndexOf(':');
   return {
+    ...(cellAddr === undefined ? {} : { cellAddr }),
     id,
     host: addr.slice(0, at),
     port: Number(addr.slice(at + 1)),
@@ -117,6 +130,8 @@ function readCores(e: Env, env: Record<string, string | undefined>, issues: stri
   // A per-core key for a core not listed is a typo that would hide a core.
   for (const k of Object.keys(env).sort()) {
     const m = PER_CORE.exec(k);
+    // A single OC_CORE_ADDR core is core1, and its cell address has no other name.
+    if (!listed && e.OC_CORE === 'tls' && k === 'OC_CORE_CORE1_CELLS') continue;
     if (m && env[k] !== undefined && !listed?.some((id) => id.toUpperCase() === m[1])) {
       issues.push(`${k}: ${m[1].toLowerCase()} is not in OC_CORES`);
     }
@@ -125,7 +140,7 @@ function readCores(e: Env, env: Record<string, string | undefined>, issues: stri
     if (listed) issues.push('OC_CORES: several cores need OC_CORE=tls');
     return [];
   }
-  if (!listed) return [endpoint('core1', e.OC_CORE_ADDR!, e.OC_CORE_NAME ?? 'core1.opencell.k4ozi.com', e)];
+  if (!listed) return [endpoint('core1', e.OC_CORE_ADDR!, e.OC_CORE_NAME ?? 'core1.opencell.k4ozi.com', e, cellsOf('core1', env, issues))];
   for (const k of ['OC_CORE_ADDR', 'OC_CORE_NAME'] as const) {
     if (e[k] !== undefined) issues.push(`${k}: with OC_CORES, each core has its own OC_CORE_<ID>_ADDR and _NAME`);
   }
@@ -147,7 +162,8 @@ function readCores(e: Env, env: Record<string, string | undefined>, issues: stri
     const ok = addr !== undefined && addrOk(addr);
     if (!ok) issues.push(`${p}ADDR: ${p}ADDR is HOST:PORT, e.g. 10.99.0.2:7444`);
     if (!name) issues.push(`${p}NAME: ${p}NAME is required (the name ${id}'s certificate carries)`);
-    if (ok && name) out.push(endpoint(id, addr, name, e));
+    const cells = cellsOf(id, env, issues);
+    if (ok && name) out.push(endpoint(id, addr, name, e, cells));
   }
   return out;
 }

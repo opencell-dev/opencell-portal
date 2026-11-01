@@ -174,4 +174,34 @@ describe('OC_SITE (NOC design §N1.5)', () => {
     expect(() => parseConfig({ ...base, OC_SITE: 'NOC' })).toThrow(/OC_SITE/);
     expect(() => parseConfig({ ...base, OC_SITE: '' })).toThrow(/OC_SITE/);
   });
+
+  describe('cell addresses (OC_CORE_<ID>_CELLS, plan P3 decision 8)', () => {
+    const tls = { OC_CORE: 'tls', OC_CORE_CA: 'ca', OC_CORE_CERT: 'c', OC_CORE_KEY: 'k' };
+    const two = {
+      ...base,
+      ...tls,
+      OC_CORES: 'core1,core2',
+      OC_CORE_CORE1_ADDR: '10.0.0.60:7444',
+      OC_CORE_CORE1_NAME: 'core1.opencell.k4ozi.com',
+      OC_CORE_CORE2_ADDR: '10.99.0.2:7444',
+      OC_CORE_CORE2_NAME: 'core2.opencell.k4ozi.com',
+    };
+
+    it('reads a core\'s cell address; a core without one takes no cells', () => {
+      const c = parseConfig({ ...two, OC_CORE_CORE1_CELLS: 'core1.opencell.k4ozi.com:47443' });
+      expect(c.cores[0].cellAddr).toBe('core1.opencell.k4ozi.com:47443');
+      expect(c.cores[1].cellAddr).toBeUndefined();
+    });
+
+    it('rejects one for a core not listed, and a bad address', () => {
+      expect(() => parseConfig({ ...two, OC_CORE_CORE9_CELLS: 'x:1' })).toThrow(/OC_CORE_CORE9_CELLS: core9 is not in OC_CORES/);
+      expect(() => parseConfig({ ...two, OC_CORE_CORE1_CELLS: 'nope' })).toThrow(/OC_CORE_CORE1_CELLS/);
+      expect(() => parseConfig({ ...two, OC_CORE_CORE1_CELLS: 'x:70000' })).toThrow(/OC_CORE_CORE1_CELLS/);
+    });
+
+    it('takes core1\'s with a single OC_CORE_ADDR core', () => {
+      const c = parseConfig({ ...base, ...tls, OC_CORE_ADDR: '10.0.0.60:7444', OC_CORE_CORE1_CELLS: 'x:7443' });
+      expect(c.cores[0].cellAddr).toBe('x:7443');
+    });
+  });
 });
