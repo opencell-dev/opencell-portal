@@ -165,3 +165,36 @@ export function nodeRetireMail(adminName: string, who: string, nodeId: number, s
     text: `Hello ${adminName},\n\n${who} is retiring node ${nodeId} (${siteName}):\n\n${note}\n\nRevoke its cell when it is time: ${link}${sig(origin)}`,
   };
 }
+
+export function nodeOfflineMail(name: string, siteName: string, since: number, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: your base station ${siteName} is offline`,
+    text:
+      `Hello ${name},\n\nYour base station ${siteName} has been offline since ${utc(since)}. Everyone it serves has lost service.\n\n` +
+      `Please check its power, its internet connection and its board. If this is planned, post a downtime notice, or mute its alerts: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeBackMail(name: string, siteName: string, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: your base station ${siteName} is back`,
+    text: `Hello ${name},\n\nYour base station ${siteName} is back online. Thank you.\n\nYour node: ${link}${sig(origin)}`,
+  };
+}
+
+export function offlineDigestMail(adminName: string, rows: { nodeId: number; siteName: string; coreId: string; cellId: number; since: number | null; operator: string | null }[], link: string, origin: string): Template {
+  const lines = rows.map((r) => `- Node ${r.nodeId} (${r.siteName}), cell ${r.cellId} on ${r.coreId}, offline since ${r.since === null ? 'unknown' : utc(r.since)}, operator ${r.operator ?? 'none'}`);
+  return {
+    subject: `OpenCell: ${rows.length} base station${rows.length === 1 ? ' is' : 's are'} offline`,
+    text: `Hello ${adminName},\n\nOffline this morning:\n\n${lines.join('\n')}\n\nCells: ${link}${sig(origin)}`,
+  };
+}
+
+export function cellCaExpiringMail(adminName: string, notAfter: number, origin: string): Template {
+  return {
+    subject: 'OpenCell: the cell intermediate CA is about to expire',
+    text:
+      `Hello ${adminName},\n\nThe portal's cell intermediate CA ends at ${utc(notAfter)}; after that no node can get a certificate. ` +
+      `Renew it on the laptop: deploy/oc-portal-cell-ca renew oc-portal${sig(origin)}`,
+  };
+}

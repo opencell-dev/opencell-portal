@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // per process, not per call, and not for the admin CLI's own context.
 const started = vi.fn();
 vi.mock('@/lib/housekeeping', () => ({ startHousekeeping: (...a: unknown[]) => started(...a) }));
+const watching = vi.fn();
+vi.mock('@/lib/nodes/watch', () => ({ startNodeWatch: (...a: unknown[]) => watching(...a) }));
 
 const ENV = {
   OC_ORIGIN: 'https://portal.test',
@@ -18,6 +20,7 @@ beforeEach(() => {
   delete (globalThis as { __ocCtx?: unknown }).__ocCtx;
   delete (globalThis as { __ocCores?: unknown }).__ocCores;
   started.mockClear();
+  watching.mockClear();
 });
 
 afterEach(() => {
@@ -27,6 +30,15 @@ afterEach(() => {
 });
 
 describe('the process context', () => {
+  it('starts the node watcher once on the portal, never on the NOC site, never for the CLI (plan P3)', async () => {
+    const { appCtx, createCtx } = await import('@/lib/ctx');
+    createCtx();
+    expect(watching).not.toHaveBeenCalled();
+    appCtx();
+    appCtx();
+    expect(watching).toHaveBeenCalledTimes(1);
+  });
+
   it('starts housekeeping once, when the server context is first built', async () => {
     const { appCtx } = await import('@/lib/ctx');
     const ctx = appCtx();
@@ -89,5 +101,13 @@ describe('the process context', () => {
     const { createCtx } = await import('@/lib/ctx');
     createCtx();
     expect(started).not.toHaveBeenCalled();
+  });
+
+  it('watches nothing on the NOC site (a config read once, so a module of its own)', async () => {
+    vi.resetModules();
+    vi.stubEnv('OC_SITE', 'noc');
+    const { appCtx } = await import('@/lib/ctx');
+    appCtx();
+    expect(watching).not.toHaveBeenCalled();
   });
 });

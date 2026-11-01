@@ -93,7 +93,7 @@ beforeEach(async () => {
 function run(cmd: string, env: Record<string, string> = {}): Promise<{ code: number; out: string }> {
   return new Promise((done) => {
     const child: ChildProcess = spawn('bash', ['-c', cmd], {
-      env: { PATH: `${STUBS}:${process.env.PATH}`, OC_STUB_LOG: log, OC_SETUP_TEST: '1', OC_SETUP_PREFIX: root, OC_SETUP_SKIP_APT: '1', ...env },
+      env: { ...process.env, PATH: `${STUBS}:${process.env.PATH}`, OC_STUB_LOG: log, OC_SETUP_TEST: '1', OC_SETUP_PREFIX: root, OC_SETUP_SKIP_APT: '1', ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
