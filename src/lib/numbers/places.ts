@@ -2,7 +2,8 @@ import { and, asc, eq, gte, isNull, lt, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { exchanges, npas, rateCenters } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
-import { type Side, sideOfNpa } from './homing';
+import { homeCoreOf } from './blocks';
+import { type Side, sideOfHome } from './homing';
 import { parseTyped } from './input';
 import { rcKey } from './nanpa-parse';
 
@@ -127,15 +128,21 @@ interface Group {
   rows: Row[];
 }
 
+/** Which side homes an NPA: from the table, or the state rule until it is known (blocks.ts). */
+function sideOf(ctx: Ctx, npa: string): Side | null {
+  const home = homeCoreOf(ctx, npa);
+  return home === null ? null : sideOfHome(home);
+}
+
 function group(ctx: Ctx, rows: Row[]): Group[] {
   const sides = new Map<string, Side | null>();
-  const sideOf = (npa: string) => {
-    if (!sides.has(npa)) sides.set(npa, sideOfNpa(ctx, npa));
+  const sideOfRow = (npa: string) => {
+    if (!sides.has(npa)) sides.set(npa, sideOf(ctx, npa));
     return sides.get(npa)!;
   };
   const out = new Map<string, Group>();
   for (const r of rows) {
-    if (sideOf(r.npa) === null) continue;
+    if (sideOfRow(r.npa) === null) continue;
     const k = `${r.region}|${r.rateCenter}`;
     let g = out.get(k);
     if (!g) {
@@ -160,7 +167,7 @@ function toPlace(ctx: Ctx, g: Group, first?: string): Place {
     region: g.region,
     rateCenter: g.rateCenter,
     exchanges: codes.map(ex),
-    side: sideOfNpa(ctx, head.slice(0, 3))!,
+    side: sideOf(ctx, head.slice(0, 3))!,
   };
 }
 
@@ -244,7 +251,7 @@ export function exchangeOffered(ctx: Ctx, exchange: string): { region: string; r
   if (!/^\+8831\d{6}$/.test(exchange)) return null;
   const [row] = offered(ctx, and(eq(exchanges.npaNxx, exchange.slice(5))));
   if (!row) return null;
-  const side = sideOfNpa(ctx, row.npa);
+  const side = sideOf(ctx, row.npa);
   if (!side) return null;
   return { region: row.region, rateCenter: row.rateCenter, display: row.display ?? titleCase(row.rateCenter), side };
 }

@@ -10,7 +10,7 @@ afterEach(() => vi.restoreAllMocks());
 function twoCores() {
   const ctx = testCtx();
   const core2 = new FakeCore();
-  const cores: CoreHandle[] = [ctx.cores[0], { id: 'core2', where: '10.99.0.2:7444', core: core2 }];
+  const cores: CoreHandle[] = [ctx.cores[0], { id: 'core2', where: '10.99.0.2:7444', coreNo: 2, core: core2 }];
   return { ctx: { ...ctx, cores }, core2 };
 }
 

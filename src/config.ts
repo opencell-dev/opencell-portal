@@ -104,9 +104,9 @@ function endpoint(id: string, addr: string, servername: string, e: Env): CoreEnd
 }
 
 /**
- * The cores, in order (OC_CORE=tls; none for the fake core). The first one
- * takes every number and subscriber operation until P5 routes each block to
- * its home core (portal spec §4.3, §12); the admin dashboard shows them all.
+ * The cores, in order (OC_CORE=tls; none for the fake core). A number's
+ * operations go to its block's home core (coreFor, lib/numbers/route.ts);
+ * the admin dashboard shows them all.
  * Problems go to `issues` as `KEY: message` lines.
  */
 function readCores(e: Env, env: Record<string, string | undefined>, issues: string[]): CoreEndpoint[] {
@@ -157,7 +157,7 @@ export type Config = {
   secret: string;
   dbPath: string;
   core: 'fake' | 'tls';
-  /** OC_CORE=tls: one or more, the first takes the number and subscriber operations; the fake core: none. */
+  /** OC_CORE=tls: one or more; the fake core: none. */
   cores: CoreEndpoint[];
   /** OC_CORE=fake: how many fake cores, and whether they start with the demo network (NOC design §10). */
   fake: { cores: number; demo: boolean };

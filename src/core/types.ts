@@ -261,13 +261,16 @@ export function isCoreError(e: unknown): e is CoreError {
 
 /**
  * A core the portal knows (plan P4b): its id in the config (core1, core2;
- * 'fake' for the fake core), where it listens (for the admin page), and its
- * client. The admin dashboard shows every core; number and subscriber
- * operations go to the first until P5.
+ * 'fake' for the fake core), where it listens (for the admin page), its number
+ * on the network (the home core and serving core ids in core.blocks and
+ * sub.status), and its client. Number and subscriber operations pick a handle
+ * with coreFor (lib/numbers/route.ts); the admin dashboard shows every core.
  */
 export interface CoreHandle {
   id: string;
   where: string;
+  /** core<N> → N; a TLS id without a trailing number, or a fake core → its position + 1. */
+  coreNo: number;
   core: CoreAdmin;
 }
 

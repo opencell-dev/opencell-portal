@@ -5,8 +5,9 @@ import type { Ctx } from '@/lib/ctx';
 
 // Where a number is homed (portal spec §4.3): every geographic NPA is its
 // own block, homed by its state or province, split at the Mississippi. East
-// is core 1 (Virginia), West core 2 (Oregon). Until P5 every block still
-// lives on core 1 (coreFor, route.ts); P2 shows the side on the confirm step.
+// is core 1 (Virginia), West core 2 (Oregon). The cores' signed table is the
+// truth (blocks.ts); this rule is what it was built by, and the answer until
+// the portal has heard it.
 
 export type Side = 'east' | 'west';
 
@@ -71,6 +72,11 @@ export function setNpaOverride(ctx: Ctx, npa: string, side: Side | null, actorId
       .run();
   }
   writeAudit(ctx, { actorId, action: 'npa.home_override', target: `npa:${npa}`, detail: { side } });
+}
+
+/** The side a home core serves, as the confirm page labels it: core 1 is East, any other West. */
+export function sideOfHome(homeCore: number): Side {
+  return homeCore === 1 ? 'east' : 'west';
 }
 
 /** The serving core as the confirm step names it (P2 decision 7). */

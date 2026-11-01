@@ -98,7 +98,7 @@ describe('the network activity (plan N2a)', () => {
   it('does not ask a core the snapshot found unreachable; says when one fails or lacks the operations', async () => {
     const ctx = testCtx();
     const old = new FakeCore(ctx.now, { coreId: 2 });
-    const cores: CoreHandle[] = [ctx.cores[0], { id: 'core2', where: 'x', core: old }];
+    const cores: CoreHandle[] = [ctx.cores[0], { id: 'core2', where: 'x', coreNo: 2, core: old }];
     const two = { ...ctx, cores };
     vi.spyOn(old, 'cdrRecent').mockRejectedValue(new CoreError('unsupported'));
     vi.spyOn(old, 'auditList').mockRejectedValue(new CoreError('unsupported'));

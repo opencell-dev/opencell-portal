@@ -16,12 +16,12 @@ afterEach(() => vi.restoreAllMocks());
 function twoCores() {
   const ctx = testCtx();
   const core2 = new FakeCore(ctx.now, { coreId: 2 });
-  const cores: CoreHandle[] = [ctx.cores[0], { id: 'core2', where: '10.99.0.2:7444', core: core2 }];
+  const cores: CoreHandle[] = [ctx.cores[0], { id: 'core2', where: '10.99.0.2:7444', coreNo: 2, core: core2 }];
   return { ctx: { ...ctx, cores }, core1: ctx.core, core2 };
 }
 
 describe('askReported', () => {
-  const h = (core: Partial<FakeCore>): CoreHandle => ({ id: 'c', where: 'x', core: core as FakeCore });
+  const h = (core: Partial<FakeCore>): CoreHandle => ({ id: 'c', where: 'x', coreNo: 1, core: core as FakeCore });
 
   it("tells an answer, an older core's 'unsupported' and a failure apart, logging only the failure", async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});

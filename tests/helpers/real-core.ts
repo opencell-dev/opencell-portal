@@ -74,6 +74,28 @@ export function makeCoreCert(pki: TestPki, dir: string = CORE_DIR!): CoreCert {
   return { crt: join(t, 'core.crt'), key: join(t, 'core.key'), fpr: out.trim().split(' ')[1], done: () => rmSync(t, { recursive: true, force: true }) };
 }
 
+/** A root table from the core's own oc-route, with a delegate of the test's own (OCSS spec §3.7). */
+export interface RouteTable {
+  rootPub: string;
+  file: string;
+  /** PKCS#8 PEM, generated here. */
+  delegateKey: string;
+  delegatePub: string;
+  done: () => void;
+}
+
+/** `rows` is the CSV's NPA,STATE lines; `args` more `oc-route make` flags (--home, --pin). */
+export function makeRouteTable(rows: string[], args: string[] = [], dir: string = CORE_DIR!): RouteTable {
+  const t = mkdtempSync(join(tmpdir(), 'oc-test-route-'));
+  const ocRoute = join(dir, 'build/oc/oc-route');
+  const run = (...a: string[]) => execFileSync(ocRoute, a, { cwd: t, stdio: 'pipe' }).toString().trim();
+  const rootPub = run('keygen', 'root.key');
+  const delegatePub = run('keygen', 'delegate.key');
+  writeFileSync(join(t, 'npa.csv'), `${rows.join('\n')}\n`);
+  run('make', 'root.key', 'route.tbl', '--version', '1', '--npa', 'npa.csv', '--core', '1=oc-core-t1', '--core', '2=oc-core-t2', '--east', '1', '--west', '2', '--delegate', delegatePub, ...args);
+  return { rootPub, file: join(t, 'route.tbl'), delegateKey: readFileSync(join(t, 'delegate.key'), 'utf8'), delegatePub, done: () => rmSync(t, { recursive: true, force: true }) };
+}
+
 export interface RealCoreOptions {
   /** Shared with other cores; by default the core makes its own. */
   pki?: TestPki;
@@ -85,6 +107,8 @@ export interface RealCoreOptions {
   cert?: CoreCert;
   /** More config lines (other cores' blocks, peer, ocss_*). */
   extra?: string[];
+  /** A signed table instead of `block =` lines (makeRouteTable); `block` then only names the echo's block. */
+  table?: RouteTable;
 }
 
 export type RealCore = ContractCore & { adminSocket: string; cellSocket: string; port: number; pid: number; log: () => string };
@@ -116,7 +140,7 @@ export async function startRealCore(dir: string = CORE_DIR!, opts: RealCoreOptio
       `core_id = ${opts.coreId ?? 1}`,
       'key_id = 1',
       `name = ${opts.name ?? 'oc-core-test'}`,
-      `block = ${opts.block ?? '8831717 1'}`,
+      ...(opts.table ? [`route_root = ${opts.table.rootPub}`, `route_table = ${opts.table.file}`] : [`block = ${opts.block ?? '8831717 1'}`]),
       // Core v0.3 (network-core §22) wants its service numbers in a block it is
       // home for; v0.2 takes the line too. The echo is NPA-555-00100 of the block.
       `echo = +${(opts.block ?? '8831717 1').split(' ')[0]}55500100`,

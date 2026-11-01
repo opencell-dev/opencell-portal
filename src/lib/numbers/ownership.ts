@@ -11,6 +11,7 @@ import { hit, unhit } from '@/lib/ratelimit';
 import type { RequestMeta, Session } from '@/lib/sessions';
 import { coreActor } from '@/lib/site';
 import { parseTyped } from './input';
+import { blocksKnown } from './blocks';
 import { whyNotOffered } from './places';
 import { dropQr, putQr } from './qr-flash';
 import { coreFor } from './route';
@@ -263,6 +264,9 @@ async function syncOne(ctx: Ctx, row: NumberRow): Promise<{ row: NumberRow | nul
   const r = await tryWithin(h, 'sub.status', () => h.core.subStatus(coreActor(ctx.config.site, row.userId), row.number), CORE_DEADLINE_MS);
   if (r.ok) return { row: applyStatus(ctx, row, r.value), failed: false };
   const notFound = !('late' in r) && isCoreError(r.error) && r.error.code === 'not_found';
+  // Two cores and only the state rule to go by (no table yet): a table may
+  // home this NPA elsewhere, so this core's not_found says nothing yet.
+  if (notFound && ctx.cores.length > 1 && !blocksKnown(ctx)) return { row, failed: true };
   if (notFound && row.state === 'unactivated') {
     ctx.db.delete(numbers).where(and(eq(numbers.number, row.number), eq(numbers.userId, row.userId))).run();
     writeAudit(ctx, { actorId: null, action: 'number.expired', target: `number:${row.number}`, detail: { user: row.userId } });

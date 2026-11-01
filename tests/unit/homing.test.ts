@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { npas } from '@/db/schema';
 import { listAudit } from '@/lib/audit';
 import { setNpaOverride, sideLabel, sideOfNpa, sideOfRegion } from '@/lib/numbers/homing';
-import { coreFor } from '@/lib/numbers/route';
 import { testCtx } from '../helpers/ctx';
 
 // Portal spec §4.3, the table verbatim.
@@ -60,15 +59,5 @@ describe('the Mississippi split (spec §4.3)', () => {
   it('labels', () => {
     expect(sideLabel('east')).toBe('East (core 1)');
     expect(sideLabel('west')).toBe('West (core 2)');
-  });
-});
-
-describe('coreFor (the P5 seam)', () => {
-  it('routes every number to the first core in P2', () => {
-    const ctx = testCtx();
-    const second = { id: 'fake2', where: 'in-process', core: ctx.core };
-    ctx.cores.push(second);
-    expect(coreFor(ctx, '+883171746412345')).toBe(ctx.cores[0]);
-    expect(coreFor(ctx, '+883161255501234')).toBe(ctx.cores[0]);
   });
 });

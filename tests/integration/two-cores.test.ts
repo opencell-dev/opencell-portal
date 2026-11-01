@@ -1,11 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TlsCore } from '@/core/tls-client';
+import { exchanges, npas, users } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 import { coreStatuses } from '@/lib/core-status';
 import { auditEnd, networkActivity } from '@/lib/noc/activity';
 import { networkSnapshot, summarize } from '@/lib/noc/snapshot';
-import { CORE_DIR, type CoreCert, freePort, makeCoreCert, makeTestPki, type RealCore, startRealCore, type TestPki } from '../helpers/real-core';
+import { blockOf, homeCoreOf, refreshBlocks } from '@/lib/numbers/blocks';
+import { accountCalls } from '@/lib/numbers/calls';
+import { forgetGetting, getNumber, listNumbers, syncDue } from '@/lib/numbers/ownership';
+import { clearQrFlash } from '@/lib/numbers/qr-flash';
+import { CORE_DIR, type CoreCert, freePort, makeCoreCert, makeRouteTable, makeTestPki, type RealCore, type RouteTable, startRealCore, type TestPki } from '../helpers/real-core';
 
 // Plan P4b: the portal and two real oc-core processes, configured as
 // production is (OC_CORES=core1,core2 in the environment, the process's own
@@ -179,5 +184,99 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     expect((await peerState(c1, 2, (s) => s !== 'up'))?.state).not.toBe('up');
     const after = await networkSnapshot(ctx);
     expect(summarize(after).attention.map((a) => a.text)).toContainEqual(expect.stringMatching(/^OCSS from core1 to core 2: (down|connecting|handshake|open)/));
+  });
+});
+
+// Portal P5: the portal and two real cores on a signed table (OCSS spec §3,
+// §5): every number operation on its block's home core, learned from core.blocks.
+describe.skipIf(!CORE_DIR)('two real cores on a signed table (P5)', () => {
+  let pki: TestPki & { done: () => void };
+  let table: RouteTable;
+  let c1: RealCore;
+  let c2: RealCore;
+  let ctx: Ctx;
+  let ada: { id: string; userId: number };
+  let certs: CoreCert[] = [];
+  const meta = { ip: '192.0.2.10' };
+  const EAST = '+883160646401000';
+  const WEST = '+883150322201000';
+  const audit = (c: RealCore) => execFileSync(`${CORE_DIR}/build/oc/oc-core`, ['admin', '--socket', c.adminSocket, 'audit', '50']).toString();
+
+  beforeAll(async () => {
+    pki = makeTestPki();
+    certs = [makeCoreCert(pki), makeCoreCert(pki)];
+    table = makeRouteTable(['606,US-KY', '503,US-OR', '865,US-TN', '212,US-NY', '415,US-CA'], ['--pin', '606=1', '--pin', '503=2', '--pin', '865=3']);
+    const port = await freePort();
+    const ocss = (n: 0 | 1) => [`ocss_cert = ${certs[n].crt}`, `ocss_key = ${certs[n].key}`, `ocss_ca = ${pki.caCrt}`];
+    c1 = await startRealCore(CORE_DIR, { pki, coreId: 1, name: 'oc-core-t1', block: '8831606 1', cert: certs[0], table, extra: [`peer = 2 127.0.0.1:${port} ${certs[1].fpr}`, ...ocss(0)] });
+    c2 = await startRealCore(CORE_DIR, { pki, coreId: 2, name: 'oc-core-t2', block: '8831503 2', cert: certs[1], table, extra: [`peer = 1 - ${certs[0].fpr}`, `ocss_listen = 127.0.0.1:${port}`, ...ocss(1)] });
+    const env = {
+      OC_ORIGIN: 'https://portal.test',
+      OC_RP_ID: 'portal.test',
+      OC_SECRET: 'test-secret-test-secret-test-secret-0123',
+      OC_DB_PATH: ':memory:',
+      OC_MAIL: 'outbox',
+      OC_CORE: 'tls',
+      OC_CORES: 'core1,core2',
+      OC_CORE_CORE1_ADDR: `127.0.0.1:${c1.port}`,
+      OC_CORE_CORE1_NAME: 'localhost',
+      OC_CORE_CORE2_ADDR: `127.0.0.1:${c2.port}`,
+      OC_CORE_CORE2_NAME: 'localhost',
+      OC_CORE_CA: pki.caCrt,
+      OC_CORE_CERT: pki.portalCrt,
+      OC_CORE_KEY: pki.portalKey,
+    };
+    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+    delete (globalThis as { __ocCores?: unknown }).__ocCores;
+    vi.resetModules();
+    const { createCtx } = await import('@/lib/ctx');
+    ctx = createCtx();
+    clearQrFlash();
+    forgetGetting();
+    const now = Date.now();
+    for (const [npa, region] of [['606', 'KY'], ['503', 'OR']]) ctx.db.insert(npas).values({ npa, region, geographic: true, inService: true, updatedAt: now }).run();
+    for (const [npa, nxx, region] of [['606', '464', 'KY'], ['503', '222', 'OR']]) {
+      ctx.db.insert(exchanges).values({ npaNxx: npa + nxx, npa, nxx, region, rateCenter: 'TEST', firstSeenAt: now }).run();
+    }
+    ada = { id: 's-ada', userId: ctx.db.insert(users).values({ name: 'ada', email: 'ada@example.org', emailVerifiedAt: 1, numberLimit: 5, createdAt: 1 }).returning().get().id };
+  }, 60_000);
+
+  afterAll(async () => {
+    for (const h of ctx?.cores ?? []) (h.core as TlsCore).close();
+    delete (globalThis as { __ocCores?: unknown }).__ocCores;
+    vi.unstubAllEnvs();
+    await c1?.done();
+    await c2?.done();
+    for (const c of certs) c.done();
+    table?.done();
+    pki?.done();
+  });
+
+  it('learns the homes from core.blocks, the handles from their ids', async () => {
+    expect(ctx.cores.map((h) => h.coreNo)).toEqual([1, 2]);
+    expect(await refreshBlocks(ctx)).toBe(true);
+    expect(homeCoreOf(ctx, '606')).toBe(1);
+    expect(homeCoreOf(ctx, '503')).toBe(2);
+    expect(blockOf(ctx, '865')).toEqual({ homeCore: 1, index: 3 });
+    expect(blockOf(ctx, '415')?.homeCore).toBe(2);
+  });
+
+  it('gets a West number on core 2 and not core 1; its status and calls are asked of its home', async () => {
+    expect(await getNumber(ctx, ada, { number: WEST, listed: 'on' }, meta)).toMatchObject({ ok: true });
+    expect(audit(c2)).toContain('sub.create ok');
+    expect(audit(c1)).not.toContain('sub.create');
+    expect(listNumbers(ctx, ada.userId)).toEqual([expect.objectContaining({ number: WEST, coreId: 'core2' })]);
+    expect(await syncDue(ctx, ada.userId, 0)).toEqual([expect.objectContaining({ number: WEST, state: 'unactivated' })]);
+    expect(audit(c2)).toContain('sub.status ok');
+    expect(audit(c1)).not.toContain('sub.status');
+    expect(await accountCalls(ctx, ada.userId)).toMatchObject({ calls: [], unavailable: [] });
+    expect(audit(c2)).toContain('cdr.list ok');
+    expect(audit(c1)).not.toContain('cdr.list');
+  });
+
+  it('gets an East number on core 1', async () => {
+    expect(await getNumber(ctx, ada, { number: EAST, listed: 'on' }, meta)).toMatchObject({ ok: true });
+    expect(audit(c1)).toContain('sub.create ok');
+    expect(listNumbers(ctx, ada.userId).map((r) => [r.number, r.coreId])).toContainEqual([EAST, 'core1']);
   });
 });
