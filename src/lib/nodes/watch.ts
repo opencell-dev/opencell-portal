@@ -106,6 +106,16 @@ function warnCellCa(ctx: Ctx, now: number): boolean {
 
 type Sample = Pick<typeof nodeState.$inferSelect, 'online' | 'lastHeardAt' | 'onlineSince' | 'offlineSince' | 'offlineAlertAt'>;
 
+/** How many nodes the watcher last saw offline, for the dashboard. */
+export function offlineCount(ctx: Ctx): number {
+  return ctx.db
+    .select({ id: nodes.id })
+    .from(nodes)
+    .innerJoin(nodeState, eq(nodeState.nodeId, nodes.id))
+    .where(and(isNull(nodes.revokedAt), isNotNull(nodes.certFpr), eq(nodeState.online, false)))
+    .all().length;
+}
+
 /** One look at every node that has a certificate. */
 export async function watchTick(ctx: Ctx): Promise<{ offline: number[]; back: number[]; digest: boolean; icaWarned: boolean }> {
   const offline: number[] = [];

@@ -38,6 +38,11 @@ export function reviewQueue(ctx: Ctx): { id: number; siteName: string; region: s
     .map(({ name, email, ...r }) => ({ ...r, requester: `${name} (${email})` }));
 }
 
+/** How many requests wait for an admin, for the dashboard. */
+export function waitingRequests(ctx: Ctx): number {
+  return ctx.db.select({ n: count() }).from(nodeRequests).where(eq(nodeRequests.status, 'pending')).get()!.n;
+}
+
 export interface ReviewDetail {
   request: NodeRequest;
   requester: {

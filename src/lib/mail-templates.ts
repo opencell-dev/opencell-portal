@@ -219,3 +219,10 @@ export function nodeOrphanMail(adminName: string, nodeId: number, siteName: stri
     text: `Hello ${adminName},\n\nThe account that hosted node ${nodeId} (${siteName}) has been deleted. The node keeps serving; its site details are on the Cells page: ${link}${sig(origin)}`,
   };
 }
+
+export function nodeRevokedMail(name: string, siteName: string, origin: string): Template {
+  return {
+    subject: `OpenCell: your base station ${siteName} has been revoked`,
+    text: `Hello ${name},\n\nAn OpenCell admin has revoked your base station ${siteName}: it can no longer connect to the network. If you think this is a mistake, write to opencell@k4ozi.com.${sig(origin)}`,
+  };
+}

@@ -180,3 +180,14 @@ export async function signCellCert(ca: CellCa, csrPem: string, cn: string): Prom
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+/** For the admin dashboard: is there an intermediate, and until when; or what is wrong with it. */
+export function cellCaInfo(ctx: Ctx): { configured: false } | { configured: true; notAfter: number; fpr: string } | { configured: true; problem: string } {
+  if (!ctx.config.cellCa) return { configured: false };
+  try {
+    const ca = loadCellCa(ctx);
+    return ca ? { configured: true, notAfter: ca.notAfter, fpr: ca.fpr } : { configured: false };
+  } catch (e) {
+    return { configured: true, problem: (e as Error).message };
+  }
+}

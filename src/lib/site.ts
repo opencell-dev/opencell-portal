@@ -32,6 +32,12 @@ const PORTAL_ONLY = [
   '/api/numbers',
   // Portal P3: the admin pages that read the portal's own accounts and nodes.
   '/admin/requests',
+  '/admin/cells',
+  '/admin/numbers',
+  '/admin/calls',
+  '/admin/audit',
+  '/admin/agreement',
+  '/admin/limits',
   '/setup',
 ];
 
