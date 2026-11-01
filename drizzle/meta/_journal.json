@@ -36,6 +36,13 @@
       "when": 1793549486661,
       "tag": "0004_p5_route_additions",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1793551234932,
+      "tag": "0005_p3_operators",
+      "breakpoints": true
     }
   ]
 }

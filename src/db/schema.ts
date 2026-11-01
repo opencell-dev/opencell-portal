@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { blob, index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { blob, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // Times are unix milliseconds. Ids of users come from AUTOINCREMENT, so a
 // deleted account's id is never reused and the audit can keep it.
@@ -12,6 +12,9 @@ export const users = sqliteTable('users', {
   directoryListed: integer('directory_listed', { mode: 'boolean' }).notNull().default(true),
   numberLimit: integer('number_limit').notNull().default(3),
   createdAt: integer('created_at').notNull(),
+  // An admin disabled the account (portal P3, decision 22): no session, no sign-in.
+  disabledAt: integer('disabled_at'),
+  disabledBy: integer('disabled_by'), // no foreign key: the id outlives the account
 });
 
 export const userRoles = sqliteTable(
@@ -150,6 +153,9 @@ export const numbers = sqliteTable(
     // The last sub.status the portal saw. statusAt: when it last asked, answered
     // or not, so a core that is down or limiting is not asked more often either.
     disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
+    // Who the portal disabled it for: with its account ('account': enabling the
+    // account enables it again), or by itself ('admin': it stays). Null: not by the portal.
+    disabledBy: text('disabled_by', { enum: ['account', 'admin'] }),
     registered: integer('registered', { mode: 'boolean' }).notNull().default(false),
     cellId: integer('cell_id'),
     // The core whose cell cellId is (OCSS spec §5.6): cell ids are per core. Null: not registered, or a v0.7.0 core.
@@ -253,3 +259,156 @@ export const nanpaRefreshes = sqliteTable('nanpa_refreshes', {
   ok: integer('ok', { mode: 'boolean' }).notNull(),
   detail: text('detail').notNull(), // JSON: RefreshResult (+ errors)
 });
+
+// ---- Portal P3: operators (portal spec §6) ----
+
+/** A subscriber's request to host a base station (spec §6.1). The exact pin and the contact phone are for the requester and admins only (spec §10). */
+export const nodeRequests = sqliteTable(
+  'node_requests',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    siteName: text('site_name').notNull(),
+    lat: real('lat').notNull(),
+    lon: real('lon').notNull(),
+    // The state or province the requester picked (plan P3, decision 7): what picks the core.
+    region: text('region').notNull(),
+    piModel: text('pi_model', { enum: ['pi5', 'pi4', 'pi3', 'other'] }).notNull(),
+    w12Boards: integer('w12_boards').notNull(),
+    gps: integer('gps', { mode: 'boolean' }).notNull(),
+    antenna: text('antenna').notNull(),
+    backhaul: text('backhaul', { enum: ['home', 'cellular', 'other'] }).notNull(),
+    power: text('power', { enum: ['mains', 'mains_battery', 'solar'] }).notNull(),
+    contactPhone: text('contact_phone').notNull(),
+    agreementVersion: integer('agreement_version').notNull(),
+    agreedAt: integer('agreed_at').notNull(),
+    status: text('status', { enum: ['pending', 'question', 'approved', 'declined', 'withdrawn'] }).notNull(),
+    createdAt: integer('created_at').notNull(),
+    decidedAt: integer('decided_at'),
+    decidedBy: integer('decided_by'), // no foreign key: the id outlives the account
+    declineNote: text('decline_note'),
+    nodeId: integer('node_id'),
+  },
+  (t) => [index('node_requests_status').on(t.status, t.createdAt), index('node_requests_user').on(t.userId)],
+);
+
+/** The review's thread: an admin's questions and the requester's replies (spec §6.2). */
+export const nodeRequestMessages = sqliteTable(
+  'node_request_messages',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    requestId: integer('request_id').notNull().references(() => nodeRequests.id, { onDelete: 'cascade' }),
+    authorId: integer('author_id'), // no foreign key: the id outlives the account
+    fromAdmin: integer('from_admin', { mode: 'boolean' }).notNull(),
+    body: text('body').notNull(),
+    at: integer('at').notNull(),
+  },
+  (t) => [index('node_request_messages_request').on(t.requestId)],
+);
+
+/** Who accepted which version of the Base Station Operator Agreement (spec §6.1, §6.4). */
+export const agreementAcceptances = sqliteTable(
+  'agreement_acceptances',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    acceptedAt: integer('accepted_at').notNull(),
+    ip: text('ip'),
+  },
+  (t) => [uniqueIndex('agreement_acceptances_user_version').on(t.userId, t.version)],
+);
+
+/**
+ * An approved base station: a cell on a core (a cell id means something only
+ * with its core). An account deleted leaves the node running with no operator
+ * (plan P3, decision 23), so admins keep the site's details here.
+ */
+export const nodes = sqliteTable(
+  'nodes',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    requestId: integer('request_id').notNull(),
+    userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+    coreId: text('core_id').notNull(), // the CoreHandle.id
+    cellId: integer('cell_id').notNull(),
+    cellName: text('cell_name').notNull(),
+    certCn: text('cert_cn').notNull(),
+    siteName: text('site_name').notNull(),
+    lat: real('lat').notNull(),
+    lon: real('lon').notNull(),
+    region: text('region').notNull(),
+    contactPhone: text('contact_phone').notNull(),
+    anchor: integer('anchor').notNull(),
+    cellSeed: integer('cell_seed').notNull(),
+    boardRole: text('board_role', { enum: ['bs', 'bench'] }).notNull(),
+    mode: text('mode', { enum: ['part15', 'part97'] }).notNull(),
+    listGroup: integer('list_group').notNull(),
+    createdAt: integer('created_at').notNull(),
+    certFpr: text('cert_fpr'),
+    certIssuedAt: integer('cert_issued_at'),
+    certExpiresAt: integer('cert_expires_at'),
+    revokedAt: integer('revoked_at'),
+    alertsMuted: integer('alerts_muted', { mode: 'boolean' }).notNull().default(false),
+  },
+  (t) => [uniqueIndex('nodes_core_cell').on(t.coreId, t.cellId), index('nodes_user').on(t.userId)],
+);
+
+/** One-time setup tokens (spec §6.2: 24 h, single use); the id is the token's SHA-256, never the token. */
+export const setupTokens = sqliteTable(
+  'setup_tokens',
+  {
+    id: text('id').primaryKey(),
+    nodeId: integer('node_id').notNull().references(() => nodes.id, { onDelete: 'cascade' }),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    usedAt: integer('used_at'),
+    csrTries: integer('csr_tries').notNull().default(0),
+  },
+  (t) => [index('setup_tokens_node').on(t.nodeId)],
+);
+
+/** Every certificate the online intermediate signed (spec §8.3), pinned on its core or not. */
+export const issuedCerts = sqliteTable(
+  'issued_certs',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    nodeId: integer('node_id').notNull().references(() => nodes.id, { onDelete: 'cascade' }),
+    serial: text('serial').notNull(),
+    fpr: text('fpr').notNull().unique(),
+    cn: text('cn').notNull(),
+    notBefore: integer('not_before').notNull(),
+    notAfter: integer('not_after').notNull(),
+    pem: text('pem').notNull(),
+    pinned: integer('pinned', { mode: 'boolean' }).notNull(),
+    issuedAt: integer('issued_at').notNull(),
+  },
+  (t) => [index('issued_certs_node').on(t.nodeId)],
+);
+
+/** What the node watcher last saw (plan P3, decision 19). online null: unknown (its core did not answer). */
+export const nodeState = sqliteTable('node_state', {
+  nodeId: integer('node_id').primaryKey().references(() => nodes.id, { onDelete: 'cascade' }),
+  online: integer('online', { mode: 'boolean' }),
+  lastHeardAt: integer('last_heard_at'),
+  onlineSince: integer('online_since'),
+  offlineSince: integer('offline_since'),
+  offlineAlertAt: integer('offline_alert_at'),
+  checkedAt: integer('checked_at').notNull(),
+});
+
+/** A planned window (spec §6.3): alerts pause, admins see it. Shaped like the NOC's noc_maintenance (NOC design §6.4). */
+export const nodeDowntime = sqliteTable(
+  'node_downtime',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    nodeId: integer('node_id').notNull().references(() => nodes.id, { onDelete: 'cascade' }),
+    startsAt: integer('starts_at').notNull(),
+    endsAt: integer('ends_at').notNull(),
+    reason: text('reason').notNull(),
+    createdBy: integer('created_by').notNull(),
+    createdAt: integer('created_at').notNull(),
+    cancelledAt: integer('cancelled_at'),
+  },
+  (t) => [index('node_downtime_node').on(t.nodeId, t.endsAt)],
+);
