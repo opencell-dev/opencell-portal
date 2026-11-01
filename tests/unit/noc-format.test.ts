@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ago, duration, exact, groupNumber, modeLabel, shortFpr } from '@/lib/noc/format';
+import { ago, duration, exact, groupNumber, modeLabel, registeredOn, shortFpr } from '@/lib/noc/format';
 
 describe('NOC formatting (NOC design §9)', () => {
   const now = 1_790_000_000_000;
@@ -35,5 +35,17 @@ describe('NOC formatting (NOC design §9)', () => {
   it('groups a full number in the display form, and leaves anything else alone', () => {
     expect(groupNumber('+883171746412345')).toBe('+883-1-717-464-12345');
     expect(groupNumber('+12025550100')).toBe('+12025550100');
+  });
+});
+
+describe('registeredOn (OCSS spec §5.6: a cell id means something only with its core)', () => {
+  it('names the serving core, the one a visitor is on, beside the cell', () => {
+    expect(registeredOn({ registered: true, cellId: 3, servingCore: 1 })).toBe('yes, on cell 3 of core 1');
+  });
+  it('a v0.7.0 core does not say: the cell alone', () => {
+    expect(registeredOn({ registered: true, cellId: 3, servingCore: null })).toBe('yes, on cell 3');
+  });
+  it('not registered', () => {
+    expect(registeredOn({ registered: false, cellId: null, servingCore: null })).toBe('no');
   });
 });

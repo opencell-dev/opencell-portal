@@ -92,7 +92,7 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     expect(audit(c2)).toContain('a7 core.status ok');
   });
 
-  it('sends number and subscriber operations to core 1 only', async () => {
+  it('ctx.core is the first core, and only it (a number\'s operations go through coreFor: see below)', async () => {
     const qr = await ctx.core.subCreate(4242, '+883171746412345');
     expect(qr.number).toBe('+883171746412345');
     expect(audit(c1)).toContain('a4242 sub.create ok');
@@ -334,7 +334,8 @@ describe.skipIf(!CORE_DIR)('two real cores on a signed table (P5)', () => {
     const bob = { id: 's-bob', userId: ctx.db.insert(users).values({ name: 'bob', email: 'bob@example.org', emailVerifiedAt: 1, numberLimit: 5, createdAt: 1 }).returning().get().id };
     expect(await getNumber(ctx, bob, { number: '+883150322201001', listed: 'on' }, meta)).toMatchObject({ ok: false, error: expect.stringContaining("didn't answer") });
     expect(await reissueNumber(ctx, ada, WEST, meta)).toMatchObject({ ok: false, error: expect.stringContaining("didn't answer") });
-    expect(audit(c1)).not.toContain('sub.create ok +883150322201001');
+    // oc-core admin audit prints the number before the detail: no line holds both.
+    expect(audit(c1).split('\n').filter((l) => l.includes('+883150322201001'))).toEqual([]);
     expect(audit(c1)).not.toContain('sub.reissue');
     const rows = await syncDue(ctx, ada.userId, 0);
     expect(rows.find((r) => r.number === WEST)).toMatchObject({ state: 'unactivated' });

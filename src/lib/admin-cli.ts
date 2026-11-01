@@ -165,7 +165,11 @@ export async function runAdminAsync(ctx: Ctx, argv: string[], fetchFiles: () => 
     const r = applyNanpa(ctx, files);
     // The import stands whatever happens next: a table problem is logged and the run exits normally.
     const offers: OfferResult = await offerMissingNpas(ctx).catch((e: unknown) => ({ offered: [], replayed: 0, errors: [`the offers failed (${errorKind(e)})`] }));
-    logOffers(ctx, offers);
+    try {
+      logOffers(ctx, offers);
+    } catch (e) {
+      offers.errors.push(`the refresh log was not updated (${errorKind(e)})`);
+    }
     const lines = [
       `nanpa: ${r.newExchanges} new exchanges, ${r.withdrawn} withdrawn, ${r.restored} restored, ${r.rateCenters} rate centers; ${liveExchanges(ctx)} live`,
       ...(r.newNpas.length > 0 ? [`nanpa: new NPAs ${r.newNpas.join(' ')}`] : []),

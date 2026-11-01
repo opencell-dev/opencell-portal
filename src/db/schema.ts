@@ -228,7 +228,6 @@ export const rateCenters = sqliteTable(
   (t) => [primaryKey({ columns: [t.region, t.name] })],
 );
 
-/** One row per weekly NANPA refresh (spec §4.4: "the changes are logged on the admin page"). */
 /**
  * Every addition the portal's delegate signed (OCSS spec §5.4), so a core that
  * is behind can be replayed in order. A row is written before it is offered,
@@ -247,6 +246,7 @@ export const routeAdditions = sqliteTable(
   (t) => [primaryKey({ columns: [t.rootVersion, t.seq] })],
 );
 
+/** One row per weekly NANPA refresh (spec §4.4: "the changes are logged on the admin page"). */
 export const nanpaRefreshes = sqliteTable('nanpa_refreshes', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   at: integer('at').notNull(),

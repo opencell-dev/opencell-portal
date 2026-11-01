@@ -1,4 +1,4 @@
-import type { CellMode } from '@/core/types';
+import type { CellMode, SubStatus } from '@/core/types';
 
 // How the NOC writes times and identifiers (NOC design §9): relative times
 // with the exact UTC time beside them (a title), short fingerprints.
@@ -51,4 +51,10 @@ export function modeLabel(m: CellMode): string {
 export function groupNumber(n: string): string {
   const m = /^\+883(1)(\d{3})(\d{3})(\d{5})$/.exec(n);
   return m ? `+883-${m[1]}-${m[2]}-${m[3]}-${m[4]}` : n;
+}
+
+/** Whether and where a number is registered: (serving core, cell) as a pair, since cell ids are per core and a visitor's cell isn't on its home core (OCSS spec §5.6). */
+export function registeredOn(s: Pick<SubStatus, 'registered' | 'cellId' | 'servingCore'>): string {
+  if (!s.registered) return 'no';
+  return s.servingCore === null ? `yes, on cell ${s.cellId}` : `yes, on cell ${s.cellId} of core ${s.servingCore}`;
 }

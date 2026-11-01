@@ -522,6 +522,17 @@ describe('oc-portal-admin nanpa-refresh', () => {
     expect(r.out).toContain('route: core1: route.status: TypeError');
   });
 
+  it('the refresh log failing does not fail a good import', async () => {
+    const t = withEnv({ OC_ROUTE_DELEGATE_KEY: keyFile() });
+    const log = await import('@/lib/numbers/nanpa-refresh');
+    const dir = dirWith472();
+    t.db.$client.exec(`CREATE TRIGGER no_offers BEFORE UPDATE ON nanpa_refreshes BEGIN SELECT RAISE(ABORT, 'locked'); END`);
+    const r = await runAdminAsync(t, ['nanpa-refresh', '--dir', dir]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('route: the refresh log was not updated');
+    expect(log.recentRefreshes(t, 1)[0].ok).toBe(true);
+  });
+
   it('the NOC site offers nothing', async () => {
     const t = withEnv({ OC_SITE: 'noc', OC_ROUTE_DELEGATE_KEY: keyFile() });
     expect(await runAdminAsync(t, ['nanpa-refresh', '--dir', dirWith472()])).toMatchObject({ code: 0, out: expect.stringMatching(/nothing to do/) });
