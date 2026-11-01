@@ -35,6 +35,7 @@ export default async function AdminRequest({ params }: { params: Promise<{ id: s
       <p role="status" data-testid="request-status">
         {r.status === 'question' ? 'Waiting for the requester' : requestStatusLabel(r.status)}
         {r.declineNote ? `: ${r.declineNote}` : ''}
+        {r.nodeId !== null ? `: node ${r.nodeId}` : ''}
       </p>
       <section className="space-y-2">
         <h2 className="text-lg font-semibold">The requester</h2>

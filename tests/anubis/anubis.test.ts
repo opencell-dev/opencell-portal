@@ -121,6 +121,12 @@ class Client {
     return this.keep(await rawRequest(anubisPort, 'POST', path, h, body));
   }
 
+  async postRaw(path: string, body: Buffer, more: Record<string, string> = {}): Promise<Res> {
+    const h = this.headers(more);
+    h['content-length'] = String(body.length);
+    return this.keep(await rawRequest(anubisPort, 'POST', path, h, body));
+  }
+
   anubisCookie(): string | undefined {
     return [...this.jar.keys()].find((k) => k.startsWith('oc-anubis-auth-'));
   }
@@ -433,6 +439,49 @@ describe('challenged', () => {
     const r = await c.post('/sign-in', fd, { 'next-action': 'x' });
     expect(challengeOf(r)).not.toBeNull();
     expect(rateCount('magic_ip', ip)).toBe(before);
+  });
+});
+
+describe('a base station setup (plan P3): curl on a Pi does no proof of work', () => {
+  const T = 'A'.repeat(21) + '-_' + 'b'.repeat(20);
+  // A Pi's curl, with no browser about it.
+  const CURL = { 'User-Agent': 'curl/8.14.1' };
+
+  it.each([`/setup/${T}`, `/setup/${T}/oc-cell.tgz`])('GET %s reaches the portal unchallenged', async (path) => {
+    const r = await new Client('203.0.113.8').get(path, CURL);
+    expect(challengeOf(r)).toBeNull();
+    expect(fromPortal(r)).toBe(true);
+    expect(r.status).toBe(404); // the portal's answer: no such token
+  });
+
+  it('POST of a CSR reaches the portal unchallenged', async () => {
+    const r = await new Client('203.0.113.8').postRaw(`/setup/${T}/csr`, Buffer.from('not a csr'), { ...CURL, origin: `http://${host}`, 'content-type': 'application/pkcs10' });
+    expect(challengeOf(r)).toBeNull();
+    expect(fromPortal(r)).toBe(true);
+    expect(r.status).toBe(503); // the portal's answer: this test's portal has no intermediate
+  });
+
+  it.each([
+    [`/setup/${T.slice(1)}`, 'a token too short'],
+    [`/setup/${T}A`, 'a token too long'],
+    [`/setup/${T}/inspect`, 'another path under it'],
+    [`/setup/${T}/../x`, 'dot segments'],
+    [`/setup/${T}/%2e%2e/x`, 'dot segments, encoded'],
+    [`/setup/${T}/oc-cell.tgz/x`, 'past the tarball'],
+    [`/setup/${T}/csr`, 'GET of the CSR path'],
+  ])('GET %s is challenged (%s)', async (path) => {
+    const r = await new Client('203.0.113.8').get(path, CURL);
+    expect(challengeOf(r)?.rules.algorithm).toBe('fast');
+  });
+
+  it('a server action to the CSR path is challenged, and a POST anywhere else under it', async () => {
+    const c = new Client('203.0.113.8');
+    const r1 = await c.postRaw(`/setup/${T}/csr`, Buffer.from('x'), { ...CURL, 'Next-Action': 'abc' });
+    expect(challengeOf(r1)?.rules.algorithm).toBe('fast');
+    const r2 = await c.postRaw(`/setup/${T}`, Buffer.from('x'), CURL);
+    expect(challengeOf(r2)?.rules.algorithm).toBe('fast');
+    const r3 = await c.postRaw(`/setup/${T}/oc-cell.tgz`, Buffer.from('x'), CURL);
+    expect(challengeOf(r3)?.rules.algorithm).toBe('fast');
   });
 });
 

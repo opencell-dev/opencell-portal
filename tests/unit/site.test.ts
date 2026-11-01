@@ -37,6 +37,16 @@ describe('what each site serves', () => {
     },
   );
 
+  // Portal P3: nodes, setup and the admin pages over the portal's own accounts.
+  it.each(['/nodes/request', '/nodes/agreement', '/nodes/requests/1', '/nodes/1', '/setup/abc', '/setup/abc/csr', '/setup/abc/oc-cell.tgz', '/coverage/basemap.svg', '/admin/requests', '/admin/requests/1', '/admin/cells', '/admin/numbers', '/admin/calls', '/admin/audit', '/admin/agreement', '/admin/limits', '/%73etup/abc', '/ADMIN/cells'])(
+    'the NOC site does not serve %s; the portal does',
+    (path) => {
+      expect(kind('noc', path)).toBe('not-found');
+      expect(kind('noc', path, 'POST')).toBe('not-found');
+      expect(kind('portal', path)).toBe('serve');
+    },
+  );
+
   it("sends the NOC site's front page to the NOC, for a GET or HEAD only", () => {
     expect(siteRoute('noc', 'GET', '/')).toEqual({ kind: 'redirect', to: '/noc' });
     expect(siteRoute('noc', 'HEAD', '/')).toEqual({ kind: 'redirect', to: '/noc' });

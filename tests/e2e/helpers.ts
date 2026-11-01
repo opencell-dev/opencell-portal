@@ -35,6 +35,7 @@ export function portalAdmin(...args: string[]) {
       OC_RP_ID: 'localhost',
       OC_SECRET: 'e2e-secret-e2e-secret-e2e-secret-0000',
       OC_DB_PATH: '.e2e/portal.db',
+      OC_RELEASE_DIR: '.e2e/releases',
     },
     encoding: 'utf8',
   });
@@ -90,6 +91,29 @@ export async function mailedLink(to: string, after?: string, dir = DIR): Promise
     )
     .not.toBe('');
   return link;
+}
+
+/** The text of the newest mail to `to` whose subject matches. */
+export async function mailedText(to: string, subject: RegExp, dir = DIR): Promise<string> {
+  let text = '';
+  await expect
+    .poll(
+      () => {
+        const box = join(dir, 'outbox');
+        if (!existsSync(box)) return '';
+        for (const f of readdirSync(box).sort().reverse()) {
+          const m = JSON.parse(readFileSync(join(box, f), 'utf8'));
+          if (m.to?.[0]?.address === to && subject.test(String(m.subject))) {
+            text = String(m.text);
+            return text;
+          }
+        }
+        return '';
+      },
+      { timeout: 15_000 },
+    )
+    .not.toBe('');
+  return text;
 }
 
 /** Wait until the ALTCHA widget is defined and rendered, so focusing the form starts its proof of work. */
