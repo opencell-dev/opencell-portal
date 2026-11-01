@@ -30,6 +30,8 @@ const PORTAL_ONLY = [
   // Portal P2: the numbers' JSON (place search, live status).
   '/api/places',
   '/api/numbers',
+  // Portal P3: the admin pages that read the portal's own accounts and nodes.
+  '/admin/requests',
 ];
 
 export type SiteRoute = { kind: 'serve' } | { kind: 'not-found' } | { kind: 'redirect'; to: string };

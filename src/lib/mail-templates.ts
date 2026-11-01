@@ -128,3 +128,24 @@ export function nodeQuestionMail(name: string, siteName: string, question: strin
     text: `Hello ${name},\n\nAn OpenCell admin has a question about your request for ${siteName}:\n\n${question}\n\nAnswer it in the portal: ${link}${sig(origin)}`,
   };
 }
+
+const NO_RELEASE_YET = 'Setup opens when the cell software is published: we will write again, and your node page will show the command.';
+
+export function nodeApprovedMail(name: string, siteName: string, command: string | null, expiresAt: number | null, link: string, origin: string): Template {
+  const setup =
+    command !== null && expiresAt !== null
+      ? `Set it up with one command on the Raspberry Pi, with the W12 board on USB. It works once, until ${utc(expiresAt)}:\n\n${command}\n\nOpen the address in a browser first if you want to read the script. ` +
+        `Anyone with this command can set up your node, so don't forward this message. Your node page can make a new one if it runs out.`
+      : NO_RELEASE_YET;
+  return {
+    subject: `OpenCell: your base station ${siteName} is approved`,
+    text: `Hello ${name},\n\nYour base station ${siteName} is approved. Thank you for hosting it.\n\n${setup}\n\nYour node: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeDeclinedMail(name: string, siteName: string, note: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: your base station request',
+    text: `Hello ${name},\n\nWe can't approve your request for ${siteName} right now:\n\n${note}\n\nYou can answer by writing to opencell@k4ozi.com.${sig(origin)}`,
+  };
+}

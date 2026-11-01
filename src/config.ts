@@ -35,6 +35,8 @@ const envSchema = z
     // paths or (no '/') systemd credentials. Unset: no certificates are issued.
     OC_CELL_CA_CERT: z.string().min(1).optional(),
     OC_CELL_CA_KEY: z.string().min(1).optional(),
+    // Where published oc-cell source releases live (oc-portal-admin cell-release).
+    OC_RELEASE_DIR: z.string().min(1).default('./data/releases'),
     // OC_CORE=fake only (NOC design §10): how many fake cores (fake, fake2, …)
     // and whether each starts with the demo network. Never in production,
     // which runs OC_CORE=tls: either one with tls is a configuration error.
@@ -189,6 +191,8 @@ export type Config = {
   routeDelegateKey?: string;
   /** The online cell intermediate's files, paths or credentials' names; absent: no certificates are issued (plan P3, decision 28). */
   cellCa?: { cert: string; key: string };
+  /** The published oc-cell source releases (plan P3, decision 3). */
+  releaseDir: string;
   /** OC_CORE=fake: how many fake cores, and whether they start with the demo network (NOC design §10). */
   fake: { cores: number; demo: boolean };
   secureCookies: boolean;
@@ -221,6 +225,7 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
     core: e.OC_CORE,
     cores,
     routeDelegateKey: e.OC_ROUTE_DELEGATE_KEY,
+    releaseDir: e.OC_RELEASE_DIR,
     ...(e.OC_CELL_CA_CERT && e.OC_CELL_CA_KEY ? { cellCa: { cert: e.OC_CELL_CA_CERT, key: e.OC_CELL_CA_KEY } } : {}),
     fake: { cores: e.OC_FAKE_CORES ?? 1, demo: e.OC_FAKE_DEMO === '1' },
     secureCookies: secure,
