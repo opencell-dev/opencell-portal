@@ -83,6 +83,36 @@ export function coreContract(name: string, make: () => Promise<ContractCore>) {
       await expect(c.core.subReissue(7, n)).rejects.toMatchObject({ code: 'not_found' });
     });
 
+    // Portal P2 builds on these (reissueNumber keeps the token's expiry,
+    // syncNumber reads it back; the shortlist never offers a taken number;
+    // Calls passes `since` in unix ms).
+    it('a re-issued code moves the status expiry to the new token (P2)', async () => {
+      const n = fresh();
+      const first = await c.core.subCreate(7, n);
+      await new Promise((r) => setTimeout(r, 1100)); // the wire carries seconds
+      const second = await c.core.subReissue(7, n);
+      expect(second.expiresAt).toBeGreaterThanOrEqual(first.expiresAt);
+      const st = await c.core.subStatus(7, n);
+      expect(st.state).toBe('unactivated');
+      expect(Math.abs((st.tokenExpiresAt ?? 0) - second.expiresAt)).toBeLessThan(1000);
+      await c.core.subRelease(7, n);
+    });
+
+    it('never draws a taken number (P2 shortlist)', async () => {
+      const n = fresh();
+      await c.core.subCreate(7, n);
+      expect(await c.core.numFree(7, EX, 1, n.slice(-5))).toEqual([]);
+      await c.core.subRelease(7, n);
+      expect(await c.core.numFree(7, EX, 1, n.slice(-5))).toEqual([n]);
+    });
+
+    it('takes cdr.list since in unix ms (P2 Calls)', async () => {
+      const n = fresh();
+      await c.core.subCreate(7, n);
+      expect(await c.core.cdrList(7, n, Date.now() - 90 * 86400_000)).toEqual([]);
+      expect(await c.core.cdrList(7, n, Date.now() + 86400_000)).toEqual([]);
+    });
+
     it('disables and enables a number', async () => {
       const n = fresh();
       await c.core.subCreate(7, n);

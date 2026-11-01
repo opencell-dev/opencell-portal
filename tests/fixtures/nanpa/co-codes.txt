@@ -1,0 +1,38 @@
+State	NPA-NXX	OCN 	Company                                                                                             	RateCenter	EffectiveDate	Use	AssignDate   	Initial/Growth	Pooled Code 	In Service  	File Updated 10/31/2026
+AK   	907-200	6872	"GCI COMMUNICATION CORP. DBA GENERAL COMMUNICATION"                                                 	VALDEZ    	             	AS 	02/21/2006   	I             	N           	Yes      
+AK   	907-201	6563	"CELLCO PARTNERSHIP DBA VERIZON WIRELESS"                                                           	ELMEDRFAFB	             	AS 	09/18/2014   	I             	Y           	Yes      
+AK   	907-211	MULT	"MULTIPLE OCN LISTING"                                                                              	XXXXXXXXXX	             	UA 	             	              	            	No       
+AL   	251-541	764H	"WIDE VOICE, LLC - AL"                                                                              	MOBILE    	11/14/2026   	AS 	09/18/2026   	I             	Y           	No       
+CA   	661-206	829J	"PAETEC ITEL, LLC"                                                                                  	LANCASTER 	             	AS 	             	I             	Y           	Yes      
+DC   	202-200	5562	"METROPCS, INC."                                                                                    	WSHNGTNZN1	             	AS 	01/19/2011   	G             	Y           	Yes      
+DC   	202-201	9211	"VERIZON WASHINGTON DC, INC."                                                                       	WSHNGTNZN1	             	AS 	10/19/2005   	              	Y           	Yes      
+LA   	504-200	829J	"PAETEC ITEL, LLC"                                                                                  	NEWORLEANS	             	AS 	             	              	Y           	Yes      
+LA   	504-201	6214	"NEW CINGULAR WIRELESS PCS, LLC - GA"                                                               	KENNER    	             	AS 	             	              	Y           	Yes      
+MN   	612-200	980E	"BANDWIDTH.COM CLEC, LLC - MN"                                                                      	TWINCITIES	             	AS 	05/17/2011   	G             	Y           	Yes      
+MN   	612-201	5816	"CELLCO PARTNERSHIP DBA VERIZON WIRELESS - MN"                                                      	TWINCITIES	             	AS 	             	              	N           	Yes      
+NN   	670-211	MULT	"MULTIPLE OCN LISTING"                                                                              	XXXXXXXXXX	             	UA 	             	              	            	No       
+NN   	670-233	3700	"MICRONESIAN TELECOMMUNICATIONS CORPORATION"                                                        	SAIPAN    	             	AS 	             	              	N           	Yes      
+NY   	212-200	384C	"ONVOY, LLC- NY"                                                                                    	NWYRCYZN01	             	AS 	             	              	N           	Yes      
+NY   	212-201	829J	"PAETEC ITEL, LLC"                                                                                  	NWYRCYZN01	             	AS 	             	I             	N           	Yes      
+OH   	220-207	6701	"AERIAL COMMUNICATIONS, INC."                                                                       	LANCASTER 	             	AS 	04/15/2021   	G             	Y           	Yes      
+OH   	740-652	9321	"OHIO BELL TEL CO"                                                                                  	LANCASTER 	             	AS 	             	              	Y           	Yes      
+OH   	740-653	9321	"OHIO BELL TEL CO"                                                                                  	LANCASTER 	             	AS 	             	              	N           	Yes      
+OH   	740-654	9321	"OHIO BELL TEL CO"                                                                                  	LANCASTER 	             	AS 	             	              	N           	Yes      
+PA   	570-200	9208	"VERIZON PENNSYLVANIA, INC."                                                                        	WILKSBARRE	             	AS 	             	              	Y           	Yes      
+PA   	570-201	3806	"CORE COMMUNICATIONS, INC. - PA"                                                                    	RUSH      	             	AS 	03/20/2009   	              	Y           	Yes      
+PA   	717-211	MULT	"MULTIPLE OCN LISTING"                                                                              	XXXXXXXXXX	             	UA 	             	              	            	No       
+PA   	717-291	9208	"VERIZON PENNSYLVANIA, INC."                                                                        	LANCASTER 	             	AS 	             	              	N           	Yes      
+PA   	717-295	9208	"VERIZON PENNSYLVANIA, INC."                                                                        	LANCASTER 	             	AS 	             	              	N           	Yes      
+PA   	717-392	9208	"VERIZON PENNSYLVANIA, INC."                                                                        	LANCASTER 	             	AS 	             	              	Y           	Yes      
+PA   	717-393	9208	"VERIZON PENNSYLVANIA, INC."                                                                        	LANCASTER 	             	AS 	             	              	N           	Yes      
+PA   	717-397	9208	"VERIZON PENNSYLVANIA, INC."                                                                        	LANCASTER 	             	AS 	             	              	N           	Yes      
+PA   	717-464	9208	"VERIZON PENNSYLVANIA, INC."                                                                        	LANCASTER 	             	AS 	             	              	N           	Yes      
+PA   	717-843	0169	"VERIZON NORTH, INC. - PA"                                                                          	YORK      	             	AS 	             	              	N           	Yes      
+PA   	717-845	0169	"VERIZON NORTH, INC. - PA"                                                                          	YORK      	             	AS 	             	              	N           	Yes      
+PA   	717-846	0169	"VERIZON NORTH, INC. - PA"                                                                          	YORK      	             	AS 	             	              	N           	Yes      
+PA   	717-848	0169	"VERIZON NORTH, INC. - PA"                                                                          	YORK      	             	AS 	             	              	Y           	Yes      
+PR   	787-200	955G	"LIBERTY COMMUNICATIONS OF PUERTO RICO LLC"                                                         	RIOPIEDRAS	             	AS 	             	G             	Y           	Yes      
+PR   	787-201	4823	"PUERTO RICO TELCO DBA CLARO PUERTO RICO"                                                           	ARECIBO   	             	AS 	             	              	N           	Yes      
+TX   	512-200	6529	"T-MOBILE USA, INC."                                                                                	AUSTIN    	             	AS 	             	I             	Y           	Yes      
+TX   	512-201	6506	"CELLCO PARTNERSHIP DBA VERIZON WIRELESS - TX"                                                      	AUSTIN    	             	AS 	12/20/2011   	I             	Y           	Yes      
+PA   	717-570	    	                                                                                                    	          	             	UA 	             	              	            	No       

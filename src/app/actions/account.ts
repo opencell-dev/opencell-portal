@@ -48,7 +48,11 @@ export async function deleteAccountAction(_prev: FormState, form: FormData): Pro
     { confirmEmail: String(form.get('confirmEmail') ?? ''), choices },
     await requestMeta(),
   );
-  if (!r.ok) return { ok: false, message: r.error };
+  if (!r.ok) {
+    // It may have just learned a number was activated: the form must offer the choice.
+    revalidatePath('/account');
+    return { ok: false, message: r.error };
+  }
   await clearSessionCookie();
   redirect('/?deleted=1');
 }

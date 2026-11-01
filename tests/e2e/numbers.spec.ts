@@ -1,0 +1,178 @@
+import { type Browser, expect, type Page, test } from '@playwright/test';
+import { liftLimits, portalAdmin, signUpAndVerify, uniqueEmail } from './helpers';
+
+// Portal spec §4.1 and §5 against the fake core, on phone and desktop: find
+// a place, pick one of 8, confirm, see the QR; the card on My numbers goes
+// waiting → activated → registered. The exchanges come from the trimmed
+// NANPA fixtures, imported the way the weekly timer does it.
+
+test.beforeAll(() => {
+  portalAdmin('nanpa-refresh', '--dir', 'tests/fixtures/nanpa');
+});
+test.beforeEach(() => liftLimits());
+
+/** A station no other test (or project) picks: the vanity numbers must not collide. */
+function station(info: { project: { name: string } }): string {
+  const base = info.project.name === 'phone' ? 50000 : 10000;
+  return String(base + Math.floor(Math.random() * 39000)).padStart(5, '0');
+}
+
+async function freshUser(page: Page, info: Parameters<typeof uniqueEmail>[0], name: string) {
+  await signUpAndVerify(page, name, uniqueEmail(info, name.toLowerCase()));
+}
+
+/** Search → Lancaster, PA → the shortlist → the first number → confirm → get; the activation page's URL. */
+async function getLancasterNumber(page: Page): Promise<string> {
+  await page.goto('/numbers/new');
+  await page.getByLabel(/A city, a state/).fill('lancaster');
+  await page.getByRole('link', { name: /^Lancaster, PA \(717-291/ }).click();
+  await expect(page).toHaveURL(/\/numbers\/new\/(%2B|\+)8831717291$/);
+  const free = page.getByRole('list', { name: 'Free numbers' }).getByRole('link');
+  await expect(free).toHaveCount(8);
+  await expect(page.getByText('Served by East (core 1)')).toBeVisible();
+  await free.first().click();
+  await expect(page).toHaveURL(/\/numbers\/new\/confirm\?number=/);
+  await expect(page.getByTestId('rule')).toHaveText(
+    "This number is yours only once a terminal activates it. If it isn't activated within 3 days, it goes back to the pool.",
+  );
+  await expect(page.getByRole('checkbox', { name: /List this number in the directory/ })).toBeChecked();
+  await expect(page.getByText('East (core 1)')).toBeVisible();
+  await page.getByRole('button', { name: 'Get this number' }).click();
+  await expect(page).toHaveURL(/\/numbers\/(%2B|\+)8831717\d{8}\/activate$/);
+  return page.url();
+}
+
+test('get a number from a place: 8 to choose from, the rule, the QR and its countdown', async ({ page }, info) => {
+  await freshUser(page, info, 'Ada');
+  await getLancasterNumber(page);
+  await expect(page.getByTestId('qr').locator('svg')).toBeVisible();
+  await expect(page.getByTestId('countdown')).toHaveText(/^2 d 23 h 5\d m$/);
+  await page.getByText('Show as text').click();
+  await expect(page.getByTestId('qr-text')).toHaveText(/^opencell:2:[A-Za-z0-9_-]{100}$/);
+  // A reload within 15 minutes still shows it.
+  await page.reload();
+  await expect(page.getByTestId('qr').locator('svg')).toBeVisible();
+});
+
+test('a vanity number, typed the way people write it', async ({ page }, info) => {
+  await freshUser(page, info, 'Vic');
+  const s = station(info);
+  await page.goto('/numbers/new');
+  await page.getByLabel(/A city, a state/).fill(`(717) 464-${s}`);
+  await page.getByRole('link', { name: `Check +8831717464${s} →` }).click();
+  await expect(page.getByTestId('confirm-number')).toHaveText(`+883 1 717 464 ${s}`);
+  await expect(page.getByText('Lancaster, PA')).toBeVisible();
+  await page.getByRole('button', { name: 'Get this number' }).click();
+  await expect(page).toHaveURL(new RegExp(`/numbers/(%2B|\\+)8831717464${s}/activate$`));
+  // A 10-digit phone number gets a plain explanation.
+  await page.goto('/numbers/new');
+  await page.getByLabel(/A city, a state/).fill('(717) 464-1234');
+  await expect(page.getByText(/type the 11 digits after \+883 1/)).toBeVisible();
+  // A non-geographic area code is never offered.
+  await page.goto(`/numbers/new/confirm?number=${encodeURIComponent('+883150020012345')}`);
+  await expect(page.getByText(/Area code 500 is not tied to a place/)).toBeVisible();
+});
+
+async function otherUser(browser: Browser, info: Parameters<typeof uniqueEmail>[0]) {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  await freshUser(page, info, 'Bob');
+  return { ctx, page };
+}
+
+test("another account's number is a 404", async ({ page, browser }, info) => {
+  await freshUser(page, info, 'Ann');
+  const url = await getLancasterNumber(page);
+  const bob = await otherUser(browser, info);
+  const res = await bob.page.goto(url);
+  expect(res?.status()).toBe(404);
+  await expect(bob.page.getByRole('heading', { name: 'Page not found' })).toBeVisible();
+  await bob.ctx.close();
+});
+
+test('My numbers: the card goes waiting → activated → registered, live; release takes a card away', async ({ page, context }, info) => {
+  await freshUser(page, info, 'Liv');
+  const url = await getLancasterNumber(page);
+  const number = decodeURIComponent(new URL(url).pathname.split('/')[2]);
+  await page.goto('/numbers');
+  const card = page.locator(`[data-testid="number-card"][data-number="${number}"]`);
+  await expect(card.getByTestId('number-state')).toHaveText(/^Waiting for activation · 2 d 23 h left$/);
+  await expect(page.getByTestId('get-number-card')).toContainText('2 of 3 left');
+  // A terminal activates it in another tab (the fake core's simulated terminal, with this session's QR).
+  const other = await context.newPage();
+  await other.goto(url);
+  await other.getByRole('button', { name: 'Simulate a terminal activating it (fake core)' }).click();
+  await expect(other.getByText('This number is active on a terminal.')).toBeVisible(); // the used QR is not shown again
+  await expect(card.getByTestId('number-state')).toHaveText('Activated', { timeout: 10_000 });
+  await expect(card.getByText('Terminal', { exact: true })).toBeVisible();
+  await card.getByRole('button', { name: 'Simulate a registration (fake core)' }).click();
+  await expect(card.getByTestId('number-state')).toHaveText(/^Registered on cell /, { timeout: 10_000 });
+  await other.close();
+
+  // A second number, released from its card.
+  const second = await getLancasterNumber(page);
+  const n2 = decodeURIComponent(new URL(second).pathname.split('/')[2]);
+  await page.goto('/numbers');
+  const card2 = page.locator(`[data-testid="number-card"][data-number="${n2}"]`);
+  await card2.getByText('Release', { exact: true }).click();
+  await card2.getByRole('button', { name: 'Release this number' }).click();
+  await expect(card2).toHaveCount(0);
+  await expect(page.getByTestId('get-number-card')).toContainText('2 of 3 left');
+});
+
+test('a number that leaves the core while its card is open: the card says Released, and is gone on reload (Review Focus)', async ({ page, context }, info) => {
+  await freshUser(page, info, 'Rex');
+  const url = await getLancasterNumber(page);
+  const number = decodeURIComponent(new URL(url).pathname.split('/')[2]);
+  await page.goto('/numbers');
+  const card = page.locator(`[data-testid="number-card"][data-number="${number}"]`);
+  await expect(card.getByTestId('number-state')).toHaveText(/^Waiting for activation/);
+  // Released in another tab: the first tab has only its polls to learn from.
+  const other = await context.newPage();
+  await other.goto('/numbers');
+  const there = other.locator(`[data-testid="number-card"][data-number="${number}"]`);
+  await there.getByText('Release', { exact: true }).click();
+  await there.getByRole('button', { name: 'Release this number' }).click();
+  await expect(there).toHaveCount(0);
+  await other.close();
+  await expect(card.getByTestId('number-state')).toHaveText('Released', { timeout: 10_000 });
+  await expect(card.getByRole('link', { name: 'Show QR' })).toHaveCount(0);
+  await page.reload();
+  await expect(card).toHaveCount(0);
+  await expect(page.getByTestId('get-number-card')).toContainText('3 of 3 left');
+});
+
+test('a subscriber gets a 404 on the admin pages for number limits', async ({ page }, info) => {
+  await freshUser(page, info, 'Sue');
+  const res = await page.goto('/admin/limits');
+  expect(res?.status()).toBe(404);
+});
+
+test('the directory shows activated, listed numbers to signed-in subscribers only; Calls never another’s', async ({ page, browser }, info) => {
+  const tag = `Zed${Math.floor(Math.random() * 1e9)}`;
+  await freshUser(page, info, tag);
+  const url = await getLancasterNumber(page);
+  const number = decodeURIComponent(new URL(url).pathname.split('/')[2]);
+  const spaced = number.replace(/^\+883(1)(\d{3})(\d{3})(\d{5})$/, '+883 $1 $2 $3 $4');
+  // Waiting for activation: nobody's yet, so not listed.
+  const bob = await otherUser(browser, info);
+  await bob.page.goto(`/directory?q=${tag}`);
+  await expect(bob.page.getByText('Nobody listed matches.')).toBeVisible();
+  // Activated: listed (the box was ticked).
+  await page.getByRole('button', { name: 'Simulate a terminal activating it (fake core)' }).click();
+  await expect(page.getByText('This number is active on a terminal.')).toBeVisible();
+  await bob.page.goto(`/directory?q=${tag}`);
+  await expect(bob.page.getByRole('cell', { name: spaced })).toBeVisible();
+  await bob.page.goto(`/directory?q=${number.slice(-9)}`);
+  await expect(bob.page.getByRole('cell', { name: tag })).toBeVisible();
+  // Bob asking for Zed's calls gets none of them.
+  await bob.page.goto(`/calls?number=${encodeURIComponent(number)}`);
+  await expect(bob.page.getByText('You have no numbers yet.')).toBeVisible();
+  await bob.ctx.close();
+  // Signed out: the sign-in page, never the list.
+  const anon = await browser.newContext();
+  const p = await anon.newPage();
+  await p.goto('/directory');
+  await expect(p).toHaveURL(/\/sign-in$/);
+  await anon.close();
+});

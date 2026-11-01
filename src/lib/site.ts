@@ -27,6 +27,9 @@ const PORTAL_ONLY = [
   '/operator-agreement',
   '/api/altcha',
   '/altcha',
+  // Portal P2: the numbers' JSON (place search, live status).
+  '/api/places',
+  '/api/numbers',
 ];
 
 export type SiteRoute = { kind: 'serve' } | { kind: 'not-found' } | { kind: 'redirect'; to: string };

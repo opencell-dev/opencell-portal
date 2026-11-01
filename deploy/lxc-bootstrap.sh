@@ -6,7 +6,7 @@
 # default portal) and in what portal.env says (portal.env.example or
 # noc.env.example).
 # Installs Node.js 22 (NodeSource), sqlite3 and the build tools, creates the
-# oc-portal user and directories, the firewall, the backup timer, and Anubis
+# oc-portal user and directories, the firewall, the backup and NANPA timers, and Anubis
 # in front of the portal (anubis/install-anubis.sh: nginx-proxy -> :3000
 # Anubis -> 127.0.0.1:3001 the portal). The deploy script (oc-portal-deploy)
 # does the rest. Safe to re-run: every step checks before it changes.
@@ -58,15 +58,19 @@ install -m 0644 "$HERE/oc-portal-deploy.logrotate" /etc/logrotate.d/oc-portal-de
 # Re-running this script (e.g. after editing a unit) should pick up the
 # change: restart the affected units instead of leaving the old ones running.
 UNITS_CHANGED=0
-for f in oc-portal.service oc-portal-backup.service oc-portal-backup.timer; do
+for f in oc-portal.service oc-portal-backup.service oc-portal-backup.timer oc-portal-nanpa.service oc-portal-nanpa.timer; do
   cmp -s "$HERE/$f" "/etc/systemd/system/$f" 2>/dev/null || UNITS_CHANGED=1
 done
-install -m 0644 "$HERE/oc-portal.service" "$HERE/oc-portal-backup.service" "$HERE/oc-portal-backup.timer" /etc/systemd/system/
+install -m 0644 "$HERE/oc-portal.service" "$HERE/oc-portal-backup.service" "$HERE/oc-portal-backup.timer" \
+  "$HERE/oc-portal-nanpa.service" "$HERE/oc-portal-nanpa.timer" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable oc-portal.service
 systemctl enable --now oc-portal-backup.timer
+# The weekly NANPA refresh (portal spec §4.4); the first import is run by hand
+# after the first deploy (the runbook at the top of oc-portal-nanpa.timer).
+systemctl enable --now oc-portal-nanpa.timer
 if [ "$UNITS_CHANGED" -eq 1 ]; then
-  systemctl try-restart oc-portal.service oc-portal-backup.timer
+  systemctl try-restart oc-portal.service oc-portal-backup.timer oc-portal-nanpa.timer
   echo "unit files changed: restarted the affected units"
 fi
 

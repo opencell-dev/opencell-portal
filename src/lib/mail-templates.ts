@@ -66,3 +66,42 @@ export function emailChangedNotice(name: string, newEmail: string, origin: strin
       `If you didn't do this, write to opencell@k4ozi.com at once.${sig(origin)}`,
   };
 }
+
+const spaced = (n: string) => n.replace(/^\+883(1)(\d{3})(\d{3})(\d{5})$/, '+883 $1 $2 $3 $4');
+const utc = (t: number) => `${new Date(t).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+
+/**
+ * "Email it to me" on the activation page (portal spec §4.1 step 4): the
+ * QR's text form, which a terminal takes instead of a scan. No image: plain
+ * text, as every OpenCell mail. Only ever sent to the account's own verified address.
+ */
+export function activationQrMail(name: string, number: string, qrText: string, expiresAt: number, origin: string): Template {
+  return {
+    subject: `Your OpenCell activation code for ${spaced(number)}`,
+    text:
+      `Hello ${name},\n\nThis is the activation code for your number ${spaced(number)}, as you asked. ` +
+      `On the terminal, choose to activate by text and enter it exactly:\n\n${qrText}\n\n` +
+      `It works once, until ${utc(expiresAt)}. If no terminal activates the number by then, it goes back to the pool. ` +
+      `Anyone with this code can take the number, so don't forward this message. ` +
+      `If you make a new QR code on the portal, this one stops working.${sig(origin)}`,
+  };
+}
+
+export function limitRequestMail(adminName: string, who: string, wanted: number, reason: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: a subscriber asks for more numbers',
+    text:
+      `Hello ${adminName},\n\n${who} asks to hold up to ${wanted} numbers. Their reason:\n\n${reason}\n\n` +
+      `Decide on the Admin page: ${origin}/admin/limits${sig(origin)}`,
+  };
+}
+
+export function limitDecisionMail(name: string, raised: boolean, limit: number, note: string | null, origin: string): Template {
+  return {
+    subject: raised ? 'OpenCell: you can hold more numbers' : 'OpenCell: your request for more numbers',
+    text: raised
+      ? `Hello ${name},\n\nYour account can now hold up to ${limit} numbers. Get one on My numbers: ${origin}/numbers${sig(origin)}`
+      : `Hello ${name},\n\nWe can't raise your number limit right now; it stays at ${limit}.` +
+        `${note ? `\n\n${note}` : ''}${sig(origin)}`,
+  };
+}

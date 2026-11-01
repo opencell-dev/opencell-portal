@@ -3,6 +3,7 @@ import { setDirectoryAction } from '@/app/actions/account';
 import { ChangeEmailForm, DeleteAccountForm, RemovePasskeyButton } from '@/components/account-forms';
 import { PasskeyRegister } from '@/components/passkey-register';
 import { appCtx } from '@/lib/ctx';
+import { syncDue } from '@/lib/numbers/ownership';
 import { ownedNumbers } from '@/lib/owned-numbers';
 import { listPasskeys } from '@/lib/passkeys';
 import { isStaff } from '@/lib/users';
@@ -17,6 +18,8 @@ export default async function Account({ searchParams }: { searchParams: Promise<
   const { email } = await searchParams;
   const ctx = appCtx();
   const keys = listPasskeys(ctx, user.id);
+  // What the core says now: the delete form offers a choice for each activated number.
+  await syncDue(ctx, user.id);
   // The NOC's own site (NOC design §N1.5): no directory; a note for an added account and for an email-link session.
   const nocSite = ctx.config.site === 'noc';
   const staff = isStaff(ctx, user.id);
@@ -51,7 +54,7 @@ export default async function Account({ searchParams }: { searchParams: Promise<
           <h2 className="text-lg font-semibold">Directory</h2>
           <p>
             {user.directoryListed
-              ? 'You are listed: signed-in subscribers can find your name and numbers.'
+              ? 'You are listed: signed-in subscribers can find your name and the activated numbers you chose to list (the box when you got each one).'
               : 'You are not listed in the directory.'}
           </p>
           <form action={setDirectoryAction}>

@@ -22,7 +22,7 @@ describe('what each site serves', () => {
     },
   );
 
-  it.each(['/sign-up', '/welcome', '/numbers', '/numbers/x', '/calls', '/directory', '/nodes', '/coverage', '/operator-agreement', '/api/altcha', '/altcha/altcha.js', '/NUMBERS', '/%6eumbers', '//sign-up'])(
+  it.each(['/sign-up', '/welcome', '/numbers', '/numbers/x', '/calls', '/directory', '/nodes', '/coverage', '/operator-agreement', '/api/altcha', '/altcha/altcha.js', '/api/places', '/api/numbers/status', '/NUMBERS', '/%6eumbers', '//sign-up'])(
     'the NOC site does not serve %s',
     (path) => {
       expect(kind('noc', path)).toBe('not-found');

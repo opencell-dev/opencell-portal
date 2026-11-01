@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { addPasskey, addPasskeyDevice, altchaReady, e2eDb, liftLimits, mailedLink, signUpAndVerify, uniqueEmail, watchCsp } from './helpers';
+import { addPasskey, addPasskeyDevice, altchaReady, e2eDb, liftLimits, mailedLink, portalAdmin, signUpAndVerify, uniqueEmail, watchCsp } from './helpers';
 
 test.beforeEach(() => liftLimits());
 
@@ -110,4 +110,78 @@ test('the directory and every signed-in page need a session', async ({ page }) =
     await page.goto(path);
     await expect(page, path).toHaveURL(/\/sign-in$/);
   }
+});
+
+// ---- Portal P2: numbers (spec §10, §13) ----
+
+test('the number pages need a session; their JSON answers 401 signed out', async ({ page, request }) => {
+  for (const path of ['/numbers/new', '/numbers/new/%2B8831717464', '/numbers/new/confirm?number=%2B883171746412345', '/numbers/%2B883171746412345/activate', '/admin/limits']) {
+    await page.goto(path);
+    await expect(page, path).toHaveURL(/\/sign-in$/);
+  }
+  for (const path of ['/api/places?q=lancaster', '/api/numbers/status']) {
+    const res = await request.get(path);
+    expect(res.status(), path).toBe(401);
+    expect(res.headers()['cache-control'], path).toBe('no-store');
+  }
+});
+
+test('number actions posted from another origin are refused', async ({ request }) => {
+  for (const path of ['/numbers/new/confirm?number=%2B883171746412345', '/numbers/%2B883171746412345/activate', '/numbers', '/admin/limits']) {
+    const res = await request.post(path, { headers: { Origin: 'https://evil.example', 'Next-Action': '00' }, form: { number: '+883171746412345' } });
+    expect(res.status(), path).toBe(403);
+  }
+});
+
+test('the real get-a-number action, posted from another origin with the real session, is refused; from its own, it runs', async ({ page, baseURL }, info) => {
+  portalAdmin('nanpa-refresh', '--dir', 'tests/fixtures/nanpa');
+  await signUpAndVerify(page, 'Origin', uniqueEmail(info, 'origin'));
+  const station = String((info.project.name === 'phone' ? 60000 : 20000) + Math.floor(Math.random() * 30000));
+  const number = `+8831717843${station}`;
+  const url = `/numbers/new/confirm?number=${encodeURIComponent(number)}`;
+  await page.goto(url);
+  // The form's real fields, action id included: the no-JavaScript POST the page itself would send.
+  const fields = await page
+    .locator('form', { has: page.getByRole('button', { name: 'Get this number' }) })
+    .evaluate((f) => [...new FormData(f as HTMLFormElement).entries()].map(([k, v]) => [k, String(v)]));
+  expect(fields.map(([k]) => k).some((k) => k.startsWith('$ACTION'))).toBe(true);
+  const multipart = Object.fromEntries(fields);
+  const held = () => {
+    const db = e2eDb();
+    const row = db.prepare('SELECT number FROM numbers WHERE number = ?').get(number);
+    db.close();
+    return row;
+  };
+  const evil = await page.request.post(url, { headers: { Origin: 'https://evil.example' }, multipart });
+  expect(evil.status()).toBe(403);
+  expect(held()).toBeUndefined();
+  const none = await page.request.post(url, { multipart });
+  expect(none.status()).toBe(403);
+  expect(held()).toBeUndefined();
+  // The same fields from the portal's own origin do run it, so the refusals above were about the origin.
+  await page.request.post(url, { headers: { Origin: new URL(baseURL!).origin }, multipart });
+  expect(held()).toEqual({ number });
+});
+
+test('no CSP violation and no third-party request through get-a-number, the QR and My numbers; the directory is noindex', async ({ page }, info) => {
+  portalAdmin('nanpa-refresh', '--dir', 'tests/fixtures/nanpa');
+  const violations = await watchCsp(page);
+  const foreign: string[] = [];
+  page.on('request', (r) => {
+    if (!r.url().startsWith('http://localhost:3100/') && !r.url().startsWith('data:')) foreign.push(r.url());
+  });
+  await signUpAndVerify(page, 'CspNum', uniqueEmail(info, 'cspnum'));
+  await page.goto('/numbers/new');
+  await page.getByLabel(/A city, a state/).fill('york');
+  await page.getByRole('link', { name: /^York, PA/ }).click();
+  await page.getByRole('list', { name: 'Free numbers' }).getByRole('link').first().click();
+  await page.getByRole('button', { name: 'Get this number' }).click();
+  await expect(page.getByTestId('qr').locator('svg')).toBeVisible();
+  await page.goto('/numbers');
+  await expect(page.getByTestId('number-card')).toHaveCount(1);
+  await page.goto('/calls');
+  await page.goto('/directory');
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
+  expect(violations).toEqual([]);
+  expect(foreign).toEqual([]);
 });

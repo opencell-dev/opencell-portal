@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { userRoles, users } from '@/db/schema';
 import { listAudit, writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
+import { applyNanpa, fetchNanpa, liveExchanges, logFailedRefresh, type NanpaFiles, readNanpaDir } from '@/lib/numbers/nanpa-refresh';
 import { listPasskeys } from '@/lib/passkeys';
 import { isLimitName, LIMITS, limitOf, setLimit } from '@/lib/ratelimit';
 import { findUserByEmail, grantRole, revokeRole, rolesOf } from '@/lib/users';
@@ -17,7 +18,9 @@ export const USAGE = `usage: oc-portal-admin COMMAND
   noc-revoke EMAIL               (NOC site) take the NOC operator role away
   limit show                     show the rate limits
   limit set NAME MAX [WINDOW_S]  change a rate limit (${Object.keys(LIMITS).join(', ')})
-  audit [N]                      the last N portal audit records (default 20)`;
+  audit [N]                      the last N portal audit records (default 20)
+  nanpa-refresh [--dir DIR]      import NANPA's exchanges (weekly timer); --dir reads
+                                 co-codes.txt, npas.csv, cnac.csv, rc_XX.xml from DIR`;
 
 type Out = { code: number; out: string };
 
@@ -140,5 +143,32 @@ export function runAdmin(ctx: Ctx, argv: string[]): Out {
     }
     default:
       return { code: 2, out: USAGE };
+  }
+}
+
+/**
+ * The CLI's entry point: runAdmin, plus the commands that wait on the
+ * network (nanpa-refresh). `fetchFiles` stands in for the download in tests.
+ */
+export async function runAdminAsync(ctx: Ctx, argv: string[], fetchFiles: () => Promise<NanpaFiles> = () => fetchNanpa()): Promise<Out> {
+  const [cmd, ...args] = argv;
+  if (cmd !== 'nanpa-refresh') return runAdmin(ctx, argv);
+  if (!(args.length === 0 || (args.length === 2 && args[0] === '--dir'))) return { code: 2, out: USAGE };
+  // The NOC's guest runs the same bootstrap (and so the same timer), but its
+  // site holds no numbers (NOC design §N1.5): nothing to import there.
+  if (ctx.config.site !== 'portal') return { code: 0, out: 'nanpa-refresh: the NOC site holds no numbers; nothing to do' };
+  try {
+    const files = args.length === 2 ? readNanpaDir(args[1]) : await fetchFiles();
+    const r = applyNanpa(ctx, files);
+    // P2 only reports new NPAs; P5 signs and offers them as blocks (spec §4.4, §8.2).
+    const lines = [
+      `nanpa: ${r.newExchanges} new exchanges, ${r.withdrawn} withdrawn, ${r.restored} restored, ${r.rateCenters} rate centers; ${liveExchanges(ctx)} live`,
+      ...(r.newNpas.length > 0 ? [`nanpa: new NPAs ${r.newNpas.join(' ')}`] : []),
+      ...r.errors.map((e) => `nanpa: ${e}`),
+    ];
+    return { code: 0, out: lines.join('\n') };
+  } catch (e) {
+    logFailedRefresh(ctx, e);
+    return { code: 1, out: `nanpa-refresh failed: ${(e as Error)?.message ?? String(e)}` };
   }
 }

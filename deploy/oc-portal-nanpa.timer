@@ -1,0 +1,32 @@
+# The weekly NANPA refresh (portal spec §4.4; portal P2). Runbook, as root
+# on the portal guest (LXC 116), once, after the first deploy with numbers:
+#
+#   1. Install the two units. A new guest gets them from lxc-bootstrap.sh;
+#      on the live one, from the release's deploy/ directory:
+#        install -m 0644 /opt/oc-portal/current/deploy/oc-portal-nanpa.{service,timer} /etc/systemd/system/
+#        systemctl daemon-reload && systemctl enable --now oc-portal-nanpa.timer
+#   2. The first import, by hand (about 3 minutes: Local Calling Guide is
+#      asked one region every 1.5 s):
+#        systemctl start oc-portal-nanpa.service; journalctl -u oc-portal-nanpa -n 20
+#      expect "nanpa: ~227000 new exchanges, 0 withdrawn, 0 restored,
+#      ~22700 rate centers; ~227000 live" and no "failed".
+#   3. Check: /numbers/new finds "Lancaster, PA"; the Admin page lists the
+#      refresh under "NANPA refreshes"; systemctl list-timers oc-portal-nanpa.timer.
+#
+# No outbound HTTPS from the guest: download the files elsewhere, unzip, name
+# them co-codes.txt (NANPA's CO codes), cnac.csv, npas.csv and rc_XX.xml (one
+# per region), copy the directory over and run
+#   oc-portal-admin nanpa-refresh --dir DIR
+# A refresh that would withdraw more than 10 % of the live exchanges is
+# refused and changes nothing (a truncated download); it says so and exits 1.
+
+[Unit]
+Description=OpenCell portal: weekly NANPA exchange refresh (Sundays)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:20:00 America/New_York
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

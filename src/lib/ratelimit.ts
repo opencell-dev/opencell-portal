@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { isIPv4, isIPv6 } from 'node:net';
-import { and, count, eq, gt, lte } from 'drizzle-orm';
+import { and, count, desc, eq, gt, lte } from 'drizzle-orm';
 import { rateEvents, settings } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 
@@ -49,6 +49,48 @@ export const LIMITS = {
     max: 10,
     windowS: 86400,
     message: 'You have asked for numbers too often today. Please try again tomorrow.',
+  },
+  // Portal P2, per account: a core's limits are one bucket per operation for
+  // the whole portal (oc_api.c, OPS), so without these one account reloading
+  // a page would use up everybody's num.free, sub.reissue or cdr.list.
+  number_browse: {
+    perIp: false,
+    max: 60,
+    windowS: 3600,
+    message: 'You have looked at too many numbers this hour. Please try again later.',
+  },
+  number_reissue: {
+    perIp: false,
+    max: 10,
+    windowS: 3600,
+    message: 'You have made new QR codes too often. Please try again in about an hour.',
+  },
+  calls_account: {
+    perIp: false,
+    max: 60,
+    windowS: 3600,
+    message: 'You have opened Calls too often this hour. Please try again later.',
+  },
+  // Place search reads the exchanges on the portal's one thread: a key press every 250 ms, at most.
+  places_account: {
+    perIp: false,
+    max: 600,
+    windowS: 3600,
+    message: 'Too many place searches this hour. Please try again later.',
+  },
+  // Each request mails every admin.
+  limit_request_account: {
+    perIp: false,
+    max: 3,
+    windowS: 86400,
+    message: 'You have asked for more numbers too often today. Please try again tomorrow.',
+  },
+  // Portal P2: "Email it to me" on the activation page (the QR's text form).
+  qr_mail_account: {
+    perIp: false,
+    max: 5,
+    windowS: 3600,
+    message: 'You have asked for that email too often. Please try again in about an hour.',
   },
   // NOC design §11: a staff number lookup (a number's status and calls).
   noc_lookup: {
@@ -148,6 +190,17 @@ export function longestWindowMs(ctx: Ctx): number {
 export function hit(ctx: Ctx, name: KeyLimitName, key: string): HitResult {
   if (LIMITS[name].perIp) throw new Error(`${name} is a per-IP limit: count it with hitIp`);
   return count1(ctx, name, key);
+}
+
+/**
+ * Take back the newest attempt counted against a keyed limit: the attempt
+ * never reached anyone (the core did not answer), so retrying through an
+ * outage must not use up a daily limit.
+ */
+export function unhit(ctx: Ctx, name: KeyLimitName, key: string): void {
+  const k = rateKey(ctx, name, key);
+  const row = ctx.db.select({ id: rateEvents.id }).from(rateEvents).where(eq(rateEvents.key, k)).orderBy(desc(rateEvents.at), desc(rateEvents.id)).limit(1).get();
+  if (row) ctx.db.delete(rateEvents).where(eq(rateEvents.id, row.id)).run();
 }
 
 /** Count one attempt from client address `ip` against a per-IP limit (IPv6 bucketed by /64). */

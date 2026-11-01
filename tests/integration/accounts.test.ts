@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { audit, emailTokens, passkeys, rateEvents, sessions, users } from '@/db/schema';
+import { audit, emailTokens, numbers, passkeys, rateEvents, sessions, users } from '@/db/schema';
 import {
   changeEmail,
   consumeEmailToken,
@@ -345,6 +345,37 @@ describe('account page services (spec §3)', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].actorId).toBe(userId);
     expect(JSON.stringify(rows)).not.toContain('ada@example.org');
+  });
+
+  it('deletes an account holding numbers in the numbers table (P2): unactivated ones are released, rows go with it', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    const unact = '+883171746412345';
+    const off = '+883171746412347';
+    const t1 = await ctx.core.subCreate(userId, unact);
+    ctx.core.simActivate((await ctx.core.subCreate(userId, off)).qr, 2);
+    const row = { userId, coreId: 'fake', createdAt: ctx.now() };
+    ctx.db.insert(numbers).values({ ...row, number: unact, state: 'unactivated', tokenExpiresAt: t1.expiresAt }).run();
+    ctx.db.insert(numbers).values({ ...row, number: off, state: 'activated' }).run();
+    // No `owned` argument: deleteAccount reads the table itself (ownedNumbers).
+    expect(await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: {} }, meta)).toMatchObject({
+      ok: false,
+      error: `Choose what happens to ${off}.`,
+    });
+    expect(await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: { [off]: 'disable' } }, meta)).toEqual({ ok: true });
+    expect(await ctx.core.numCheck(0, unact)).toBe('free');
+    expect((await ctx.core.subStatus(0, off)).disabled).toBe(true);
+    expect(ctx.db.select().from(numbers).all()).toEqual([]);
+  });
+
+  it('deleting an account sees an activation the portal had not noticed: it asks, instead of failing on every retry', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    const n = '+883171746412345';
+    const t = await ctx.core.subCreate(userId, n);
+    ctx.db.insert(numbers).values({ userId, coreId: 'fake', createdAt: ctx.now(), number: n, state: 'unactivated', tokenExpiresAt: t.expiresAt }).run();
+    ctx.core.simActivate(t.qr, 1); // the row still says unactivated
+    expect(await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: {} }, meta)).toMatchObject({ ok: false, error: `Choose what happens to ${n}.` });
+    expect(await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: { [n]: 'keep' } }, meta)).toEqual({ ok: true });
+    expect((await ctx.core.subStatus(0, n)).state).toBe('activated');
   });
 
   it('refuses to delete without the typed address or with an activated number left undecided', async () => {
