@@ -220,7 +220,7 @@ describe('unchallenged on the NOC site', () => {
 });
 
 describe('challenged on the NOC site', () => {
-  it.each(['/', '/coverage', '/operator-agreement', '/sign-in', '/sign-in?noc=1', '/account', '/noc', '/noc/cells', '/admin', '/admin/users', '/altcha/pbkdf2.js', '/api/altcha', '/wp-login.php'])(
+  it.each(['/', '/coverage', '/operator-agreement', '/sign-in', '/sign-in?noc=1', '/account', '/noc', '/noc/cells', '/noc/calls', '/noc/calls/fake/1', '/noc/registrations', '/admin', '/admin/users', '/altcha/pbkdf2.js', '/api/altcha', '/wp-login.php'])(
     '%s gets the proof of work',
     async (path) => {
       expect(challengeOf(await new Client('203.0.113.7').get(path))?.rules).toEqual({ algorithm: 'fast', difficulty: 4 });

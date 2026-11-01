@@ -15,7 +15,7 @@ function Tile({ label, value, sub, tone }: { label: string; value: string; sub?:
 }
 
 /** The overview's headline numbers (NOC design §9.1), all live from the cores that answered. */
-export function KpiTiles({ s }: { s: NetworkSummary }) {
+export function KpiTiles({ s, children }: { s: NetworkSummary; children?: React.ReactNode }) {
   const coresTone: Tone = s.coresUp === s.coresTotal ? 'ok' : s.coresUp === 0 ? 'bad' : 'warn';
   // Review M5: a core whose cell list did not come is not "all is well" just
   // because the cells that did come are all online.
@@ -24,12 +24,13 @@ export function KpiTiles({ s }: { s: NetworkSummary }) {
     .filter((x): x is string => x !== null)
     .join('; ');
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
       <Tile label="Cores answering" value={`${s.coresUp} / ${s.coresTotal}`} tone={coresTone} />
       <Tile label="Cells online" value={`${s.cellsOnline} / ${s.cellsEnabled}`} sub={cellsSub || undefined} tone={cellsTone} />
       <Tile label="Terminals registered" value={String(s.terminals)} />
       <Tile label="Calls now" value={String(s.calls)} />
       <Tile label="Subscribers" value={String(s.subscribers)} sub="activated numbers" />
+      {children}
     </div>
   );
 }
@@ -105,19 +106,16 @@ export function AttentionList({ items }: { items: Attention[] }) {
 }
 
 /**
- * What the NOC cannot show yet, and why (NOC design §5.2): each needs a new
- * admin-API operation or a later plan. Shown, not hidden, so nobody reads
- * an empty panel as "all is well".
+ * What the NOC cannot show yet, and why (NOC design §5.2; plan N2a shows the
+ * rest): each needs a later plan. Shown, not hidden, so nobody reads an
+ * empty panel as "all is well".
  */
 export const NOT_REPORTED: { what: string; why: string }[] = [
-  { what: 'Radio health (RSSI, SNR, late slots, radio errors, schedules, grants, RACH, ACK errors)', why: 'needs cell telemetry and cell.radio (core plan)' },
-  { what: 'PPS / GPS time lock per cell', why: 'needs cell telemetry and cell.radio (core plan)' },
-  { what: 'Calls in the last 24 h, success rate, end causes, voice quality', why: 'needs cdr.recent (core plan); cdr.list is per number' },
-  { what: 'Registered terminals by number, registration activity', why: 'needs reg.list and audit.list (core plan)' },
-  { what: 'OCSS links between cores, blocks per core', why: 'needs ocss.status and core.blocks (core plan)' },
-  { what: "The cores' own admin audit beside the portal's", why: 'needs audit.list (core plan)' },
+  { what: 'Voice quality (frames sent, received, lost and concealed), call setup time', why: 'needs CALL_STATS from the cell and a CDR schema change (core telemetry phase 2)' },
+  { what: 'Rates and trends (late slots per hour, calls per hour), history', why: 'need the portal on PostgreSQL (plan (b)), then N2' },
   { what: 'Database layer (Patroni, replication, backups, drills)', why: 'needs the DatabaseStatus adapter (plan N4)' },
-  { what: 'Alarms with acknowledgement, history, downtime windows', why: 'need the portal on PostgreSQL (plan (b)), then N2' },
+  { what: 'Alarms with acknowledgement, history, downtime windows, jobs', why: 'need the portal on PostgreSQL (plan (b)), then N2' },
+  { what: 'Admin-API certificate expiry', why: 'N2: read from the TLS session' },
 ];
 
 export function NotReported() {

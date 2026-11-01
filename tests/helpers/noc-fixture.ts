@@ -1,3 +1,4 @@
+import type { FakeRadio } from '@/core/fake';
 import type { CellStatus, CoreStatus } from '@/core/types';
 import type { NetworkSnapshot } from '@/lib/noc/snapshot';
 
@@ -45,3 +46,30 @@ export const snap: NetworkSnapshot = {
     { id: 'core2', where: '10.99.0.2:7444', status: null, cells: null },
   ],
 };
+
+/** A radio as a cell reports it (oc-core test_cell_radio's values), reported 20 s before AT. */
+export const fakeRadio = (o: Partial<FakeRadio> = {}): FakeRadio => ({
+  radio: 0,
+  role: 'bs',
+  band: 0,
+  fw: '0.3.0',
+  anchor: 30,
+  pps: 'locked',
+  timebase: true,
+  tempC: 41,
+  boardUptimeS: 3600,
+  reportedAt: AT - 20_000,
+  schedules: 30000,
+  rach: 12,
+  attach: 4,
+  grants: 4,
+  ackErrors: 3,
+  ackLate: 2,
+  lateSlots: 7,
+  radioErrors: 1,
+  lastRadioError: -2,
+  scheduleMisses: 5,
+  uartCrcErrors: 0,
+  terminalsHeard: 2,
+  ...o,
+});

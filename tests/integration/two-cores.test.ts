@@ -3,8 +3,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TlsCore } from '@/core/tls-client';
 import type { Ctx } from '@/lib/ctx';
 import { coreStatuses } from '@/lib/core-status';
+import { auditEnd, networkActivity } from '@/lib/noc/activity';
 import { networkSnapshot, summarize } from '@/lib/noc/snapshot';
-import { CORE_DIR, makeTestPki, type RealCore, startRealCore, type TestPki } from '../helpers/real-core';
+import { CORE_DIR, type CoreCert, freePort, makeCoreCert, makeTestPki, type RealCore, startRealCore, type TestPki } from '../helpers/real-core';
 
 // Plan P4b: the portal and two real oc-core processes, configured as
 // production is (OC_CORES=core1,core2 in the environment, the process's own
@@ -14,14 +15,34 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
   let c1: RealCore;
   let c2: RealCore;
   let ctx: Ctx;
+  let certs: CoreCert[] = [];
+  let ocssPort: number;
 
   const audit = (c: RealCore) =>
     execFileSync(`${CORE_DIR}/build/oc/oc-core`, ['admin', '--socket', c.adminSocket, 'audit', '20']).toString();
 
   beforeAll(async () => {
     pki = makeTestPki();
-    c1 = await startRealCore(CORE_DIR, { pki, coreId: 1, name: 'oc-core-t1', block: '8831717 1' });
-    c2 = await startRealCore(CORE_DIR, { pki, coreId: 2, name: 'oc-core-t2', block: '8831503 2' });
+    // Joined by OCSS as production is (core test services spec §7.1): core 1, the lower id, dials core 2.
+    certs = [makeCoreCert(pki), makeCoreCert(pki)];
+    ocssPort = await freePort();
+    const ocss = (n: 0 | 1) => [`ocss_cert = ${certs[n].crt}`, `ocss_key = ${certs[n].key}`, `ocss_ca = ${pki.caCrt}`];
+    c1 = await startRealCore(CORE_DIR, {
+      pki,
+      coreId: 1,
+      name: 'oc-core-t1',
+      block: '8831717 1',
+      cert: certs[0],
+      extra: ['block = 8831503 2 2', `peer = 2 127.0.0.1:${ocssPort} ${certs[1].fpr}`, ...ocss(0)],
+    });
+    c2 = await startRealCore(CORE_DIR, {
+      pki,
+      coreId: 2,
+      name: 'oc-core-t2',
+      block: '8831503 2',
+      cert: certs[1],
+      extra: ['block = 8831717 1 1', `peer = 1 - ${certs[0].fpr}`, `ocss_listen = 127.0.0.1:${ocssPort}`, ...ocss(1)],
+    });
     const env = {
       OC_ORIGIN: 'https://portal.test',
       OC_RP_ID: 'portal.test',
@@ -51,6 +72,7 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     vi.unstubAllEnvs();
     await c1?.done();
     await c2?.done();
+    for (const c of certs) c.done();
     pki?.done();
   });
 
@@ -88,6 +110,60 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     expect(audit(c1)).toContain('a0 cell.status ok');
   });
 
+  /** core `c`'s OCSS row for `peer` once it is `want` (the dial and handshake take a moment), or as it is after 6 s. */
+  async function peerState(c: RealCore, peer: number, want: (s: string | undefined) => boolean) {
+    for (let i = 0; ; i++) {
+      const p = (await c.core.ocssStatus(7)).find((x) => x.coreId === peer);
+      if (want(p?.state) || i >= 60) return p;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  it('shows the OCSS link up from both sides, and each core\'s blocks (NOC design §7.1)', async () => {
+    expect(await peerState(c1, 2, (s) => s === 'up')).toMatchObject({ coreId: 2, dials: true, state: 'up', calls: 0, address: `127.0.0.1:${ocssPort}` });
+    expect(await peerState(c2, 1, (s) => s === 'up')).toMatchObject({ coreId: 1, dials: false, state: 'up', calls: 0, address: null });
+    // Sorted by index: the order of core.blocks is not part of its contract (core v0.7.0 sorts by prefix).
+    expect((await c1.core.coreBlocks(7)).sort((a, b) => a.index - b.index)).toEqual([
+      { index: 1, homeCore: 1, role: 'home', prefix: '8831717' },
+      { index: 2, homeCore: 2, role: 'none', prefix: '8831503' },
+    ]);
+    expect(await c2.core.coreBlocks(7)).toEqual([
+      { index: 2, homeCore: 2, role: 'home', prefix: '8831503' },
+      { index: 1, homeCore: 1, role: 'none', prefix: '8831717' },
+    ]);
+  });
+
+  it("gives the NOC both cores' radios, OCSS links and blocks, asked as the portal itself (plan N2a)", async () => {
+    await peerState(c1, 2, (s) => s === 'up');
+    const snap = await networkSnapshot(ctx);
+    expect(snap.cores.map((c) => c.radio)).toEqual([
+      { state: 'ok', value: [] },
+      { state: 'ok', value: [] },
+    ]);
+    expect(snap.cores[0].ocss).toMatchObject({ state: 'ok', value: [{ coreId: 2, state: 'up' }] });
+    expect(snap.cores[1].ocss).toMatchObject({ state: 'ok', value: [{ coreId: 1, state: 'up' }] });
+    expect(snap.cores[1].blocks).toMatchObject({ state: 'ok', value: [{ prefix: '8831503', role: 'home' }, { prefix: '8831717', role: 'none' }] });
+    expect(summarize(snap).attention.filter((a) => a.text.startsWith('OCSS'))).toEqual([]);
+    for (const op of ['cell.radio', 'ocss.status', 'core.blocks']) expect(audit(c1)).toContain(`a0 ${op} ok`);
+  });
+
+  it("reads both cores' calls and audit as the portal itself, and finds where each audit ends (plan N2a)", async () => {
+    const snap = await networkSnapshot(ctx);
+    const a = await networkActivity(ctx, snap);
+    expect(a.cores.map((c) => [c.id, c.calls.state, c.registrations.state])).toEqual([
+      ['core1', 'ok', 'ok'],
+      ['core2', 'ok', 'ok'],
+    ]);
+    expect(a.cores[0].calls).toMatchObject({ value: { total: 0 }, complete: true });
+    expect(a.cores[0].registrations).toMatchObject({ value: { total: 0 } });
+    const end = auditEnd(ctx, 'core1');
+    expect(end).toBeGreaterThan(0);
+    const newest = await c1.core.auditList(7, { after: end! - 1, limit: 5 });
+    expect(newest[0].id).toBe(end);
+    expect(audit(c1)).toContain('a0 cdr.recent ok');
+    expect(audit(c1)).toContain('a0 audit.list ok');
+  });
+
   it('shows a core that stopped as unreachable, and the other as before', async () => {
     await c2.done();
     const t0 = Date.now();
@@ -100,5 +176,8 @@ describe.skipIf(!CORE_DIR)('two real cores (OC_CORES)', () => {
     expect(Date.now() - t1).toBeLessThan(6000);
     expect(snap.cores[1]).toMatchObject({ id: 'core2', status: null, cells: null });
     expect(summarize(snap).attention[0]).toMatchObject({ severity: 'critical', core: 'core2' });
+    expect((await peerState(c1, 2, (s) => s !== 'up'))?.state).not.toBe('up');
+    const after = await networkSnapshot(ctx);
+    expect(summarize(after).attention.map((a) => a.text)).toContainEqual(expect.stringMatching(/^OCSS from core1 to core 2: (down|connecting|handshake|open)/));
   });
 });

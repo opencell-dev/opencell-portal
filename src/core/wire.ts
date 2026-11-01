@@ -122,6 +122,18 @@ export class Reader {
     return (b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0;
   }
 
+  /** A signed byte (cell.radio's temperature). */
+  i8(): number {
+    const v = this.u8();
+    return v >= 0x80 ? v - 0x100 : v;
+  }
+
+  /** A signed 16-bit field (RSSI, SNR, a radio error code). */
+  i16(): number {
+    const v = this.u16();
+    return v >= 0x8000 ? v - 0x10000 : v;
+  }
+
   bytes(n: number): Uint8Array {
     return this.take(n);
   }

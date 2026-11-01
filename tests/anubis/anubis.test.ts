@@ -380,6 +380,8 @@ describe('challenged', () => {
     '/noc',
     '/noc/cells',
     '/noc/topology',
+    '/noc/calls',
+    '/noc/registrations',
     '/api/altcha',
     '/wp-login.php',
     '/_next/image?url=%2Fx&w=64&q=75',

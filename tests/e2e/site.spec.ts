@@ -6,7 +6,7 @@ import { addPasskey, addPasskeyDevice, liftLimits, portalAdmin, signInWithPasske
 
 test.beforeEach(() => liftLimits());
 
-const NOC_PATHS = ['/noc', '/noc/', '/noc/cells', '/noc/topology', '/noc/cores/fake', '/noc/lookup', '/noc/demo', '/NOC', '/%6Eoc/cells'];
+const NOC_PATHS = ['/noc', '/noc/', '/noc/cells', '/noc/calls', '/noc/calls/fake/1', '/noc/registrations', '/noc/topology', '/noc/cores/fake', '/noc/lookup', '/noc/demo', '/NOC', '/%6Eoc/cells'];
 
 test('the portal has no NOC: a 404 for a subscriber', async ({ page }, info) => {
   await signUpAndVerify(page, 'Sub', uniqueEmail(info, 'sub'));

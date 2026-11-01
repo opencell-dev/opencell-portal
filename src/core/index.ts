@@ -20,7 +20,7 @@ export function makeCores(c: Config): CoreHandle[] {
   if (c.core === 'tls') return c.cores.map((e) => ({ id: e.id, where: `${e.host}:${e.port}`, core: new TlsCore(e) }));
   return Array.from({ length: c.fake.cores }, (_, i) => {
     const core = new FakeCore(Date.now, { coreId: i + 1, name: i === 0 ? 'fake-core' : `fake-core-${i + 1}` });
-    if (c.fake.demo) seedDemo(core, i, Date.now());
+    if (c.fake.demo) seedDemo(core, i, Date.now(), c.fake.cores);
     return { id: i === 0 ? 'fake' : `fake${i + 1}`, where: 'in-process', core };
   });
 }

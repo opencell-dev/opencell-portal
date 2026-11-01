@@ -1,16 +1,26 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import { isAssignable, isExchange, isFullNumber, numberBcd } from './numbers';
 import {
+  type AuditQuery,
   type Cdr,
+  type CdrRecord,
   type CellMode,
   type CellStatus,
   type CoreAdmin,
+  type CoreAuditRecord,
+  type CoreBlock,
   CoreError,
   type CoreStatus,
   type IssuedToken,
   type NumCheck,
+  type OcssPeer,
+  type RadioStatus,
+  type Registration,
+  type RegListQuery,
   type SubStatus,
 } from './types';
+import { cdrResult } from './wire';
+import { AUDIT_API, AUDIT_LIST_MAX, AUDIT_REGISTER, CDR_RECENT_MAX, REG_LIST_MAX } from './wire-noc';
 
 const TOKEN_MS = 72 * 3600_000;
 const PATTERN = /^[0-9x]{5}$/;
@@ -24,7 +34,14 @@ interface Sub {
   tmid: number | null;
   cellId: number | null;
   lastSeenAt: number | null;
+  /** When it last registered (reg.list's registered at). */
+  registeredAt?: number | null;
+  /** Its cell's latest signal for it (reg.list), or none reported. */
+  signal?: { rssiDbm: number; snrDb: number; heardAt: number } | null;
 }
+
+/** A radio as its cell last reported it (cell.radio without the cell id). */
+export type FakeRadio = Omit<RadioStatus, 'cellId'>;
 
 interface Cell {
   cellId: number;
@@ -35,6 +52,8 @@ interface Cell {
   revoked: boolean;
   online: boolean;
   lastHeardAt: number | null;
+  /** Its radios' latest report: shown by cell.radio while it is online. */
+  radios?: FakeRadio[];
 }
 
 /** Which core a FakeCore plays (NOC design §10): core.status's id, name and version. */
@@ -42,7 +61,14 @@ export interface FakeCoreOptions {
   coreId?: number;
   name?: string;
   version?: string;
+  /** core.blocks; default: home for 8831717, block index = core id. */
+  blocks?: CoreBlock[];
 }
+
+/** The fake core keeps at most this many of its own audit records (cell.radio polls add one each). */
+export const FAKE_CORE_AUDIT_MAX = 20_000;
+/** A fake registration expires this long after it is read (the fake keeps registrations until deregistered). */
+export const FAKE_REG_TTL_MS = 3600_000;
 
 /**
  * A simulated outage (NOC design §10): 'refuse' fails every call at once
@@ -101,6 +127,12 @@ export class FakeCore implements CoreAdmin {
   private readonly networkKey = randomBytes(32);
   private readonly activeCalls = new Map<number, number>();
   private down: FakeDown = null;
+  private readonly records: CdrRecord[] = [];
+  private nextCdrId = 1;
+  private readonly coreAudit: CoreAuditRecord[] = [];
+  private nextAuditId = 1;
+  private peers: OcssPeer[] = [];
+  private blocks: CoreBlock[];
   readonly coreId: number;
   readonly name: string;
   readonly version: string;
@@ -113,6 +145,7 @@ export class FakeCore implements CoreAdmin {
     this.coreId = opts.coreId ?? 1;
     this.name = opts.name ?? 'fake-core';
     this.version = opts.version ?? '0.0.0-fake';
+    this.blocks = opts.blocks ?? [{ index: this.coreId, homeCore: this.coreId, role: 'home', prefix: '8831717' }];
   }
 
   /** Every call starts here: a simulated outage fails it before anything is done or audited. */
@@ -126,6 +159,16 @@ export class FakeCore implements CoreAdmin {
 
   private log(actor: number, op: string, arg: unknown) {
     this.audit.push({ at: this.now(), actor, op, arg: String(arg) });
+    // The core's own audit (audit.list): an API record, "a<actor> <op> ok", as oc_api writes one.
+    const text = String(arg);
+    this.simAuditRecord({
+      at: this.now(),
+      event: AUDIT_API,
+      number: isFullNumber(text) ? text : null,
+      tmidPrefix: null,
+      cellId: /^cell\./.test(op) && /^\d+$/.test(text) ? Number(text) : null,
+      detail: `a${actor} ${op} ok`,
+    });
   }
 
   /** Core-internal job (spec §7 `sub.release_expired`), run before every read. */
@@ -317,6 +360,94 @@ export class FakeCore implements CoreAdmin {
     this.routes.push({ tableVersion, size: blob.length });
   }
 
+  // ---- the NOC's operations (NOC design §7.1), as core v0.4.0 answers them
+
+  async cellRadio(actor: number, cellId?: number): Promise<RadioStatus[]> {
+    await this.gate();
+    this.log(actor, 'cell.radio', cellId ?? 'all');
+    const list = cellId === undefined || cellId === 0 ? [...this.cells.values()] : [this.cell(cellId)];
+    return list
+      .filter((c) => c.online && !c.revoked)
+      .sort((a, b) => a.cellId - b.cellId)
+      .flatMap((c) => (c.radios ?? []).map((r) => ({ ...r, cellId: c.cellId })));
+  }
+
+  async regList(actor: number, q: RegListQuery = {}): Promise<Registration[]> {
+    await this.gate();
+    this.log(actor, 'reg.list', q.after ?? (q.cellId ? `cell ${q.cellId}` : 'all'));
+    if (q.after !== undefined && !isFullNumber(q.after)) throw new CoreError('invalid', 'after: not a full number');
+    if (q.cellId) this.cell(q.cellId);
+    this.releaseExpired();
+    const t = this.now();
+    return [...this.subs.values()]
+      .filter((s) => s.cellId !== null && (!q.cellId || s.cellId === q.cellId) && (q.after === undefined || s.number > q.after))
+      .sort((a, b) => (a.number < b.number ? -1 : 1))
+      .slice(0, REG_LIST_MAX)
+      .map((s) => ({
+        number: s.number,
+        tmidPrefix: (s.tmid ?? 0).toString(16).padStart(8, '0').slice(0, 4),
+        cellId: s.cellId as number,
+        registeredAt: s.registeredAt ?? null,
+        expiresAt: t + FAKE_REG_TTL_MS,
+        rssiDbm: s.signal?.rssiDbm ?? null,
+        snrDb: s.signal?.snrDb ?? null,
+        heardAt: s.signal?.heardAt ?? null,
+      }));
+  }
+
+  async cdrRecent(actor: number, after: number, limit: number): Promise<CdrRecord[]> {
+    await this.gate();
+    this.log(actor, 'cdr.recent', `after ${after}`);
+    if (!Number.isInteger(limit) || limit < 1 || limit > CDR_RECENT_MAX) throw new CoreError('invalid', 'after (4), limit 1-1000');
+    return this.records
+      .filter((r) => r.id > after)
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
+  async auditList(actor: number, q: AuditQuery): Promise<CoreAuditRecord[]> {
+    await this.gate();
+    if (!Number.isInteger(q.limit) || q.limit < 1 || q.limit > AUDIT_LIST_MAX) throw new CoreError('invalid', 'after (4), mask (4), number, limit 1-500');
+    if (q.number !== undefined && !isFullNumber(q.number)) throw new CoreError('invalid', 'not a full number');
+    const events = new Set(q.events ?? []);
+    if ([...events].some((e) => !Number.isInteger(e) || e < 0 || e > 31)) throw new CoreError('invalid', 'an event is 0–31');
+    // Answered first, then audited, as oc_api does: the call's own record is not in its answer.
+    const out = this.coreAudit
+      .filter((r) => r.id > (q.after ?? 0) && (events.size === 0 || events.has(r.event)) && (q.number === undefined || r.number === q.number))
+      .slice(0, q.limit)
+      .map((r) => ({ ...r }));
+    this.log(actor, 'audit.list', q.number ?? `after ${q.after ?? 0}`);
+    return out;
+  }
+
+  async ocssStatus(actor: number): Promise<OcssPeer[]> {
+    await this.gate();
+    this.log(actor, 'ocss.status', '');
+    return this.peers.map((p) => ({ ...p }));
+  }
+
+  async coreBlocks(actor: number): Promise<CoreBlock[]> {
+    await this.gate();
+    this.log(actor, 'core.blocks', '');
+    return this.blocks.map((b) => ({ ...b }));
+  }
+
+  async cellMode(actor: number, cellId: number, mode: CellMode): Promise<void> {
+    await this.gate();
+    this.log(actor, 'cell.mode', cellId);
+    if (mode !== 'part15' && mode !== 'part97') throw new CoreError('invalid', 'mode: 1 part15, 2 part97');
+    const c = this.cell(cellId);
+    if (c.revoked) throw new CoreError('invalid', 'revoked');
+    if (c.mode === mode) return; // idempotent: already that mode, the link stays up (final review M4)
+    c.mode = mode;
+    // The link drops and its calls end; the fake cell is back at once, in the new mode.
+    this.activeCalls.delete(cellId);
+    if (c.online) {
+      c.lastHeardAt = this.now();
+      for (const r of c.radios ?? []) r.reportedAt = this.now();
+    }
+  }
+
   // ---- simulation of the terminal and cell side (tests, development) ----
 
   /** A terminal activates with this QR text (activation spec §3.2). */
@@ -339,6 +470,19 @@ export class FakeCore implements CoreAdmin {
     this.cell(cellId);
     s.cellId = cellId;
     s.lastSeenAt = this.now();
+    s.registeredAt = this.now();
+    this.registerRecord(s, this.now());
+  }
+
+  private registerRecord(s: Sub, at: number): void {
+    this.simAuditRecord({
+      at,
+      event: AUDIT_REGISTER,
+      number: s.number,
+      tmidPrefix: s.tmid === null ? null : s.tmid.toString(16).padStart(8, '0').slice(0, 4),
+      cellId: s.cellId,
+      detail: 'register',
+    });
   }
 
   /** A finished call's CDR, now or (`at`) at an earlier time. */
@@ -392,6 +536,7 @@ export class FakeCore implements CoreAdmin {
       tmid: tmid >>> 0,
       cellId,
       lastSeenAt: this.now(),
+      registeredAt: cellId === null ? null : this.now(),
     });
   }
 
@@ -411,11 +556,57 @@ export class FakeCore implements CoreAdmin {
     this.activeCalls.clear();
     this.nextCell = 1;
     this.down = null;
+    // Ids keep rising (a real core's never go back): a cursor from before still reads only what is new.
+    this.records.length = 0;
+    this.coreAudit.length = 0;
+    this.peers = [];
   }
 
   /** The cells as they are, outage or not (the demo controls), without a call or an audit record. */
   simCells(): { cellId: number; name: string; online: boolean; revoked: boolean }[] {
     return [...this.cells.values()].map(({ cellId, name, online, revoked }) => ({ cellId, name, online, revoked }));
+  }
+
+  /** A finished call as the core records it (cdr.recent), and its two sides in cdr.list. */
+  simCdr(rec: Omit<CdrRecord, 'id'>): CdrRecord {
+    const r: CdrRecord = { ...rec, id: this.nextCdrId++ };
+    this.records.push(r);
+    const durationS = r.answerAt !== null && r.endAt > r.answerAt ? Math.floor((r.endAt - r.answerAt) / 1000) : 0;
+    const result = cdrResult(r.answerAt === null ? 0 : 1, r.cause);
+    this.cdrs.push({ at: r.setupAt, number: r.caller, peer: r.called, direction: 'out', durationS, result });
+    if (r.legB === 'cell') this.cdrs.push({ at: r.setupAt, number: r.called, peer: r.caller, direction: 'in', durationS, result });
+    return r;
+  }
+
+  /** A record in the core's own audit (audit.list), with the next id. */
+  simAuditRecord(rec: Omit<CoreAuditRecord, 'id'>): void {
+    this.coreAudit.push({ ...rec, id: this.nextAuditId++ });
+    if (this.coreAudit.length > FAKE_CORE_AUDIT_MAX) this.coreAudit.splice(0, this.coreAudit.length - FAKE_CORE_AUDIT_MAX);
+  }
+
+  /** A cell's radios as its latest CELL_STATUS reported them (cell.radio); [] none. */
+  simRadio(cellId: number, radios: FakeRadio[]): void {
+    this.cell(cellId).radios = radios.map((r) => ({ ...r }));
+  }
+
+  /** A registered terminal's signal as its cell reported it (reg.list), or null: not in the report. */
+  simSignal(number: string, signal: { rssiDbm: number; snrDb: number; heardAt: number } | null): void {
+    this.sub(number).signal = signal;
+  }
+
+  /** A registration that happened at `at` (a REGISTER record then; the demo's history). */
+  simRegisteredAt(number: string, at: number): void {
+    const s = this.sub(number);
+    s.registeredAt = at;
+    this.registerRecord(s, at);
+  }
+
+  simPeers(peers: OcssPeer[]): void {
+    this.peers = peers.map((p) => ({ ...p }));
+  }
+
+  simBlocks(blocks: CoreBlock[]): void {
+    this.blocks = blocks.map((b) => ({ ...b }));
   }
 
   /** Every number this core holds, for tests. */

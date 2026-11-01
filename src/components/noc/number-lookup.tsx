@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { lookupNumberAction } from '@/app/actions/admin-noc';
 import type { LookupResult } from '@/lib/noc/lookup';
 import { exact, groupNumber } from '@/lib/noc/format';
+import { keepOnFailure } from '@/lib/noc/change-ui';
+import { SubscriberControls } from './subscriber-controls';
 
 const RESULT: Record<string, string> = {
   answered: 'answered',
@@ -80,6 +82,13 @@ export function NumberLookup({ serviceNumbers }: { serviceNumbers: string[] }) {
               </>
             )}
           </dl>
+          <SubscriberControls
+            key={r.number}
+            number={r.number}
+            disabled={r.status.disabled}
+            // Review M8: a refused or failed re-read keeps showing the change's own result, not a stale "couldn't reach the portal".
+            done={async () => setR(keepOnFailure(r, await lookupNumberAction(r.number)))}
+          />
           <section className="space-y-2">
             <h2 className="text-lg font-semibold">Calls, last 30 days</h2>
             {r.cdrs.length === 0 ? (

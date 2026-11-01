@@ -14,6 +14,16 @@ export function ago(t: number, now: number): string {
   return `${Math.floor(s / 86400)} d ago`;
 }
 
+/** "in 42 s", "in 5 min", "in 3 h", "in 2 d"; "passed" for a time gone by (a registration's expiry). */
+export function until(t: number, now: number): string {
+  const s = Math.floor((t - now) / 1000);
+  if (s < 0) return 'passed';
+  if (s < 60) return `in ${s} s`;
+  if (s < 3600) return `in ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `in ${Math.floor(s / 3600)} h`;
+  return `in ${Math.floor(s / 86400)} d`;
+}
+
 /** "2026-10-01 04:12:09 UTC". */
 export function exact(t: number): string {
   return `${new Date(t).toISOString().slice(0, 19).replace('T', ' ')} UTC`;

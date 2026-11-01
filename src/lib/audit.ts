@@ -1,4 +1,4 @@
-import { desc } from 'drizzle-orm';
+import { and, asc, desc, gte, lte } from 'drizzle-orm';
 import { audit } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 
@@ -27,4 +27,17 @@ export function writeAudit(ctx: Ctx, a: AuditInput): void {
 
 export function listAudit(ctx: Ctx, limit: number) {
   return ctx.db.select().from(audit).orderBy(desc(audit.at), desc(audit.id)).limit(limit).all();
+}
+
+export type AuditRow = ReturnType<typeof listAudit>[number];
+
+/** The portal's audit rows from `from` to `to` (unix ms), oldest first, at most `limit` (plan N2a: beside a core's audit). */
+export function auditBetween(ctx: Ctx, from: number, to: number, limit = 2000): AuditRow[] {
+  return ctx.db
+    .select()
+    .from(audit)
+    .where(and(gte(audit.at, from), lte(audit.at, to)))
+    .orderBy(asc(audit.at), asc(audit.id))
+    .limit(limit)
+    .all();
 }

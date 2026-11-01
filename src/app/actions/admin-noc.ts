@@ -5,11 +5,39 @@ import { asFakeCore, type FakeCore, type FakeDown } from '@/core/fake';
 import { seedDemo } from '@/core/fake-demo';
 import { writeAudit } from '@/lib/audit';
 import { appCtx } from '@/lib/ctx';
-import { type LookupResult, lookupNumber } from '@/lib/noc/lookup';
+import { type ChangeResult, changeSubscriber, switchCellMode } from '@/lib/noc/changes';
+import { type LookupResult, lookupNumber, normalizeNumber } from '@/lib/noc/lookup';
+import { registrationsPage } from '@/lib/noc/registrations';
+import { isFullNumber } from '@/core/numbers';
+import type { Registration } from '@/core/types';
+import { forgetActivity } from '@/lib/noc/activity';
 import { forgetSnapshot } from '@/lib/noc/snapshot';
-import { requestMeta, requireAdmin, requireNoc } from '@/server/request';
+import { freshAdmin, freshNoc, requestMeta, requireAdmin, requireNoc } from '@/server/request';
 
 export type DemoResult = { ok: true; message: string } | { ok: false; message: string };
+export type RegPageResult = { ok: true; rows: Registration[]; more: boolean } | { ok: false; message: string };
+
+const regPageSchema = z.object({
+  core: z.string().regex(/^[a-z][a-z0-9]{0,15}$/),
+  cellId: z.number().int().min(1).max(0xffffffff).optional(),
+  after: z.string().max(16).refine(isFullNumber),
+});
+
+/**
+ * The next page of a core's registrations (plan N2a), after the last number
+ * shown: a POST, so the number stays out of URLs and logs, as the lookup's.
+ * Staff (admins and NOC operators); read under the viewer's account and
+ * audited in the portal and the core.
+ */
+export async function registrationsAction(input: unknown): Promise<RegPageResult> {
+  const { user } = await requireNoc();
+  const p = regPageSchema.safeParse(input);
+  const ctx = appCtx();
+  if (!p.success || !ctx.cores.some((c) => c.id === p.data.core)) return { ok: false, message: 'Not a page of registrations.' };
+  const page = await registrationsPage(ctx, p.data, user.id, (await requestMeta()).ip);
+  if (page.rows.state === 'ok') return { ok: true, rows: page.rows.value, more: page.more };
+  return { ok: false, message: page.rows.state === 'unsupported' ? `${p.data.core} does not list registrations (oc-core before v0.4.0).` : `${p.data.core} did not answer in time; try again.` };
+}
 
 /**
  * Staff (an admin or a NOC operator) looks up one number's status and
@@ -58,7 +86,7 @@ export async function demoAction(input: unknown): Promise<DemoResult> {
   if (d.op === 'load') {
     fakes.forEach((h, i) => {
       h.core.simReset();
-      seedDemo(h.core, i, ctx.now());
+      seedDemo(h.core, i, ctx.now(), fakes.length);
     });
     message = `The demo network is loaded on ${fakes.map((h) => h.id).join(', ')}.`;
   } else {
@@ -78,6 +106,53 @@ export async function demoAction(input: unknown): Promise<DemoResult> {
     }
   }
   forgetSnapshot(ctx);
+  forgetActivity(ctx);
   writeAudit(ctx, { actorId: user.id, action: `demo.${d.op}`, detail: d, ip: (await requestMeta()).ip });
   return { ok: true, message };
+}
+
+export type ChangeActionResult = ChangeResult | { ok: false; reauth: true };
+
+const subSchema = z.object({ number: z.string().max(40), enable: z.boolean(), reason: z.string().trim().min(3).max(200) });
+
+/**
+ * Disable or enable a subscriber (plan N2a; decision 2026-10-01 #10): staff
+ * (admins and NOC operators), a fresh passkey, and a reason; audited in the
+ * portal (noc.sub.disable / noc.sub.enable) and on the core.
+ */
+export async function subscriberAction(input: unknown): Promise<ChangeActionResult> {
+  const f = await freshNoc();
+  if (!f.ok) return f;
+  const p = subSchema.safeParse(input);
+  if (!p.success) return { ok: false, message: 'Say why (3–200 characters).' };
+  const number = normalizeNumber(p.data.number);
+  if (!number) return { ok: false, message: 'That is not a full OpenCell number (+883 1 NPA NXX XXXXX).' };
+  return changeSubscriber(appCtx(), f.s.user.id, number, p.data.enable, p.data.reason, (await requestMeta()).ip);
+}
+
+const modeSchema = z.object({
+  core: z.string().regex(/^[a-z][a-z0-9]{0,15}$/),
+  cellId: z.number().int().min(1).max(0xffffffff),
+  mode: z.enum(['part15', 'part97']),
+  confirmName: z.string().max(64),
+  reason: z.string().trim().min(3).max(200),
+});
+
+/**
+ * The mode switch, Part 15 <-> Part 97 (plan N2a; NOC design §4.3): admins
+ * only, on the NOC site, a fresh passkey, the cell's name typed to confirm
+ * and a reason. Every call on the cell ends; audited as noc.cell.mode.
+ */
+export async function cellModeAction(input: unknown): Promise<ChangeActionResult> {
+  const f = await freshAdmin();
+  if (!f.ok) return f;
+  const ctx = appCtx();
+  // NOC design §N1.5: an admin of the subscriber portal is not one here.
+  if (ctx.config.site !== 'noc') return { ok: false, message: 'The mode switch is on the NOC site only.' };
+  const p = modeSchema.safeParse(input);
+  if (!p.success) return { ok: false, message: 'Choose the mode, type the cell\'s name and say why (3–200 characters).' };
+  const d = p.data;
+  const r = await switchCellMode(ctx, f.s.user.id, d.core, d.cellId, d.mode, d.confirmName, d.reason, (await requestMeta()).ip);
+  if (r.ok) forgetSnapshot(ctx); // the next page shows the new mode, not the last 10 s's
+  return r;
 }

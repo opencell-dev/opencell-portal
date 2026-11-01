@@ -1,17 +1,24 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { CellTable } from '@/components/noc/cell-table';
+import { BlockTable, CoreAuditTable, OcssTable } from '@/components/noc/core-panels';
 import { StatusDot, When } from '@/components/noc/status';
 import { appCtx } from '@/lib/ctx';
+import { cachedActivity } from '@/lib/noc/activity';
+import { coreAuditView } from '@/lib/noc/core-audit';
 import { duration } from '@/lib/noc/format';
 import { cachedSnapshot } from '@/lib/noc/snapshot';
-import { requireNoc } from '@/server/request';
+import { requestMeta, requireNoc } from '@/server/request';
 
 export const metadata: Metadata = { title: 'Core · NOC' };
 
-/** One core (NOC design §9.3): core.status and its cells. */
+/**
+ * One core (NOC design §9.3): core.status and its cells; its OCSS links and
+ * blocks (plan N2a); and its own audit, read under the viewer's account,
+ * beside this site's.
+ */
 export default async function NocCore({ params }: { params: Promise<{ core: string }> }) {
-  await requireNoc();
+  const { user } = await requireNoc();
   const ctx = appCtx();
   const { core } = await params;
   const snap = await cachedSnapshot(ctx);
@@ -19,6 +26,8 @@ export default async function NocCore({ params }: { params: Promise<{ core: stri
   if (!view) notFound();
   const now = ctx.now();
   const st = view.status;
+  await cachedActivity(ctx, snap); // where the core's audit ends
+  const audit = st ? await coreAuditView(ctx, core, user.id, (await requestMeta()).ip) : null;
   return (
     <div className="space-y-6">
       <div className="space-y-1">
@@ -59,14 +68,20 @@ export default async function NocCore({ params }: { params: Promise<{ core: stri
           <p className="text-sm text-red-700 dark:text-red-400">No cell list from {view.id}.</p>
         )}
       </section>
-      <section className="space-y-1">
-        <h2 className="text-lg font-semibold">Not reported yet</h2>
-        <ul className="list-disc pl-5 text-sm text-slate-600 dark:text-slate-300">
-          <li>Blocks this core is home for: core.blocks (core plan)</li>
-          <li>OCSS peers and link state: ocss.status (core plan)</li>
-          <li>The core&apos;s own admin audit: audit.list (core plan)</li>
-          <li>Admin-API certificate expiry, database cluster state: N4 adapters</li>
-        </ul>
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold">OCSS links</h2>
+        <OcssTable ocss={st ? view.ocss : { state: 'unreachable' }} now={now} />
+      </section>
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold">Blocks</h2>
+        <BlockTable blocks={st ? view.blocks : { state: 'unreachable' }} />
+      </section>
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold">The core&apos;s audit, newest first</h2>
+        <p className="text-xs text-slate-500">
+          Read under your account. Matched to this site&apos;s audit by account and time (± 5 s): the admin API carries no correlation id.
+        </p>
+        {audit ? <CoreAuditTable view={audit} /> : <p className="text-sm text-slate-500">The core is not answering.</p>}
       </section>
     </div>
   );

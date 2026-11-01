@@ -10,14 +10,22 @@ import { join } from 'node:path';
 import * as tls from 'node:tls';
 import { isFullNumber } from './numbers';
 import {
+  type AuditQuery,
   type Cdr,
+  type CdrRecord,
   type CellMode,
   type CellStatus,
   type CoreAdmin,
+  type CoreAuditRecord,
+  type CoreBlock,
   CoreError,
   type CoreStatus,
   type IssuedToken,
   type NumCheck,
+  type OcssPeer,
+  type RadioStatus,
+  type Registration,
+  type RegListQuery,
   type SubStatus,
 } from './types';
 import {
@@ -33,6 +41,20 @@ import {
   STATUS_OK,
   type Writer,
 } from './wire';
+import {
+  auditListFields,
+  auditRow,
+  blockRow,
+  cdrRecentFields,
+  cdrRow,
+  cellIdField,
+  cellModeFields,
+  OP_NOC,
+  ocssRow,
+  radioRow,
+  regListFields,
+  regRow,
+} from './wire-noc';
 
 export const ALPN = 'oc-admin/1';
 
@@ -344,5 +366,35 @@ export class TlsCore implements CoreAdmin {
   async routeOffer(actor: number, tableVersion: number, _blob: Uint8Array, _sig: Uint8Array): Promise<void> {
     // The core refuses it until P5 (the signed table and its delegation).
     await this.call(OP.routeOffer, actor, (w) => w.u32(tableVersion));
+  }
+
+  // ---- the NOC's operations (core v0.4.0, NOC design §7.1; codecs in wire-noc.ts)
+
+  cellRadio(actor: number, cellId?: number): Promise<RadioStatus[]> {
+    return this.rows(OP_NOC.cellRadio, actor, (w) => cellIdField(w, cellId), radioRow);
+  }
+
+  regList(actor: number, q: RegListQuery = {}): Promise<Registration[]> {
+    return this.rows(OP_NOC.regList, actor, (w) => regListFields(w, q.cellId ?? 0, q.after), regRow);
+  }
+
+  cdrRecent(actor: number, after: number, limit: number): Promise<CdrRecord[]> {
+    return this.rows(OP_NOC.cdrRecent, actor, (w) => cdrRecentFields(w, after, limit), cdrRow);
+  }
+
+  auditList(actor: number, q: AuditQuery): Promise<CoreAuditRecord[]> {
+    return this.rows(OP_NOC.auditList, actor, (w) => auditListFields(w, q), auditRow);
+  }
+
+  ocssStatus(actor: number): Promise<OcssPeer[]> {
+    return this.rows(OP_NOC.ocssStatus, actor, () => {}, ocssRow);
+  }
+
+  coreBlocks(actor: number): Promise<CoreBlock[]> {
+    return this.rows(OP_NOC.coreBlocks, actor, () => {}, blockRow);
+  }
+
+  async cellMode(actor: number, cellId: number, mode: CellMode): Promise<void> {
+    await this.call(OP_NOC.cellMode, actor, (w) => cellModeFields(w, cellId, mode));
   }
 }

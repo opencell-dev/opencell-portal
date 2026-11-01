@@ -169,3 +169,68 @@ describe('the fake cores from the configuration', () => {
     expect(parseConfig(base).fake).toEqual({ cores: 1, demo: false });
   });
 });
+
+describe('the demo network: what the NOC telemetry shows (plan N2a)', () => {
+  it("gives every online cell a radio report, York 1's in holdover with late slots, Salem 1's stale", async () => {
+    const east = new FakeCore(() => NOW);
+    seedDemo(east, 0, NOW);
+    const radios = await east.cellRadio(0);
+    const cells = await east.cellStatus(0);
+    const name = (id: number) => cells.find((c) => c.cellId === id)?.name;
+    expect(radios.map((x) => name(x.cellId))).toEqual(['Lancaster 1', 'Lancaster 2', 'York 1']);
+    expect(radios.find((x) => name(x.cellId) === 'York 1')).toMatchObject({ pps: 'holdover', lateSlots: 140, radioErrors: 3 });
+    for (const x of radios) expect(x.reportedAt).toBeGreaterThan(NOW - 60_000);
+    const west = new FakeCore(() => NOW, { coreId: 2 });
+    seedDemo(west, 1, NOW, 2);
+    const salem = (await west.cellStatus(0)).find((c) => c.name === 'Salem 1')!;
+    expect((await west.cellRadio(0, salem.cellId))[0].reportedAt).toBe(NOW - 6 * 60_000);
+  });
+
+  it('gives registrations their signal, most of them reported, and REGISTER records within the last day', async () => {
+    const c = new FakeCore(() => NOW);
+    const net = seedDemo(c, 0, NOW);
+    const regs = await c.regList(0);
+    expect(regs.map((r) => r.number).sort()).toEqual([...net.numbers].sort());
+    const heard = regs.filter((r) => r.rssiDbm !== null);
+    expect(heard.length / regs.length).toBeGreaterThan(0.7);
+    for (const r of heard) {
+      expect(r.rssiDbm).toBeLessThanOrEqual(-45);
+      expect(r.rssiDbm).toBeGreaterThanOrEqual(-112);
+    }
+    const reg = await c.auditList(0, { events: [3], limit: 500 });
+    expect(reg.length).toBeGreaterThanOrEqual(net.numbers.length);
+    for (let i = 1; i < reg.length; i++) expect(reg[i].at).toBeGreaterThanOrEqual(reg[i - 1].at);
+    for (const r of reg) expect(r.at).toBeGreaterThan(NOW - 86400_000);
+  });
+
+  it('records each call once, by end time, with its cells and legs; OCSS calls only with a second core', async () => {
+    const c = new FakeCore(() => NOW);
+    seedDemo(c, 0, NOW);
+    const all = await c.cdrRecent(0, 0, 1000);
+    expect(all.length).toBeGreaterThan(100);
+    for (let i = 1; i < all.length; i++) expect(all[i].endAt).toBeGreaterThanOrEqual(all[i - 1].endAt);
+    expect(all.every((x) => x.endAt <= NOW && x.setupAt <= x.endAt)).toBe(true);
+    expect(all.filter((x) => x.legB === 'echo').every((x) => x.cellB === null && x.answerAt !== null)).toBe(true);
+    expect(all.some((x) => x.legB === 'peer')).toBe(false);
+    const two = new FakeCore(() => NOW);
+    seedDemo(two, 0, NOW, 2);
+    expect((await two.cdrRecent(0, 0, 1000)).some((x) => x.legB === 'peer' && x.called.startsWith('+8831503364'))).toBe(true);
+  });
+
+  it('peers neighbouring fake cores over OCSS (the lower id dials) and gives each its blocks', async () => {
+    const c = new FakeCore(() => NOW, { coreId: 2 });
+    seedDemo(c, 1, NOW, 3);
+    expect((await c.ocssStatus(0)).map((p) => [p.coreId, p.dials, p.state])).toEqual([
+      [1, false, 'up'],
+      [3, true, 'connecting'],
+    ]);
+    expect(await c.coreBlocks(0)).toEqual([
+      { index: 2, homeCore: 2, role: 'home', prefix: '8831503' },
+      { index: 1, homeCore: 1, role: 'none', prefix: '8831717' },
+      { index: 3, homeCore: 3, role: 'none', prefix: '8831208' },
+    ]);
+    const alone = new FakeCore(() => NOW);
+    seedDemo(alone, 0, NOW);
+    expect(await alone.ocssStatus(0)).toEqual([]);
+  });
+});
