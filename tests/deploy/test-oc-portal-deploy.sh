@@ -33,7 +33,7 @@ if grep -q ' oc-noc bash -s' <<<"$h_out"; then echo "ok   OC_PORTAL_HOST=oc-noc:
 h_out="$(env -u OC_PORTAL_SSH -u OC_PORTAL_HOST PATH="$h_bin:$PATH" XDG_RUNTIME_DIR="$h_bin" $D status 2>&1)"
 if grep -q ' oc-portal bash -s' <<<"$h_out"; then echo "ok   without OC_PORTAL_HOST: the oc-portal alias, as before"; else echo "FAIL the default alias: $h_out"; fail=1; fi
 rm -rf "$h_bin"
-bash -n $D deploy/lxc-bootstrap.sh deploy/oc-portal-admin deploy/oc-portal-backup deploy/anubis/install-anubis.sh && echo "ok   bash -n" || fail=1
+bash -n $D deploy/oc-portal-cell-ca deploy/oc-portal-cell-release deploy/lxc-bootstrap.sh deploy/oc-portal-admin deploy/oc-portal-backup deploy/anubis/install-anubis.sh && echo "ok   bash -n" || fail=1
 
 # --- fake-root simulation of the remote script ------------------------------
 # The checks above never reach the network. This section runs the deploy
@@ -590,6 +590,107 @@ simassert "route delegate: ...not on the portal itself" [ ! -e "$sim_root/etc/sy
 rm -f "$rd_key"
 simcheck 0 "route delegate: deploy after the key was removed" "$D_SIM" deploy v1.1.2
 simassert "route delegate: ...takes the drop-in away again" [ ! -e "$rd_dropin" ]
+
+# Plan P3: the cell intermediate's drop-in follows both of its files on the guest,
+# on oc-portal.service; a LoadCredential of a missing file would fail the portal.
+cc_dropin="$sim_root/etc/systemd/system/oc-portal.service.d/cell-ca.conf"
+cc_key="$sim_root/etc/opencell/tls/cell-ca.key"
+cc_crt="$sim_root/etc/opencell/tls/cell-ca.crt"
+for t in v1.2.0 v1.2.1 v1.2.2 v1.2.3; do git -C "$sim_repo" tag "$t"; done
+simcheck 0 "cell CA: deploy with no files on the guest" "$D_SIM" deploy v1.2.0
+simassert "cell CA: ...places no drop-in" [ ! -e "$cc_dropin" ]
+simassert "cell CA: ...makes the releases directory" [ -d "$sim_root/var/lib/oc-portal/releases" ]
+simassert "cell CA: ...0755" [ "$(stat -c %a "$sim_root/var/lib/oc-portal/releases")" = 755 ]
+mkdir -p "$(dirname "$cc_key")"
+echo not-a-real-key > "$cc_key"
+chmod 0400 "$cc_key"
+simcheck 0 "cell CA: deploy with the key but no certificate" "$D_SIM" deploy v1.2.1
+simassert "cell CA: ...still places no drop-in" [ ! -e "$cc_dropin" ]
+echo not-a-real-cert > "$cc_crt"
+simcheck 0 "cell CA: deploy with both" "$D_SIM" deploy v1.2.2
+simassert "cell CA: ...places the drop-in" cmp -s "$sim_repo/deploy/oc-portal-cell-ca.conf" "$cc_dropin"
+rm -f "$cc_key" "$cc_crt"
+simcheck 0 "cell CA: deploy after the files were removed" "$D_SIM" deploy v1.2.3
+simassert "cell CA: ...takes the drop-in away again" [ ! -e "$cc_dropin" ]
+
+# Plan P3: deploy/oc-portal-cell-ca against a local tree (OC_CELL_CA_LOCAL) and
+# its own throwaway root: the key is made on the "guest", the laptop only signs.
+cc_tmp="$(mktemp -d)"
+assert_scratch_dir "$cc_tmp" "cc_tmp"
+cc_guest="$cc_tmp/guest"
+cc_root="$cc_tmp/root"
+cc_bin="$cc_tmp/bin"
+mkdir -p "$cc_guest/opt/oc-portal/current/deploy" "$cc_root" "$cc_bin"
+cp deploy/oc-portal-cell-ca.conf "$cc_guest/opt/oc-portal/current/deploy/"
+printf '#!/bin/bash\necho "systemctl $*" >> %q\n' "$cc_tmp/systemctl.log" > "$cc_bin/systemctl"
+chmod +x "$cc_bin/systemctl"
+openssl ecparam -name prime256v1 -genkey -noout -out "$cc_root/ca.key" 2>/dev/null
+openssl req -x509 -new -key "$cc_root/ca.key" -sha256 -days 3650 -subj '/O=OpenCell/CN=OpenCell Root CA' \
+  -addext 'basicConstraints=critical,CA:TRUE,pathlen:1' -addext 'keyUsage=critical,keyCertSign,cRLSign' -out "$cc_root/ca.crt" 2>/dev/null
+cc_run() { env PATH="$cc_bin:$PATH" OC_CELL_CA_LOCAL="$cc_guest" deploy/oc-portal-cell-ca "$@" 2>&1; }
+cc_key2="$cc_guest/etc/opencell/tls/cell-ca.key"
+cc_crt2="$cc_guest/etc/opencell/tls/cell-ca.crt"
+cc_out="$(cc_run renew guest "$cc_root")"; cc_rc=$?
+if [ "$cc_rc" -ne 0 ] && grep -q 'use init' <<<"$cc_out"; then echo "ok   cell CA script: renew refuses with no key yet"; else echo "FAIL cell CA script: renew with no key (exit $cc_rc): $cc_out"; fail=1; fi
+cc_out="$(cc_run init guest "$cc_root")"; cc_rc=$?
+if [ "$cc_rc" -eq 0 ]; then echo "ok   cell CA script: init"; else echo "FAIL cell CA script: init (exit $cc_rc): $cc_out"; fail=1; fi
+simassert "cell CA script: ...the key is on the guest, 0400" [ "$(stat -c %a "$cc_key2")" = 400 ]
+simassert "cell CA script: ...the certificate is on the guest, 0644" [ "$(stat -c %a "$cc_crt2")" = 644 ]
+simassert "cell CA script: ...it verifies against the root" openssl verify -CAfile "$cc_root/ca.crt" "$cc_crt2"
+simassert "cell CA script: ...the key matches" [ "$(openssl x509 -in "$cc_crt2" -noout -pubkey)" = "$(openssl pkey -in "$cc_key2" -pubout)" ]
+cc_ext="$(openssl x509 -in "$cc_crt2" -noout -ext basicConstraints,keyUsage,extendedKeyUsage,certificatePolicies)"
+cc_expect() { if grep -Eq "$2" <<<"$cc_ext"; then echo "ok   cell CA script: ...$1"; else echo "FAIL cell CA script: $1: $cc_ext"; fail=1; fi; }
+cc_expect "CA:TRUE, pathlen:0" 'CA:TRUE, pathlen:0'
+cc_expect "keyCertSign and cRLSign" 'Certificate Sign, CRL Sign'
+cc_expect "clientAuth" 'TLS Web Client Authentication'
+cc_expect "the cell policy" 'Policy: 2\.25\.39025894690731581968303886031091540846\.1\.3'
+simassert "cell CA script: ...its subject" grep -q 'CN=OpenCell Cell CA 1' <<<"$(openssl x509 -in "$cc_crt2" -noout -subject -nameopt compat)"
+cc_days="$(( ($(date -d "$(openssl x509 -in "$cc_crt2" -noout -enddate | cut -d= -f2)" +%s) - $(date +%s)) / 86400 ))"
+simassert "cell CA script: ...365 days" [ "$cc_days" -ge 364 ] && [ "$cc_days" -le 365 ]
+simassert "cell CA script: ...a copy in issued/" [ "$(find "$cc_root/issued" -name 'cell-ca-*.crt' | wc -l)" = 1 ]
+simassert "cell CA script: ...places the drop-in" cmp -s deploy/oc-portal-cell-ca.conf "$cc_guest/etc/systemd/system/oc-portal.service.d/cell-ca.conf"
+simassert "cell CA script: ...restarts the portal" grep -q 'systemctl restart oc-portal' "$cc_tmp/systemctl.log"
+simassert "cell CA script: ...prints the fingerprint" grep -Eq 'SHA-256 [0-9a-f]{64}' <<<"$cc_out"
+simassert "cell CA script: ...and the cores' line" grep -Eq 'cell_issuers = root,[0-9a-f]{64}' <<<"$cc_out"
+cc_pub="$(openssl pkey -in "$cc_key2" -pubout)"
+cc_fpr="$(openssl x509 -in "$cc_crt2" -noout -fingerprint -sha256)"
+cc_out="$(cc_run init guest "$cc_root")"; cc_rc=$?
+if [ "$cc_rc" -ne 0 ] && grep -q 'use renew' <<<"$cc_out"; then echo "ok   cell CA script: init refuses a second time"; else echo "FAIL cell CA script: second init (exit $cc_rc): $cc_out"; fail=1; fi
+sleep 1
+cc_out="$(cc_run renew guest "$cc_root")"; cc_rc=$?
+if [ "$cc_rc" -eq 0 ]; then echo "ok   cell CA script: renew"; else echo "FAIL cell CA script: renew (exit $cc_rc): $cc_out"; fail=1; fi
+simassert "cell CA script: ...keeps the key" [ "$cc_pub" = "$(openssl pkey -in "$cc_key2" -pubout)" ]
+simassert "cell CA script: ...a new certificate" [ "$cc_fpr" != "$(openssl x509 -in "$cc_crt2" -noout -fingerprint -sha256)" ]
+check 2 "cell CA script: a bad command" env OC_CELL_CA_LOCAL="$cc_guest" deploy/oc-portal-cell-ca frobnicate guest "$cc_root"
+check 1 "cell CA script: a guest that is no alias" env OC_CELL_CA_LOCAL="$cc_guest" deploy/oc-portal-cell-ca renew 'x;id' "$cc_root"
+check 1 "cell CA script: no root here" env OC_CELL_CA_LOCAL="$cc_guest" deploy/oc-portal-cell-ca renew guest "$cc_tmp/nope"
+
+# Plan P3: deploy/oc-portal-cell-release packs a tag with its submodules, as oc-deploy does.
+cr_tmp="$cc_tmp/release"
+mkdir -p "$cr_tmp"
+cr_git() { git -c protocol.file.allow=always -c user.name=t -c user.email=t@example.org -C "$@"; }
+git init -q "$cr_tmp/sub"
+echo inner > "$cr_tmp/sub/inner.txt"
+cr_git "$cr_tmp/sub" add -A
+cr_git "$cr_tmp/sub" commit -qm sub
+git init -q "$cr_tmp/repo"
+mkdir -p "$cr_tmp/repo/oc-cell" "$cr_tmp/repo/dist/systemd"
+echo main > "$cr_tmp/repo/oc-cell/occ_main.c"
+echo '[Service]' > "$cr_tmp/repo/dist/systemd/oc-cell.service"
+cr_git "$cr_tmp/repo" submodule --quiet add "$cr_tmp/sub" third_party/sub
+cr_git "$cr_tmp/repo" add -A
+cr_git "$cr_tmp/repo" commit -qm first
+cr_git "$cr_tmp/repo" tag v0.9.0
+cr_out="$cr_tmp/out.tgz"
+if env OC_CELL_RELEASE_OUT="$cr_out" deploy/oc-portal-cell-release "$cr_tmp/repo" v0.9.0 guest >/dev/null 2>&1; then echo "ok   cell release script: packs a tag"; else echo "FAIL cell release script: pack"; fail=1; fi
+simassert "cell release script: ...oc-cell in it" grep -qx './oc-cell/occ_main.c' <<<"$(tar -tzf "$cr_out")"
+simassert "cell release script: ...its unit" grep -qx './dist/systemd/oc-cell.service' <<<"$(tar -tzf "$cr_out")"
+simassert "cell release script: ...and its submodule" grep -qx './third_party/sub/inner.txt' <<<"$(tar -tzf "$cr_out")"
+check 2 "cell release script: wants three arguments" deploy/oc-portal-cell-release "$cr_tmp/repo" v0.9.0
+check 1 "cell release script: a tag is vX.Y.Z" deploy/oc-portal-cell-release "$cr_tmp/repo" main guest
+check 1 "cell release script: an unknown tag" deploy/oc-portal-cell-release "$cr_tmp/repo" v9.9.9 guest
+check 1 "cell release script: a guest that is no alias" deploy/oc-portal-cell-release "$cr_tmp/repo" v0.9.0 'x;id'
+rm -rf "$cc_tmp"
 
 # The default SSH command (no OC_PORTAL_SSH): the `oc-portal` host from the
 # operator's own SSH config (OC_SSH_CONFIG, default ~/.ssh/cm/oc-portal.conf

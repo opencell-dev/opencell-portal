@@ -129,7 +129,7 @@ export function nodeQuestionMail(name: string, siteName: string, question: strin
   };
 }
 
-const NO_RELEASE_YET = 'Setup opens when the cell software is published: we will write again, and your node page will show the command.';
+const NO_RELEASE_YET = 'Setup opens when the cell software is published: your node page will offer the command then.';
 
 export function nodeApprovedMail(name: string, siteName: string, command: string | null, expiresAt: number | null, link: string, origin: string): Template {
   const setup =
