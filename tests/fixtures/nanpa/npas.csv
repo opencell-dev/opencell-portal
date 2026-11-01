@@ -1,0 +1,45 @@
+File Date,10/31/2026
+NPA_ID,type_of_code,ASSIGNABLE,EXPLANATION,RESERVED,ASSIGNED,ASSIGNMENT_DT,USE,LOCATION,COUNTRY,IN_SERVICE,IN_SERVICE_DT,STATUS,PLANNING_LETTERS,NOTES,OVERLAY,OVERLAY_COMPLEX,PARENT_NPA_ID,SERVICE,TIME_ZONE,AREA_SERVED,MAP,IN_JEOPARDY,RELIEF_PLANNING_IN_PROGRESS,HOME_NPA_LOCAL_CALLS,HOME_NPA_TOLL_CALLS,FOREIGN_NPA_LOCAL_CALLS,FOREIGN_NPA_TOLL_CALLS,PERM_HNPA_LOCAL_CALLS,PERM_HNPA_TOLL_CALLS,PERM_HNPA_FOREIGN_LOCAL_CALLS,DIALING_PLAN_NOTES
+200,Easily Recognizable Code,Yes,,No,No,,N,,,N,,,,,,,,,,,,,No,,,,,,,,
+202,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,DC,US,Y,01-Jan-1947,,547,,Yes,202/771,,,E,,547,No,No,10D,1+10D,10D,1+10D,1+10D,NA,1+10D,1+10 digit permissible at each service providers discretion
+204,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,MANITOBA,CANADA,Y,01-Jan-1947,,592 584 435 433 419,,Yes,204/431/584,,,C,,435,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+212,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,NY,US,Y,01-Jan-1947,,489 314 175,,Yes,212/332/646/917,,,E,,489,No,No,1+10D,1+10D,1+10D,1+10D,10D,NA,NA,10-digit dialing is permissible for Home NPA Local Calls
+220,General Purpose Code,Yes,,No,Yes,11-Dec-2013,G,OH,US,Y,22-Apr-2015,,471 462,,Yes,220/740,740,,E,,471,No,No,10D,1+10D,10D,1+10D,1+10D,NA,1+10D,Carriers must provide permissive 1+10D dialing for Foreign NPA Local Calls in areas where they provide optional EAS. 1+10 digit permissible required excluding CMRS providers
+221,General Purpose Code,Yes,,No,No,,G,,,N,,,,,No,,,,,,,No,No,,,,,,,,
+236,General Purpose Code,Yes,,No,Yes,28-Jul-2011,G,BRITISH COLUMBIA,CANADA,Y,01-Jun-2013,,514  450 428,,Yes,236/250/257/604/672/778,604,,P,,361,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+249,General Purpose Code,Yes,,No,Yes,06-Oct-2009,G,ONTARIO,CANADA,Y,19-Mar-2011,,414 398R1 398,,Yes,249/683/705,705,,E,central and northeastern Ontario,414,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+251,General Purpose Code,Yes,,No,Yes,03-Oct-2000,G,AL,US,Y,18-Jun-2001,,556 544 254,,No,,334,,C,,254,No,No,10D,1+10D,10D,1+10D,1+10D,NA,1+10D,Other dialing plans may apply at the discretion of the local service provider. 1+10 digit permissible at service provider discretion.
+263,General Purpose Code,Yes,,No,Yes,10-Nov-2021,G,QUEBEC,CANADA,Y,22-Oct-2022,,572,,Yes,263/438/514,514,,E,Montreal Quebec Canada,572,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+268,General Purpose Code,Yes,,No,Yes,26-Mar-1996,G,ANTIGUA/BARBUDA,ANTIGUA/BARBUDA,Y,01-Apr-1996,,IL-96-03-005,,No,,809,,A,,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+340,General Purpose Code,Yes,,No,Yes,29-Apr-1997,G,VI,US,Y,01-Jun-1997,,056,,No,,809,,A,,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+403,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,ALBERTA,CANADA,Y,01-Jan-1947,,374 364 176 148 084,,Yes,368/403/568/587/780/825,,,M,,,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+416,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,ONTARIO,CANADA,Y,01-Jan-1947,,441 426 218,,Yes,416/437/647,,,E,,218,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+418,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,QUEBEC,CANADA,Y,01-Jan-1947,,373R1 367,,Yes,367/418/581,,,E,,,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+441,General Purpose Code,Yes,,No,Yes,16-Nov-1994,G,BERMUDA,BERMUDA,Y,01-Oct-1995,,IL-94-11-016,,No,,809,,A,,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+500,Easily Recognizable Code,Yes,,No,Yes,19-May-1994,N,NANP AREA,US,Y,19-May-1994,,IL-94-05-005,Non-Geographic Services,No,500/533/544/566/577/588/521/522/523/524/525/526/527/528/529/532/538/542/543,500,Non-Geographic Services,E,,,No,No,NA,NA,NA,NA,NA,NA,NA,
+504,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,LA,US,Y,01-Jan-1947,,556 544 301 242,,No,,,,C,,242,No,No,10D,1+10D,10D,1+10D,1+10D,NA,1+10D,1+10 digit permissible at service provider discretion.
+512,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,TX,US,Y,01-Jan-1947,,438 233 158 IL-92-03-068,,Yes,512/737,,,C,,,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+570,General Purpose Code,Yes,,No,Yes,31-Jul-1998,G,PA,US,Y,05-Dec-1998,,451 444 409 136,,Yes,272/570,717,,E,,451,No,No,10D,10D,1+10D,1+10D,1+10D,1+10D,NA,1+10 digit dialing for all HNPA and FNPA calls permissible at service provider discretion
+611,Easily Recognizable Code,No,N11 Code,No,No,,,,,N,,,,,,,,,,,,,No,,,,,,,,
+612,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,MN,US,Y,01-Jan-1947,,200 IL-95-09-007,,No,,,,C,,,No,No,7D,1+10D,10D,1+10D,1+10D,NA,1+10D,
+649,General Purpose Code,Yes,,No,Yes,15-Jan-1997,G,TURKS & CAICOS ISLANDS,TURKS & CAICOS ISLANDS,Y,01-Jun-1997,,029,,No,,809,,E,,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+661,General Purpose Code,Yes,,No,Yes,12-Feb-1998,G,CA,US,Y,13-Feb-1999,,111,,No,,805,,P,,,No,No,7D,7D,1+10D,1+10D,1+10D,1+10D,NA,
+670,General Purpose Code,Yes,,No,Yes,04-Sep-1996,G,CNMI,US,Y,01-Jul-1997,,010,,No,,,,(UTC+10),,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+671,General Purpose Code,Yes,,No,Yes,05-Aug-1996,G,GU,US,Y,01-Jul-1997,,556 544 004,,No,,,,(UTC+10),,,No,No,10D,1+10D,NA,1+10D,1+10D,NA,NA,1+10 digit permissible at service provider discretion.
+684,General Purpose Code,Yes,,No,Yes,24-Jan-2003,G,AS,US,Y,02-Oct-2004,,330,,No,,,,UTC-11,,330,No,No,7D,NA,NA,1+10D,NA,NA,NA,
+709,General Purpose Code,Yes,,No,Yes,01-Jan-1962,G,NEWFOUNDLAND AND LABRADOR,CANADA,Y,01-Jan-1962,,622 557 521 514  503,,Yes,709/879,,,N,,514,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+717,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,PA,US,Y,01-Jan-1947,,501 500,,Yes,223/717,,,E,,501,No,No,10D,10D,1+10D,1+10D,1+10D,1+10D,NA,All calls within and between the 717 and 223 NPAs can be dialed as 10D or 1+10D.  Calls to other NPAs must be dialed as 1+10D.
+740,General Purpose Code,Yes,,No,Yes,11-Sep-1998,G,OH,US,Y,06-Dec-1997,,471 462 101,,Yes,220/740,614,,E,,471,No,No,10D,1+10D,10D,1+10D,1+10D,NA,1+10D,Carriers must provide permissive 1+10D dialing for Foreign NPA Local Calls in areas where they provide optional EAS. 1+10 digit permissible required excluding CMRS providers
+758,General Purpose Code,Yes,,No,Yes,01-Apr-1996,G,ST. LUCIA,ST.LUCIA,Y,01-Jul-1996,,"IL-96-04-014 ",,No,,809,,A,,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+782,General Purpose Code,Yes,,No,Yes,04-Oct-2012,G,NOVA SCOTIA - PRINCE EDWARD ISLAND,CANADA,Y,30-Nov-2014,,460R1 454,,Yes,782/851/902,902,,A,,460R1,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+784,General Purpose Code,Yes,,No,Yes,21-Nov-1997,G,ST. VINCENT & GRENADINES,ST. VINCENT & GRENADINES,Y,01-Jun-1998,,103,,No,,809,,A,,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+787,General Purpose Code,Yes,,No,Yes,11-Dec-1995,G,PR,US,Y,01-Mar-1996,,259 236 IL-95-12-005,,Yes,787/939,809,,A,,236,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+809,General Purpose Code,Yes,,No,Yes,01-Jan-1958,G,DOMINICAN REPUBLIC,DOMINICAN REPUBLIC,Y,01-Jan-1958,,387R1 345 338,,Yes,809/829/849,,,A,,,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+867,General Purpose Code,Yes,,No,Yes,30-Sep-1996,G,NORTHWEST TERRITORIES -YUKON - NUNAVUT,CANADA,Y,21-Oct-1997,,013,,No,,403,,CMP,,,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+868,General Purpose Code,Yes,,No,Yes,04-Jun-1996,G,TRINIDAD & TOBAGO,TRINIDAD & TOBAGO,Y,01-Jun-1997,,IL-96-06-001,,No,,809,,A,,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+869,General Purpose Code,Yes,,No,Yes,02-Jul-1996,G,ST. KITTS & NEVIS,ST. KITTS & NEVIS,Y,01-Oct-1996,,011 001,,No,,809,,A,,,No,No,7D,1+10D,NA,1+10D,NA,NA,NA,
+876,General Purpose Code,Yes,,No,Yes,09-Oct-1996,G,JAMAICA,JAMAICA,Y,01-May-1997,,525 510  113 091 014,,Yes,658/876,809,,E,,510,No,No,10D,10D,1+10D,1+10D,NA,NA,NA,
+883,General Purpose Code,Yes,Set aside for toll free,Yes,No,,N,,,N,,,,,,,,Toll-Free,,,,,No,,,,,,,,
+902,General Purpose Code,Yes,,No,Yes,01-Jan-1947,G,NOVA SCOTIA - PRINCE EDWARD ISLAND,CANADA,Y,01-Jan-1947,,460R1 454,,Yes,782/851/902,,,A,,,No,No,10D,1+10D,10D,1+10D,NA,NA,NA,
+907,General Purpose Code,Yes,,No,Yes,01-Jan-1957,G,AK,US,Y,01-Jan-1957,,556 544,,No,,,,AK,,,No,No,10D,1+10D,NA,1+10D,1+10D,NA,NA,1+10 digit permissible at service provider discretion.
+935,General Purpose Code,Yes,,No,No,,G,,US,N,,,,,No,,,,,,,No,No,,,,,,,,
