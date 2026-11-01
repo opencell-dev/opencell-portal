@@ -1,15 +1,12 @@
 import type { Ctx } from '@/lib/ctx';
+import { listNumbers } from '@/lib/numbers/ownership';
 
 export interface OwnedNumber {
   number: string;
   activated: boolean;
 }
 
-/**
- * The numbers an account holds. P1 has no number ownership table yet
- * (get-a-number is P2), so every account holds none; P2 replaces this body
- * with a query of its `numbers` table.
- */
-export function ownedNumbers(_ctx: Ctx, _userId: number): OwnedNumber[] {
-  return [];
+/** The numbers an account holds (the `numbers` table, portal P2), oldest first: what deleting the account must decide about. */
+export function ownedNumbers(ctx: Ctx, userId: number): OwnedNumber[] {
+  return listNumbers(ctx, userId).map((r) => ({ number: r.number, activated: r.state === 'activated' }));
 }

@@ -1,4 +1,4 @@
-import type { CoreHandle } from '@/core/types';
+import { type CoreHandle, isCoreError } from '@/core/types';
 
 /**
  * One question to one core, answered within deadlineMs or not at all:
@@ -28,6 +28,59 @@ export async function askWithin<T>(h: CoreHandle, what: string, ask: () => Promi
   try {
     return await Promise.race([asked, late]);
   } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** What tryWithin learned: the answer, the core's error, or nothing in time. */
+export type Asked<T> = { ok: true; value: T } | { ok: false; error: unknown } | { ok: false; late: true };
+
+/**
+ * askWithin for an operation whose refusal means something (portal P2: get a
+ * number, where `taken` and `not_assignable` each have their own message):
+ * the answer, the error it failed with, or `late` after deadlineMs. A late
+ * answer still arrives, to `onLate`, so the caller can record what the core
+ * did after all (a number it created while the page had given up). Failures
+ * other than a CoreError are logged, as askWithin does.
+ */
+export async function tryWithin<T>(
+  h: CoreHandle,
+  what: string,
+  ask: () => Promise<T>,
+  deadlineMs: number,
+  onLate?: (r: { ok: true; value: T } | { ok: false; error: unknown }) => void,
+): Promise<Asked<T>> {
+  let timer: NodeJS.Timeout | undefined;
+  let settled = false;
+  const late = new Promise<Asked<T>>((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`oc-portal: core ${h.id} (${h.where}) ${what}: no answer within ${deadlineMs} ms`);
+      resolve({ ok: false, late: true });
+    }, deadlineMs);
+  });
+  const asked = Promise.resolve()
+    .then(ask)
+    .then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => {
+        if (!isCoreError(error) || error.code === 'unavailable') console.error(`oc-portal: core ${h.id} (${h.where}) ${what} failed:`, error);
+        return { ok: false as const, error };
+      },
+    )
+    .then((r) => {
+      if (settled) {
+        try {
+          onLate?.(r);
+        } catch (e) {
+          console.error(`oc-portal: core ${h.id} (${h.where}) ${what}: handling the late answer failed:`, e);
+        }
+      }
+      return r;
+    });
+  try {
+    return await Promise.race([asked, late]);
+  } finally {
+    settled = true;
     clearTimeout(timer);
   }
 }

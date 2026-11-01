@@ -216,3 +216,18 @@ export function placeOfNumber(ctx: Ctx, number: string): string | null {
     .get();
   return row ? `${row.display ?? titleCase(row.rateCenter)}, ${row.region}` : null;
 }
+
+/**
+ * Why an exchange is not offered for new numbers (Review Focus: a
+ * non-geographic or withdrawn exchange gets its own message), or null when it is.
+ */
+export function whyNotOffered(ctx: Ctx, exchange: string): string | null {
+  if (exchangeOffered(ctx, exchange)) return null;
+  const code = exchange.slice(5);
+  const row = /^\d{6}$/.test(code) ? ctx.db.select().from(exchanges).where(eq(exchanges.npaNxx, code)).get() : undefined;
+  const npa = ctx.db.select().from(npas).where(eq(npas.npa, code.slice(0, 3))).get();
+  if (npa && !npa.geographic) return `Area code ${npa.npa} is not tied to a place, so OpenCell does not offer numbers in it.`;
+  if (row?.withdrawnAt != null) return `Exchange ${code.slice(0, 3)}-${code.slice(3)} is no longer offered for new numbers. Pick another.`;
+  if (row) return `Numbers in area code ${code.slice(0, 3)} aren't offered yet.`;
+  return `${code.slice(0, 3)}-${code.slice(3)} is not a real exchange. Pick a place to see the exchanges it has.`;
+}

@@ -6,6 +6,7 @@ import { errorKind } from '@/lib/errors';
 import { checkCaptcha } from '@/lib/captcha';
 import type { Ctx } from '@/lib/ctx';
 import { emailChangedNotice, emailChangeMail, magicLinkMail, type Template, verifyMail } from '@/lib/mail-templates';
+import { coreFor } from '@/lib/numbers/route';
 import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
 import { hit, hitIp, longestWindowMs, rateKey } from '@/lib/ratelimit';
 import { createSession, type RequestMeta } from '@/lib/sessions';
@@ -311,17 +312,17 @@ export async function deleteAccount(
   // makes no core call, so there's nothing to report for it, on success or
   // on a later number's failure.
   // M7 (final review): the core call names the actor the site's account id
-  // maps to (coreActor), as every other core call does — dead code today
-  // (ownedNumbers() returns []), but not once P2 gives it a body.
+  // maps to (coreActor), as every other core call does; each number goes to
+  // its home core (coreFor, the P5 seam).
   const actor = coreActor(ctx.config.site, userId);
   const changed: Record<string, string> = {};
   for (const n of owned) {
     try {
       if (!n.activated) {
-        await ctx.core.subRelease(actor, n.number);
+        await coreFor(ctx, n.number).core.subRelease(actor, n.number);
         changed[n.number] = 'released';
       } else if (choices[n.number] === 'disable') {
-        await ctx.core.subDisable(actor, n.number);
+        await coreFor(ctx, n.number).core.subDisable(actor, n.number);
         changed[n.number] = 'disabled';
       }
     } catch (e) {
@@ -356,6 +357,7 @@ export async function deleteAccount(
           rateKey(ctx, 'signup_email', u.email),
           rateKey(ctx, 'magic_email', u.email),
           rateKey(ctx, 'email_change_user', String(userId)),
+          rateKey(ctx, 'number_account', String(userId)),
         ]),
       )
       .run();
