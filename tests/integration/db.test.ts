@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { openDb } from '@/db';
-import { passkeys, sessions, users } from '@/db/schema';
+import { numbers, passkeys, sessions, users } from '@/db/schema';
 
 describe('openDb', () => {
   it('creates the schema by migration, with WAL and foreign keys on', () => {
@@ -61,5 +61,28 @@ describe('openDb', () => {
     db.delete(users).where(eq(users.id, a.id)).run();
     const [b] = db.insert(users).values({ name: 'B', email: 'b@x.org', createdAt: 1 }).returning().all();
     expect(b.id).toBeGreaterThan(a.id);
+  });
+});
+
+describe('migration 0002 (portal P2: numbers)', () => {
+  it('creates the P2 tables', () => {
+    const db = openDb(':memory:');
+    const tables = db.$client
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((r) => (r as { name: string }).name);
+    expect(tables).toEqual(expect.arrayContaining(['numbers', 'limit_requests', 'npas', 'exchanges', 'rate_centers', 'nanpa_refreshes']));
+  });
+
+  it('holds a number once: a second row with the same number is refused (the double-submit guard)', () => {
+    const db = openDb(':memory:');
+    const [u] = db.insert(users).values({ name: 'A', email: 'a@example.org', createdAt: 1 }).returning().all();
+    const row = { number: '+883171746412345', userId: u.id, coreId: 'fake', createdAt: 1, state: 'unactivated' as const };
+    db.insert(numbers).values(row).run();
+    expect(() => db.insert(numbers).values(row).run()).toThrow(/UNIQUE|PRIMARY/);
+    // Listed by default (opt-out, spec §5); gone with the account.
+    expect(db.select().from(numbers).get()?.listed).toBe(true);
+    db.delete(users).where(eq(users.id, u.id)).run();
+    expect(db.select().from(numbers).all()).toEqual([]);
   });
 });

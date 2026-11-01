@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { blob, index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { blob, index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // Times are unix milliseconds. Ids of users come from AUTOINCREMENT, so a
 // deleted account's id is never reused and the audit can keep it.
@@ -123,3 +123,106 @@ export const audit = sqliteTable(
   },
   (t) => [index('audit_at').on(t.at)],
 );
+
+// ---- Portal P2: numbers (portal spec §4, §5) ----
+
+/**
+ * The numbers an account holds, one row per number. The primary key is the
+ * number itself, so a double submit or a second tab can never store it twice.
+ * A row is written only after the core's sub.create answered (spec §4.2: the
+ * core holds the truth; the portal reflects it). The portal never stores the
+ * QR payload, K, OPc, SQN or a token secret (spec §7, §10).
+ */
+export const numbers = sqliteTable(
+  'numbers',
+  {
+    number: text('number').primaryKey(), // +8831NPANXXSSSSS
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    // The CoreHandle.id that issued it (P5 routes by NPA; this says where it went).
+    coreId: text('core_id').notNull(),
+    // Per-number directory listing (P2 decision 1); users.directoryListed is the master switch.
+    listed: integer('listed', { mode: 'boolean' }).notNull().default(true),
+    createdAt: integer('created_at').notNull(),
+    activatedAt: integer('activated_at'),
+    tokenExpiresAt: integer('token_expires_at'),
+    state: text('state', { enum: ['unactivated', 'activated'] }).notNull(),
+    // The last sub.status the portal saw (statusAt: when).
+    disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
+    registered: integer('registered', { mode: 'boolean' }).notNull().default(false),
+    cellId: integer('cell_id'),
+    tmidPrefix: text('tmid_prefix'),
+    lastSeenAt: integer('last_seen_at'),
+    statusAt: integer('status_at'),
+  },
+  (t) => [index('numbers_user').on(t.userId)],
+);
+
+/** "More numbers, please" (spec §4.2: above 3 an admin raises the account's limit). */
+export const limitRequests = sqliteTable(
+  'limit_requests',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    reason: text('reason').notNull(),
+    wanted: integer('wanted').notNull(),
+    createdAt: integer('created_at').notNull(),
+    decidedAt: integer('decided_at'),
+    decidedBy: integer('decided_by'), // no foreign key: the id outlives the account
+    outcome: text('outcome', { enum: ['raised', 'declined'] }),
+    note: text('note'),
+  },
+  (t) => [index('limit_requests_user').on(t.userId)],
+);
+
+/** NANPA's NPA list (spec §4.4). Only geographic NPAs in service with a known region are offered. */
+export const npas = sqliteTable('npas', {
+  npa: text('npa').primaryKey(),
+  // A US state / Canadian province / Caribbean country code (PA, ON, JM); '' when unknown.
+  region: text('region').notNull(),
+  geographic: integer('geographic', { mode: 'boolean' }).notNull(),
+  inService: integer('in_service', { mode: 'boolean' }).notNull(),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+/**
+ * Real, assigned NPA-NXX exchanges with their rate centers (spec §4.4). A
+ * code that leaves NANPA's file is withdrawn, not deleted: numbers already
+ * issued in it keep working; it is no longer offered for new ones.
+ */
+export const exchanges = sqliteTable(
+  'exchanges',
+  {
+    npaNxx: text('npa_nxx').primaryKey(), // 6 digits
+    npa: text('npa').notNull(),
+    nxx: text('nxx').notNull(),
+    region: text('region').notNull(),
+    rateCenter: text('rate_center').notNull(), // the key into rate_centers.name
+    ocn: text('ocn'),
+    company: text('company'),
+    firstSeenAt: integer('first_seen_at').notNull(),
+    withdrawnAt: integer('withdrawn_at'),
+  },
+  (t) => [index('exchanges_place').on(t.region, t.rateCenter), index('exchanges_npa').on(t.npa)],
+);
+
+/** Rate centers: a pretty name and, where Local Calling Guide has them, coordinates (place search only, spec §4.4). */
+export const rateCenters = sqliteTable(
+  'rate_centers',
+  {
+    region: text('region').notNull(),
+    // NANPA's 10-character code (US) or the upper-cased exchange area (Canada): exchanges.rateCenter.
+    name: text('name').notNull(),
+    display: text('display').notNull(),
+    lat: real('lat'),
+    lon: real('lon'),
+  },
+  (t) => [primaryKey({ columns: [t.region, t.name] })],
+);
+
+/** One row per weekly NANPA refresh (spec §4.4: "the changes are logged on the admin page"). */
+export const nanpaRefreshes = sqliteTable('nanpa_refreshes', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  at: integer('at').notNull(),
+  ok: integer('ok', { mode: 'boolean' }).notNull(),
+  detail: text('detail').notNull(), // JSON: RefreshResult (+ errors)
+});
