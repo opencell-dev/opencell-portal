@@ -17,9 +17,9 @@ export function PasskeySignIn({ next }: { next: string }) {
       const start = await passkeySignInStart();
       if (!start.ok) return setError(start.error);
       const response = await startAuthentication({ optionsJSON: start.options });
-      const r = await passkeySignInFinish(start.challengeId, response);
+      const r = await passkeySignInFinish(start.challengeId, response, next);
       if (!r.ok) return setError(r.error);
-      router.push(next);
+      router.push(r.path);
       router.refresh();
     } catch {
       setError('Signing in with a passkey did not work. Try again, or use an email link.');
