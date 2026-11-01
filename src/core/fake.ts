@@ -356,6 +356,7 @@ export class FakeCore implements CoreAdmin {
     this.log(actor, 'cell.set_cert', cellId);
     const c = this.cell(cellId);
     if (!FPR.test(fpr)) throw new CoreError('invalid', 'fingerprint must be 64 lowercase hex digits');
+    if (c.revoked) throw new CoreError('invalid', 'revoked');
     c.certFpr = fpr;
   }
 
@@ -602,7 +603,7 @@ export class FakeCore implements CoreAdmin {
 
   /** cell.add without the call (the demo's seeding): the same checks, nothing audited. */
   simAddCell(name: string, mode: CellMode, group: number, certFpr: string | null = null): number {
-    if (name.length < 1 || name.length > 32) throw new CoreError('invalid', 'name must be 1–32 characters');
+    if (name.length < 1 || name.length > 31) throw new CoreError('invalid', 'name must be 1–31 characters');
     if (!Number.isInteger(group) || group < 0 || group > 65535) throw new CoreError('invalid', 'group must be 0–65535');
     if (certFpr !== null && !FPR.test(certFpr)) throw new CoreError('invalid', 'fingerprint must be 64 lowercase hex digits');
     const cellId = this.nextCell++;
