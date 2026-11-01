@@ -92,6 +92,19 @@ export const LIMITS = {
     windowS: 3600,
     message: 'You have asked for that email too often. Please try again in about an hour.',
   },
+  // Portal P3 (decision 21): a node request mails every admin, and so can a reply.
+  node_request: {
+    perIp: false,
+    max: 3,
+    windowS: 86400,
+    message: 'You have asked for base stations too often today. Please try again tomorrow.',
+  },
+  node_message: {
+    perIp: false,
+    max: 20,
+    windowS: 3600,
+    message: 'You have sent too many messages this hour. Please try again later.',
+  },
   // NOC design §11: a staff number lookup (a number's status and calls).
   noc_lookup: {
     perIp: false,

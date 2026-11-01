@@ -32,7 +32,8 @@ export function securityHeaders(https: boolean): [string, string][] {
     ['Cross-Origin-Resource-Policy', 'same-origin'],
     [
       'Permissions-Policy',
-      'camera=(), microphone=(), geolocation=(), payment=(), usb=(), publickey-credentials-get=(self), publickey-credentials-create=(self)',
+      // geolocation=(self): the node request's "Use this device's location" button (plan P3, decision 15).
+      'camera=(), microphone=(), geolocation=(self), payment=(), usb=(), publickey-credentials-get=(self), publickey-credentials-create=(self)',
     ],
   ];
   if (https) h.push(['Strict-Transport-Security', 'max-age=31536000']);

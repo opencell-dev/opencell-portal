@@ -36,6 +36,9 @@ const WEST = new Set([
   'MB', 'SK', 'AB', 'BC', 'YT', 'NT', 'NU',
 ]);
 
+/** Every region code the §4.3 table knows, sorted: what a node request's state field offers. */
+export const REGION_CODES: readonly string[] = [...EAST, ...WEST].sort();
+
 export function sideOfRegion(region: string): Side | null {
   if (EAST.has(region)) return 'east';
   if (WEST.has(region)) return 'west';

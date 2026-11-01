@@ -40,6 +40,8 @@ describe('CSP (spec §10)', () => {
       'Strict-Transport-Security': 'max-age=31536000',
     });
     expect(h['Permissions-Policy']).toContain('publickey-credentials-get=(self)');
+    expect(h['Permissions-Policy']).toContain('geolocation=(self)');
+    expect(h['Permissions-Policy']).toContain('camera=()');
     expect(Object.fromEntries(securityHeaders(false))['Strict-Transport-Security']).toBeUndefined();
   });
 });

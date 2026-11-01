@@ -105,3 +105,26 @@ export function limitDecisionMail(name: string, raised: boolean, limit: number, 
         `${note ? `\n\n${note}` : ''}${sig(origin)}`,
   };
 }
+
+// ---- Portal P3: nodes. A contact phone and an exact pin never go in a mail (spec §10). ----
+
+export function nodeRequestMail(adminName: string, who: string, siteName: string, region: string, link: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: a subscriber asks to host a base station',
+    text: `Hello ${adminName},\n\n${who} asks to host a base station: ${siteName} (${region}).\n\nReview it: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeReplyMail(adminName: string, who: string, siteName: string, link: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: a reply about a base station request',
+    text: `Hello ${adminName},\n\n${who} answered your question about ${siteName}.\n\nRead it: ${link}${sig(origin)}`,
+  };
+}
+
+export function nodeQuestionMail(name: string, siteName: string, question: string, link: string, origin: string): Template {
+  return {
+    subject: 'OpenCell: a question about your base station request',
+    text: `Hello ${name},\n\nAn OpenCell admin has a question about your request for ${siteName}:\n\n${question}\n\nAnswer it in the portal: ${link}${sig(origin)}`,
+  };
+}

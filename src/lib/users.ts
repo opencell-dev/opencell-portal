@@ -80,6 +80,16 @@ export function grantRole(ctx: Ctx, userId: number, role: GrantedRole, byId: num
   return added;
 }
 
+/** Every admin's name and address: who a request for an admin's decision is mailed to. */
+export function adminContacts(ctx: Ctx): { id: number; name: string; email: string }[] {
+  return ctx.db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(userRoles)
+    .innerJoin(users, eq(users.id, userRoles.userId))
+    .where(eq(userRoles.role, 'admin'))
+    .all();
+}
+
 export type RoleResult = { ok: true } | { ok: false; error: string };
 
 /** Whether `userId` is the only admin left (used to guard both revoking the role and deleting the account). */
