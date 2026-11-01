@@ -24,6 +24,15 @@ export function shortSpan(ms: number): string {
   return `${m} m`;
 }
 
+/**
+ * A card whose number the core no longer has, while the page is open: the
+ * 3-day rule when its token has run out (Review Focus), else released by hand
+ * in another tab or device.
+ */
+export function releasedState(tokenExpiresAt: number | null, now: number): CardState {
+  return (tokenExpiresAt ?? 0) <= now ? RELEASED : { label: 'Released', tone: 'off' };
+}
+
 type CardRow = Pick<NumberRow, 'state' | 'disabled' | 'registered' | 'cellId' | 'lastSeenAt' | 'tokenExpiresAt'>;
 
 /**

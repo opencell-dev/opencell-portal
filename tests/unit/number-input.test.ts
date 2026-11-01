@@ -13,6 +13,8 @@ describe('parseTyped', () => {
     ['８８３１７１７４６４１２３４５', '+883171746412345'], // full-width digits
     ['＋８８３ １ ７１７－４６４－１２３４５', '+883171746412345'],
     ['  71746412345 ', '+883171746412345'],
+    ['717–464–12345', '+883171746412345'], // en dashes
+    ['717\u2011464\u201112345', '+883171746412345'], // non-breaking hyphens
   ])('%s is the number %s', (s, number) => {
     expect(parseTyped(s)).toEqual({ kind: 'number', number });
   });
@@ -32,7 +34,7 @@ describe('parseTyped', () => {
   });
 
   it('a 10-digit phone number says how OpenCell numbers differ', () => {
-    for (const s of ['(717) 464-1234', '717-464-1234', '7174641234']) {
+    for (const s of ['(717) 464-1234', '717-464-1234', '7174641234', '+883 1 717 464 1234']) {
       const t = parseTyped(s);
       expect(t.kind).toBe('bad');
       expect(t.kind === 'bad' && t.message).toMatch(/type the 11 digits after \+883 1/);

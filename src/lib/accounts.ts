@@ -6,6 +6,7 @@ import { errorKind } from '@/lib/errors';
 import { checkCaptcha } from '@/lib/captcha';
 import type { Ctx } from '@/lib/ctx';
 import { emailChangedNotice, emailChangeMail, magicLinkMail, type Template, verifyMail } from '@/lib/mail-templates';
+import { syncDue } from '@/lib/numbers/ownership';
 import { coreFor } from '@/lib/numbers/route';
 import { type OwnedNumber, ownedNumbers } from '@/lib/owned-numbers';
 import { hit, hitIp, longestWindowMs, rateKey } from '@/lib/ratelimit';
@@ -291,7 +292,7 @@ export async function deleteAccount(
   userId: number,
   input: unknown,
   meta: RequestMeta,
-  owned: OwnedNumber[] = ownedNumbers(ctx, userId),
+  given?: OwnedNumber[],
 ): Promise<DeleteResult> {
   const p = deleteAccountSchema.safeParse(input);
   if (!p.success) return { ok: false, error: firstError(p.error) };
@@ -303,6 +304,11 @@ export async function deleteAccount(
   }
   const lastAdminError = { ok: false as const, error: 'You are the only admin. Promote another admin first, then delete your account.' };
   if (isLastAdmin(ctx, userId)) return lastAdminError;
+  // What the core says now, not the row's last word: a number activated since
+  // the owner last looked would fail its release on every retry, with the
+  // keep-or-disable choice never offered (review of P2).
+  if (!given) await syncDue(ctx, userId, 0);
+  const owned = given ?? ownedNumbers(ctx, userId);
   for (const n of owned) {
     if (n.activated && choices[n.number] !== 'keep' && choices[n.number] !== 'disable') {
       return { ok: false, error: `Choose what happens to ${n.number}.` };
@@ -357,7 +363,9 @@ export async function deleteAccount(
           rateKey(ctx, 'signup_email', u.email),
           rateKey(ctx, 'magic_email', u.email),
           rateKey(ctx, 'email_change_user', String(userId)),
-          rateKey(ctx, 'number_account', String(userId)),
+          ...(['number_account', 'number_browse', 'number_reissue', 'calls_account', 'places_account', 'limit_request_account', 'qr_mail_account'] as const).map((n) =>
+            rateKey(ctx, n, String(userId)),
+          ),
         ]),
       )
       .run();

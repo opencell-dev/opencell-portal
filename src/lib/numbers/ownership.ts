@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNull, lt, lte, or } from 'drizzle-orm';
+import { and, asc, count, eq, isNull, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { isAssignable } from '@/core/numbers';
 import { type IssuedToken, isCoreError, type SubStatus } from '@/core/types';
@@ -7,7 +7,7 @@ import type { Result } from '@/lib/accounts';
 import { writeAudit } from '@/lib/audit';
 import { tryWithin } from '@/lib/core-ask';
 import type { Ctx } from '@/lib/ctx';
-import { hit } from '@/lib/ratelimit';
+import { hit, unhit } from '@/lib/ratelimit';
 import type { RequestMeta, Session } from '@/lib/sessions';
 import { coreActor } from '@/lib/site';
 import { parseTyped } from './input';
@@ -29,19 +29,26 @@ export const MAX_UNACTIVATED = 3;
 /** Every number operation on a page gives up on the core after this (Review Focus: a plain message within 3 s). */
 export const CORE_DEADLINE_MS = 3000;
 
-const NO_ANSWER = "The network didn't answer. Please try again in a minute.";
+export const NO_ANSWER = "The network didn't answer. Please try again in a minute.";
 const MINE = 'You already have this number.';
 const THEIRS = 'Someone just took that number. Pick another.';
 const NOT_OPEN = "Numbers in this area code aren't open yet.";
 const NO_SUCH = 'You have no such number.';
 const ACTIVE = "This number is active on a terminal; it can't be released here.";
 
-// Numbers a get is under way for, by number → account: a double submit or a
-// second tab is answered at once instead of racing the first to the core,
-// and the caps count them. In-process is enough: the portal is one process
-// (the PK on numbers.number is the backstop).
+// Numbers a get is under way for, by number → account, until the core has
+// answered (not merely until the page gave up at 3 s: a slow answer can still
+// create the number). A double submit or a second tab is answered at once
+// instead of racing the first to the core, and the caps count them.
+// In-process is enough: the portal is one process (the PK on
+// numbers.number is the backstop).
 const g = globalThis as typeof globalThis & { __ocGetting?: Map<string, number> };
 const getting = (): Map<string, number> => (g.__ocGetting ??= new Map());
+
+/** Tests only: forget the gets under way (a hung core's answer outlives its test). */
+export function forgetGetting(): void {
+  getting().clear();
+}
 
 export function listNumbers(ctx: Ctx, userId: number): NumberRow[] {
   return ctx.db.select().from(numbers).where(eq(numbers.userId, userId)).orderBy(asc(numbers.createdAt), asc(numbers.number)).all();
@@ -63,13 +70,20 @@ export interface Caps {
   why?: 'unactivated' | 'limit';
 }
 
+/** A row still waiting past its token: the core has released it, whether or not the portal has noticed yet. */
+function ranOut(ctx: Ctx, r: NumberRow): boolean {
+  return r.state === 'unactivated' && r.tokenExpiresAt !== null && r.tokenExpiresAt <= ctx.now();
+}
+
 /**
  * What an account may still get. "Unactivated" comes first: with 3 waiting,
  * a higher limit would not help, so the card asks for an activation, not a
- * reason (spec §4.2, §5).
+ * reason (spec §4.2, §5). A number whose token ran out is free again at once
+ * (Review Focus), sweep or no sweep: only the core's own clock decides it,
+ * and the row goes at the next sync.
  */
 export function capsOf(ctx: Ctx, userId: number): Caps {
-  const rows = listNumbers(ctx, userId);
+  const rows = listNumbers(ctx, userId).filter((r) => !ranOut(ctx, r));
   const inFlight = [...getting().values()].filter((u) => u === userId).length;
   const held = rows.length + inFlight;
   const unactivated = rows.filter((r) => r.state === 'unactivated').length + inFlight;
@@ -85,7 +99,7 @@ const getSchema = z.object({
   listed: z.union([z.literal('on'), z.literal('1'), z.literal(true), z.undefined(), z.null(), z.literal('0'), z.literal(false)]),
 });
 
-function coreMessage(e: unknown, fallback: string): string {
+export function coreMessage(e: unknown, fallback: string): string {
   if (!isCoreError(e)) return NO_ANSWER;
   if (e.code === 'not_assignable') return NOT_OPEN;
   if (e.code === 'rate_limited') return 'The network is busy right now. Please try again in a few minutes.';
@@ -110,8 +124,18 @@ export async function getNumber(ctx: Ctx, s: Who, input: { number: unknown; list
   const why = whyNotOffered(ctx, number.slice(0, 11));
   if (why) return { ok: false, error: why };
 
-  const holder = getting().get(number) ?? ctx.db.select({ u: numbers.userId }).from(numbers).where(eq(numbers.number, number)).get()?.u;
-  if (holder !== undefined) return { ok: false, error: holder === s.userId ? MINE : THEIRS };
+  const held = ctx.db.select().from(numbers).where(eq(numbers.number, number)).get();
+  // A holder whose token ran out holds nothing at the core: ask, so the row
+  // goes, instead of telling someone a free number was just taken.
+  if (held && ranOut(ctx, held) && !getting().has(number)) {
+    const after = await syncOne(ctx, held);
+    if (after.failed) return { ok: false, error: NO_ANSWER };
+    if (after.row) return { ok: false, error: held.userId === s.userId ? MINE : THEIRS };
+  } else if (held) {
+    return { ok: false, error: held.userId === s.userId ? MINE : THEIRS };
+  }
+  const flying = getting().get(number);
+  if (flying !== undefined) return { ok: false, error: flying === s.userId ? MINE : THEIRS };
   const caps = capsOf(ctx, s.userId);
   if (caps.why === 'unactivated') return { ok: false, error: `You have ${caps.unactivated} numbers waiting for activation. Activate or release one first.` };
   if (caps.why === 'limit') return { ok: false, error: `You hold ${caps.held} numbers, your account's limit. Ask for more on My numbers.` };
@@ -130,17 +154,17 @@ export async function getNumber(ctx: Ctx, s: Who, input: { number: unknown; list
     writeAudit(ctx, { actorId: s.userId, action: 'number.get', target: `number:${number}`, detail: { core: h.id, listed, ...(late ? { late } : {}) }, ip: meta.ip });
   };
   getting().set(number, s.userId);
-  let r: Awaited<ReturnType<typeof tryWithin<IssuedToken>>>;
-  try {
-    r = await tryWithin(h, 'sub.create', () => h.core.subCreate(actor, number), CORE_DEADLINE_MS, (late) => {
-      // The core created it after the page gave up: it is this account's
-      // (it holds the token), so record it; it shows on My numbers.
-      if (late.ok) record(late.value, true);
-    });
-  } finally {
-    getting().delete(number);
-  }
+  const asked = Promise.resolve()
+    .then(() => h.core.subCreate(actor, number))
+    .finally(() => getting().delete(number));
+  const r = await tryWithin(h, 'sub.create', () => asked, CORE_DEADLINE_MS, (late) => {
+    // The core created it after the page gave up: it is this account's
+    // (it holds the token), so record it; it shows on My numbers.
+    if (late.ok) record(late.value, true);
+  });
   if (!r.ok) {
+    // The core never answered: that attempt must not count against the day's 10.
+    if ('late' in r || (isCoreError(r.error) && r.error.code === 'unavailable')) unhit(ctx, 'number_account', String(s.userId));
     if ('late' in r) return { ok: false, error: NO_ANSWER };
     if (isCoreError(r.error) && r.error.code === 'taken') {
       const owner = ctx.db.select({ u: numbers.userId }).from(numbers).where(eq(numbers.number, number)).get()?.u;
@@ -167,6 +191,8 @@ export async function reissueNumber(ctx: Ctx, s: Who, number: string, meta: Requ
   const row = numberOf(ctx, s.userId, number);
   if (!row) return { ok: false, error: NO_SUCH };
   if (row.disabled) return { ok: false, error: 'This number is disabled. Write to opencell@k4ozi.com about it.' };
+  const lim = hit(ctx, 'number_reissue', String(s.userId));
+  if (!lim.ok) return { ok: false, error: lim.message };
   const h = coreFor(ctx, number);
   const r = await tryWithin(h, 'sub.reissue', () => h.core.subReissue(coreActor(ctx.config.site, s.userId), number), CORE_DEADLINE_MS);
   if (!r.ok) {
@@ -213,7 +239,8 @@ function applyStatus(ctx: Ctx, row: NumberRow, st: SubStatus): NumberRow {
     tmidPrefix: st.tmidPrefix,
     lastSeenAt: st.lastSeenAt,
     tokenExpiresAt: st.state === 'unactivated' ? st.tokenExpiresAt : null,
-    activatedAt: row.activatedAt ?? (st.state === 'activated' ? now : null),
+    // A different terminal than last seen is a move: it activated again.
+    activatedAt: st.state !== 'activated' ? null : row.activatedAt === null || (row.tmidPrefix !== null && st.tmidPrefix !== row.tmidPrefix) ? now : row.activatedAt,
     statusAt: now,
   };
   ctx.db.update(numbers).set(set).where(eq(numbers.number, row.number)).run();
@@ -227,46 +254,65 @@ function applyStatus(ctx: Ctx, row: NumberRow, st: SubStatus): NumberRow {
  * The core down or late: the row as it was.
  */
 export async function syncNumber(ctx: Ctx, row: NumberRow): Promise<NumberRow | null> {
+  return (await syncOne(ctx, row)).row;
+}
+
+/** syncNumber, also saying whether the core failed to answer. */
+async function syncOne(ctx: Ctx, row: NumberRow): Promise<{ row: NumberRow | null; failed: boolean }> {
   const h = coreFor(ctx, row.number);
   const r = await tryWithin(h, 'sub.status', () => h.core.subStatus(coreActor(ctx.config.site, row.userId), row.number), CORE_DEADLINE_MS);
-  if (r.ok) return applyStatus(ctx, row, r.value);
-  if (!('late' in r) && isCoreError(r.error) && r.error.code === 'not_found') {
-    if (row.state === 'unactivated') {
-      ctx.db.delete(numbers).where(and(eq(numbers.number, row.number), eq(numbers.userId, row.userId))).run();
-      writeAudit(ctx, { actorId: null, action: 'number.expired', target: `number:${row.number}`, detail: { user: row.userId } });
-      return null;
-    }
-    // An activated number the core does not know is not something the portal can fix: keep the card, say so in the log.
-    console.error(`oc-portal: core ${h.id} has no subscriber for an activated number of account ${row.userId}`);
+  if (r.ok) return { row: applyStatus(ctx, row, r.value), failed: false };
+  const notFound = !('late' in r) && isCoreError(r.error) && r.error.code === 'not_found';
+  if (notFound && row.state === 'unactivated') {
+    ctx.db.delete(numbers).where(and(eq(numbers.number, row.number), eq(numbers.userId, row.userId))).run();
+    writeAudit(ctx, { actorId: null, action: 'number.expired', target: `number:${row.number}`, detail: { user: row.userId } });
+    return { row: null, failed: false };
   }
-  return row;
+  // An activated number the core does not know is not something the portal can fix: keep the card, say so in the log.
+  if (notFound) console.error(`oc-portal: core ${h.id} has no subscriber for an activated number of account ${row.userId}`);
+  // Asked, whatever came of it: sub.status is one bucket at the core for
+  // everyone, so a core down or limiting is not asked more than once per 5 s.
+  const statusAt = ctx.now();
+  ctx.db.update(numbers).set({ statusAt }).where(eq(numbers.number, row.number)).run();
+  return { row: { ...row, statusAt }, failed: !notFound };
 }
 
 /**
- * Sync an account's rows (or every row, without userId) whose last status is
- * older than maxAgeMs, all at once, each bounded by the 3 s deadline; the
- * account's rows after it. P2 decision 3: at most one sub.status per number per 5 s.
+ * Sync an account's rows whose last ask is older than maxAgeMs, all at once,
+ * each bounded by the 3 s deadline; the rows after it, and whether a core
+ * failed to answer. P2 decision 3: at most one sub.status per number per 5 s.
  */
-export async function syncDue(ctx: Ctx, userId?: number, maxAgeMs = 5000): Promise<NumberRow[]> {
-  const stale = or(isNull(numbers.statusAt), lt(numbers.statusAt, ctx.now() - maxAgeMs + 1));
+export async function syncAccount(ctx: Ctx, userId: number, maxAgeMs = 5000): Promise<{ rows: NumberRow[]; unavailable: boolean }> {
   const due = ctx.db
     .select()
     .from(numbers)
-    .where(userId === undefined ? stale : and(eq(numbers.userId, userId), stale))
+    .where(and(eq(numbers.userId, userId), or(isNull(numbers.statusAt), lt(numbers.statusAt, ctx.now() - maxAgeMs + 1))))
     .all();
-  await Promise.all(due.map((row) => syncNumber(ctx, row)));
-  return userId === undefined ? [] : listNumbers(ctx, userId);
+  const after = await Promise.all(due.map((row) => syncOne(ctx, row)));
+  return { rows: listNumbers(ctx, userId), unavailable: after.some((a) => a.failed) };
 }
 
-/** Housekeeping (hourly): every unactivated number whose token has run out, so the core's release shows here too. */
-export async function syncExpired(ctx: Ctx): Promise<number> {
-  const rows = ctx.db
-    .select()
-    .from(numbers)
-    .where(and(eq(numbers.state, 'unactivated'), lte(numbers.tokenExpiresAt, ctx.now())))
-    .all();
-  const after = await Promise.all(rows.map((row) => syncNumber(ctx, row)));
-  return after.filter((r) => r === null).length;
+export async function syncDue(ctx: Ctx, userId: number, maxAgeMs = 5000): Promise<NumberRow[]> {
+  return (await syncAccount(ctx, userId, maxAgeMs)).rows;
+}
+
+/**
+ * Housekeeping (hourly): every number still waiting, longest unasked first,
+ * so a release by the core or an activation shows here even if the owner
+ * never looks (the caps, the directory, spec §4.2). One at a time, stopping
+ * at the first failure: a sweep must not spend the bucket everyone's cards use.
+ * Returns how many were released.
+ */
+export async function syncWaiting(ctx: Ctx, gapMs = 100, max = 1000): Promise<number> {
+  const rows = ctx.db.select().from(numbers).where(eq(numbers.state, 'unactivated')).orderBy(asc(numbers.statusAt)).limit(max).all();
+  let released = 0;
+  for (const row of rows) {
+    const r = await syncOne(ctx, row);
+    if (r.failed) break;
+    if (r.row === null) released++;
+    if (gapMs > 0) await new Promise((res) => setTimeout(res, gapMs));
+  }
+  return released;
 }
 
 /** How many numbers an account holds (the admin's request review). */

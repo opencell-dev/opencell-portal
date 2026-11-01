@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cardState, shortSpan } from '@/lib/numbers/card';
+import { cardState, releasedState, shortSpan } from '@/lib/numbers/card';
 
 const NOW = 1_790_000_000_000;
 const base = { state: 'activated' as const, disabled: false, registered: false, cellId: null, lastSeenAt: NOW - 60_000, tokenExpiresAt: null };
@@ -19,6 +19,12 @@ describe('cardState (spec §5: waiting, activated, registered on cell "name", no
     ['disabled beats everything', { ...base, disabled: true, registered: true, cellId: 3 }, 'Disabled', 'off'],
   ])('%s', (_what, row, label, tone) => {
     expect(cardState(row, NOW, names)).toEqual({ label, tone });
+  });
+
+  it('a card whose number left the core: why, when its token says so', () => {
+    expect(releasedState(NOW, NOW)).toEqual({ label: 'Released (not activated in 3 days)', tone: 'off' });
+    expect(releasedState(NOW - 1, NOW)).toEqual({ label: 'Released (not activated in 3 days)', tone: 'off' });
+    expect(releasedState(NOW + 3600_000, NOW)).toEqual({ label: 'Released', tone: 'off' }); // released by hand, in another tab
   });
 
   it('shortSpan', () => {

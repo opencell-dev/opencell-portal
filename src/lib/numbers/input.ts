@@ -25,14 +25,14 @@ export function parseTyped(s: string): Typed {
   const n = s.normalize('NFKC').trim().replace(/\s+/g, ' ');
   if (n.length > MAX_TYPED) return { kind: 'bad', message: `Please type something shorter (at most ${MAX_TYPED} characters).` };
   if (/\p{L}/u.test(n)) return { kind: 'text', text: n };
-  const compact = n.replace(/[\s\-().]/g, '');
+  // Dashes of every kind: what a phone keyboard or a pasted number has (‐ ‑ ‒ – — ―, the minus sign).
+  const compact = n.replace(/[\s\-().\u2010-\u2015\u2212]/g, '');
   const m = /^(\+?)(\d{3,15})$/.exec(compact);
   if (!m) return { kind: 'bad', message: TYPE_HINT };
   const [, plus, d] = m;
   if (plus && !d.startsWith('8831')) return { kind: 'bad', message: NOT_883 };
   // The digits after +883 1: the whole number's 11, or an exchange's 6.
-  const rest = d.startsWith('8831') && (d.length === 15 || d.length === 10) ? d.slice(4) : plus ? null : d;
-  if (rest === null) return { kind: 'bad', message: NOT_883 };
+  const rest = d.startsWith('8831') && (plus || d.length === 15 || d.length === 14 || d.length === 10) ? d.slice(4) : d;
   switch (rest.length) {
     case 11:
       return isFullNumber(`+8831${rest}`) ? { kind: 'number', number: `+8831${rest}` } : { kind: 'bad', message: CODE_RULE };

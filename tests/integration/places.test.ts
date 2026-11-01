@@ -83,6 +83,20 @@ describe('searchPlaces (spec §4.1 "Where?")', () => {
     ctx.db.update(npas).set({ region: 'MN' }).where(eq(npas.npa, '612')).run();
   });
 
+  it('natural queries: no comma, hyphens as spaces, a state name that is also a city', () => {
+    expect(labels('Lancaster PA')).toEqual(['Lancaster, PA (717-291, +4 more)']);
+    expect(labels('wilkes barre')).toEqual(['Wilkes-Barre, PA (570-200)']);
+    expect(labels('wilkes-barre')).toEqual(['Wilkes-Barre, PA (570-200)']);
+    expect(labels('york')).toEqual(['York, PA (717-843, +3 more)']);
+    expect(labels('l')).toEqual([]); // one letter is not a search
+    // A city named like a region: both, the city first.
+    ctx.db.insert(exchanges).values({ npaNxx: '717999', npa: '717', nxx: '999', region: 'PA', rateCenter: 'OHIO', firstSeenAt: 1 }).run();
+    const ohio = labels('ohio');
+    expect(ohio[0]).toBe('Ohio, PA (717-999)');
+    expect(ohio).toContain('Lancaster, OH (220-207, +3 more)');
+    ctx.db.delete(exchanges).where(eq(exchanges.npaNxx, '717999')).run();
+  });
+
   it('exchangesOfPlace', () => {
     expect(exchangesOfPlace(ctx, 'PA', 'YORK')).toEqual(['+8831717843', '+8831717845', '+8831717846', '+8831717848']);
     expect(exchangesOfPlace(ctx, 'PA', 'NOWHERE')).toEqual([]);

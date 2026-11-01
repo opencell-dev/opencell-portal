@@ -1,4 +1,5 @@
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, isNull, lt, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import { exchanges, npas, rateCenters } from '@/db/schema';
 import type { Ctx } from '@/lib/ctx';
 import { type Side, sideOfNpa } from './homing';
@@ -54,9 +55,51 @@ function titleCase(s: string): string {
 
 const ex = (npaNxx: string) => `+8831${npaNxx}`;
 const likePrefix = (s: string) => `${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+/** The most places one name search looks at. Keys ascend, so a short exact name is among them. */
+const MAX_MATCHES = 500;
+
+/**
+ * The places whose name starts with `name` (rcKey): by the rate center's own
+ * key, through its index, and by its pretty name and normalized key on the
+ * much smaller rate_centers table, hyphens read as spaces (wilkes barre,
+ * trois rivieres). In two steps, so a key press never reads every exchange:
+ * it runs on the portal's one thread.
+ */
+function namedPlaces(ctx: Ctx, name: string, region: string | null) {
+  const inRegion = (col: typeof exchanges.region | typeof rateCenters.region) => (region ? eq(col, region) : undefined);
+  const byKey = ctx.db
+    .selectDistinct({ region: exchanges.region, rateCenter: exchanges.rateCenter })
+    .from(exchanges)
+    .where(and(gte(exchanges.rateCenter, name), lt(exchanges.rateCenter, `${name}\uffff`), inRegion(exchanges.region)))
+    .orderBy(asc(exchanges.rateCenter))
+    .limit(MAX_MATCHES)
+    .all();
+  const pattern = likePrefix(name.replace(/-/g, ' '));
+  const byName = ctx.db
+    .select({ region: rateCenters.region, rateCenter: rateCenters.name })
+    .from(rateCenters)
+    .where(
+      and(
+        sql`(replace(${rateCenters.name}, '-', ' ') LIKE ${pattern} ESCAPE '\\' OR replace(upper(replace(${rateCenters.display}, '.', ' ')), '-', ' ') LIKE ${pattern} ESCAPE '\\')`,
+        inRegion(rateCenters.region),
+      ),
+    )
+    .orderBy(asc(rateCenters.name))
+    .limit(MAX_MATCHES)
+    .all();
+  const seen = new Map([...byKey, ...byName].map((p) => [`${p.region}|${p.rateCenter}`, p]));
+  return [...seen.values()].slice(0, MAX_MATCHES);
+}
+
+function nameRows(ctx: Ctx, name: string, region: string | null): Row[] {
+  const places = namedPlaces(ctx, name, region);
+  if (places.length === 0) return [];
+  const pairs = places.map((p) => sql`(${p.region}, ${p.rateCenter})`);
+  return offered(ctx, sql`(${exchanges.region}, ${exchanges.rateCenter}) IN (VALUES ${sql.join(pairs, sql`, `)})`);
+}
 
 /** The offered exchanges' rows matching `where`, with their rate center's name and position. */
-function offered(ctx: Ctx, where: ReturnType<typeof and>) {
+function offered(ctx: Ctx, where: SQL | undefined) {
   return ctx.db
     .select({
       npaNxx: exchanges.npaNxx,
@@ -168,23 +211,23 @@ export function searchPlaces(ctx: Ctx, q: string, limit = 10): Place[] {
     }
     case 'text': {
       const region = regionCode(t.text);
-      if (region) {
-        const rows = offered(ctx, and(eq(exchanges.region, region)));
-        if (rows.length > 0) return rank(group(ctx, rows)).slice(0, limit).map((g) => toPlace(ctx, g));
-      }
-      const m = /^(.*?)\s*,\s*([^,]+)$/.exec(t.text);
-      const name = rcKey(m ? m[1] : t.text);
-      const inRegion = m ? regionCode(m[2]) : null;
-      if (name === '' || (m && !inRegion)) return [];
-      const pattern = likePrefix(name);
-      const rows = offered(
-        ctx,
-        and(
-          sql`(${exchanges.rateCenter} LIKE ${pattern} ESCAPE '\\' OR upper(replace(${rateCenters.display}, '.', ' ')) LIKE ${pattern} ESCAPE '\\')`,
-          inRegion ? eq(exchanges.region, inRegion) : undefined,
-        ),
-      );
-      return rank(group(ctx, rows), name)
+      const inIt = region ? rank(group(ctx, offered(ctx, eq(exchanges.region, region)))) : [];
+      // Two letters that are a region's code mean the region; a full name
+      // can be a place as well (Ohio is a state; Washington a state and a city).
+      if (inIt.length > 0 && /^\p{L}{2}$/u.test(t.text)) return inIt.slice(0, limit).map((g) => toPlace(ctx, g));
+      // "Lancaster, PA", or "Lancaster PA" when PA is a region with places.
+      const comma = /^(.*?)\s*,\s*([^,]+)$/.exec(t.text);
+      const bare = /^(.+?)\s+(\p{L}{2})$/u.exec(t.text);
+      if (comma && !regionCode(comma[2])) return [];
+      const suffix = comma ?? bare;
+      const key = rcKey(suffix ? suffix[1] : t.text);
+      const scoped = suffix ? group(ctx, nameRows(ctx, key, regionCode(suffix[2]))) : [];
+      if (scoped.length > 0 || comma) return rank(scoped, key).slice(0, limit).map((g) => toPlace(ctx, g));
+      const name = rcKey(t.text);
+      if (name.length < 2) return [];
+      const named = rank(group(ctx, nameRows(ctx, name, null)), name);
+      const seen = new Set(named.map((g) => `${g.region}|${g.rateCenter}`));
+      return [...named, ...inIt.filter((g) => !seen.has(`${g.region}|${g.rateCenter}`))]
         .slice(0, limit)
         .map((g) => toPlace(ctx, g));
     }

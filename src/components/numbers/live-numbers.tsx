@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
-import { RELEASED } from '@/lib/numbers/card';
+import { releasedState } from '@/lib/numbers/card';
 import { activateHref, spacedNumber } from '@/lib/numbers/format';
 import type { NumberStatus } from '@/lib/numbers/status';
 import { ReissueForm, ReleaseForm, SimulateForm } from './qr-actions';
@@ -22,6 +22,8 @@ const TONE: Record<NumberStatus['tone'], string> = {
 
 const FAST_S = 5;
 const SLOW_S = 30;
+/** How long after an activation the card keeps watching for its first registration. */
+const SETTLING_MS = 10 * 60_000;
 
 function lastSeen(t: number | null): string {
   return t === null ? 'never' : new Date(t).toLocaleString();
@@ -29,21 +31,27 @@ function lastSeen(t: number | null): string {
 
 /**
  * The cards of My numbers (portal spec §5), kept live by polling
- * /api/numbers/status (P2 decision 3): every 5 s while a number waits for
- * activation or is not registered, else every 30 s, while the tab is
- * visible. A number the core released since the page loaded stays on screen
- * as "Released (not activated in 3 days)" until the next reload.
+ * /api/numbers/status (P2 decision 3), while the tab is visible: every 5 s
+ * while a number waits for activation or was activated in the last 10
+ * minutes and has yet to register, else every 30 s. Decision 3 said "or
+ * unregistered"; a phone that is off would then poll fast for ever, and
+ * sub.status is one bucket at the core for everyone (review of P2). A number the
+ * core released since the page loaded stays on screen as "Released" until the next reload.
  */
-export function LiveNumbers({ cards, initial, fake }: { cards: CardInfo[]; initial: NumberStatus[]; fake: boolean }) {
+export function LiveNumbers({ cards, initial, unavailable, fake }: { cards: CardInfo[]; initial: NumberStatus[]; unavailable: boolean; fake: boolean }) {
   const [status, setStatus] = useState(() => new Map(initial.map((s) => [s.number, s])));
   const [gone, setGone] = useState<Set<string>>(new Set());
+  const [down, setDown] = useState(unavailable);
   const busy = useRef(false);
   // A server action (release, re-issue, a simulation) re-renders the page with fresh rows: take them.
   useEffect(() => {
     setStatus(new Map(initial.map((s) => [s.number, s])));
     setGone(new Set());
-  }, [initial]);
-  const fast = [...status.values()].some((s) => s.state === 'unactivated' || !s.label.startsWith('Registered'));
+    setDown(unavailable);
+  }, [initial, unavailable]);
+  const fast = [...status.values()].some(
+    (s) => s.state === 'unactivated' || (!s.registered && s.activatedAt !== null && Date.now() - s.activatedAt < SETTLING_MS),
+  );
 
   useEffect(() => {
     const poll = async () => {
@@ -52,10 +60,12 @@ export function LiveNumbers({ cards, initial, fake }: { cards: CardInfo[]; initi
       try {
         const r = await fetch('/api/numbers/status', { headers: { accept: 'application/json' }, cache: 'no-store' });
         if (!r.ok) return;
-        const { numbers } = (await r.json()) as { numbers: NumberStatus[] };
+        const { numbers, unavailable: failed } = (await r.json()) as { numbers: NumberStatus[]; unavailable: boolean };
         const next = new Map(numbers.map((s) => [s.number, s]));
-        setStatus(next);
+        // A number that left keeps its last status: its token says why it left.
+        setStatus((prev) => new Map([...prev, ...next]));
         setGone(new Set(cards.map((c) => c.number).filter((n) => !next.has(n))));
+        setDown(failed);
       } catch {
         // Offline for a moment: the next poll tries again.
       } finally {
@@ -68,10 +78,15 @@ export function LiveNumbers({ cards, initial, fake }: { cards: CardInfo[]; initi
 
   return (
     <>
+      {down && (
+        <p role="note" className="rounded border border-amber-500 p-3 text-sm sm:col-span-2 lg:col-span-3">
+          The network didn&apos;t answer: these cards show what it said last. They update when it is back.
+        </p>
+      )}
       {cards.map((c) => {
         const s = status.get(c.number);
         const released = gone.has(c.number) || !s;
-        const st = released ? RELEASED : s;
+        const st = released ? releasedState(s?.tokenExpiresAt ?? 0, Date.now()) : s;
         return (
           <article key={c.number} className="space-y-3 rounded-lg border border-slate-300 p-4 dark:border-slate-700" data-testid="number-card" data-number={c.number}>
             <div>
@@ -94,20 +109,20 @@ export function LiveNumbers({ cards, initial, fake }: { cards: CardInfo[]; initi
             {!released && s && (
               <div className="flex flex-wrap items-start gap-x-4 gap-y-2 text-sm">
                 {s.state === 'unactivated' && (
-                  <Link href={activateHref(c.number)} className="underline">
+                  <Link href={activateHref(c.number)} prefetch={false} className="underline">
                     Show QR
                   </Link>
                 )}
-                <Link href={`/calls?number=${encodeURIComponent(c.number)}`} className="underline">
+                <Link href={`/calls?number=${encodeURIComponent(c.number)}`} prefetch={false} className="underline">
                   Calls
                 </Link>
-                {s.state === 'unactivated' ? (
+                {s.disabled ? null : s.state === 'unactivated' ? (
                   <ReissueForm number={c.number} label="Re-issue QR" warning="The old QR code stops working." />
                 ) : (
                   <ReissueForm number={c.number} label="Move to a new terminal" warning="The terminal this number is on now will be cut off once the new one activates." />
                 )}
                 {s.state === 'unactivated' && <ReleaseForm number={c.number} />}
-                {fake && s.state === 'activated' && !s.label.startsWith('Registered') && (
+                {fake && s.state === 'activated' && !s.registered && (
                   <SimulateForm number={c.number} op="register" label="Simulate a registration (fake core)" />
                 )}
               </div>

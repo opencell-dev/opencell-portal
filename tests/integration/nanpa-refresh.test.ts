@@ -76,6 +76,29 @@ describe('applyNanpa', () => {
     expect(ctx.db.select().from(nanpaRefreshes).all()).toHaveLength(1);
   });
 
+  it('applies the 90 % check per source: a short CNAC file cannot hide behind the US total', () => {
+    applyNanpa(ctx, files());
+    const lines = cnac.split('\r\n').filter((l) => !/^(204|416),/.test(l)); // Winnipeg and Toronto gone
+    const before = live(ctx);
+    expect(() => applyNanpa(ctx, files({ cnac: lines.join('\r\n') }))).toThrow(/nanpa: .*Canad.*90 %/);
+    expect(live(ctx)).toBe(before);
+  });
+
+  it('and per region, for a region big enough to judge: a state cannot vanish', () => {
+    const head = co.split('\r\n')[0];
+    const row = (st: string, npa: string, nxx: number, rc: string) => `${st}   \t${npa}-${nxx}\t9208\t"X"\t${rc}\t\tAS \t\t\tN\tYes`;
+    const ohio: string[] = [];
+    for (const npa of ['614', '740', '937', '513', '330']) for (let x = 200; x < 800; x++) if (x % 100 !== 11) ohio.push(row('OH', npa, x, 'COLUMBUS'));
+    const texas: string[] = [];
+    for (let x = 200; x < 500; x++) if (x % 100 !== 11) texas.push(row('TX', '512', x, 'AUSTIN'));
+    const all = [head, ...ohio, ...texas].join('\r\n');
+    const noCanada = files({ coCodes: all, cnac: undefined, rateCenters: undefined });
+    applyNanpa(ctx, noCanada);
+    expect(() => applyNanpa(ctx, { ...noCanada, coCodes: [head, ...ohio].join('\r\n') })).toThrow(/nanpa: TX: .*90 %/);
+    // A small region may lose a code or two.
+    expect(() => applyNanpa(ctx, { ...noCanada, coCodes: [head, ...ohio, ...texas.slice(0, 280)].join('\r\n') })).not.toThrow();
+  });
+
   it('a header change fails before anything is written', () => {
     expect(() => applyNanpa(ctx, files({ npas: 'NPA_ID,USE\r\n' }))).toThrow(/unexpected header/);
     expect(ctx.db.select().from(exchanges).all()).toEqual([]);

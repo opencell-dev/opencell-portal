@@ -1,6 +1,7 @@
 import { appCtx } from '@/lib/ctx';
 import { MAX_TYPED } from '@/lib/numbers/input';
 import { searchPlaces } from '@/lib/numbers/places';
+import { hit } from '@/lib/ratelimit';
 import { currentSession } from '@/server/request';
 
 export const dynamic = 'force-dynamic';
@@ -17,5 +18,8 @@ export async function GET(req: Request) {
   if (!s) return Response.json({ error: 'Please sign in.' }, { status: 401, headers: NO_STORE });
   const q = new URL(req.url).searchParams.get('q') ?? '';
   if (q.length > MAX_TYPED) return Response.json({ places: [] }, { headers: NO_STORE });
-  return Response.json({ places: searchPlaces(appCtx(), q) }, { headers: NO_STORE });
+  const ctx = appCtx();
+  const lim = hit(ctx, 'places_account', String(s.user.id));
+  if (!lim.ok) return Response.json({ places: [], error: lim.message }, { status: 429, headers: NO_STORE });
+  return Response.json({ places: searchPlaces(ctx, q) }, { headers: NO_STORE });
 }

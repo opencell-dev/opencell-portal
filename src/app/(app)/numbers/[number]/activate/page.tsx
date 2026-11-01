@@ -5,7 +5,7 @@ import { Countdown } from '@/components/numbers/countdown';
 import { CopyButton, EmailQrForm, ReissueForm, SimulateForm } from '@/components/numbers/qr-actions';
 import { appCtx } from '@/lib/ctx';
 import { countdown, fromSegment, spacedNumber, utcMinute } from '@/lib/numbers/format';
-import { numberOf } from '@/lib/numbers/ownership';
+import { numberOf, syncDue } from '@/lib/numbers/ownership';
 import { placeOfNumber } from '@/lib/numbers/places';
 import { flashOf } from '@/lib/numbers/qr-flash';
 import { qrSvg } from '@/lib/qr';
@@ -23,6 +23,8 @@ export default async function Activate({ params }: { params: Promise<{ number: s
   const { user, session } = await requireUser();
   const ctx = appCtx();
   const number = fromSegment((await params).number);
+  // What the core says now: right after a scan, the QR just used must not show as "works once".
+  await syncDue(ctx, user.id);
   const row = numberOf(ctx, user.id, number);
   if (!row) notFound();
   const place = placeOfNumber(ctx, number);

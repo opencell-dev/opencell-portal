@@ -26,7 +26,7 @@ export default async function Calls({ searchParams }: { searchParams: Promise<{ 
   const raw = (await searchParams).number;
   const filter = typeof raw === 'string' && raw !== '' ? raw : undefined;
   const mine = listNumbers(ctx, user.id).map((r) => r.number);
-  const { calls, unavailable } = await accountCalls(ctx, user.id, filter);
+  const { calls, unavailable, limited } = await accountCalls(ctx, user.id, filter);
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">Calls</h1>
@@ -54,7 +54,12 @@ export default async function Calls({ searchParams }: { searchParams: Promise<{ 
           The network didn&apos;t answer for {unavailable.map(spacedNumber).join(', ')}: those calls are missing. Try again in a minute.
         </p>
       )}
-      {calls.length === 0 ? (
+      {limited && (
+        <p role="note" className="rounded border border-amber-500 p-3 text-sm">
+          {limited}
+        </p>
+      )}
+      {limited ? null : calls.length === 0 ? (
         <p>{mine.length === 0 ? 'You have no numbers yet.' : 'No calls in this time.'}</p>
       ) : (
         <div className="overflow-x-auto">

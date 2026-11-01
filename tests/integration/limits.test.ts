@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { users } from '@/db/schema';
+import { numbers, users } from '@/db/schema';
 import { listAudit } from '@/lib/audit';
 import { decideLimitRequest, pendingLimitRequests, pendingRequestOf, requestMoreNumbers } from '@/lib/numbers/limits';
 import { grantRole } from '@/lib/users';
@@ -19,7 +19,15 @@ beforeEach(() => {
   ada = user('ada');
   root = user('root');
   grantRole(ctx, root, 'admin', null);
+  hold(ada, 3); // at the default limit: the card only asks then
 });
+
+let station = 20000;
+function hold(userId: number, n: number) {
+  for (let i = 0; i < n; i++) {
+    ctx.db.insert(numbers).values({ number: `+8831717464${station++}`, userId, coreId: 'fake', createdAt: 1, state: 'activated' }).run();
+  }
+}
 
 const REASON = 'A second terminal for the car, and one for the shack.';
 
@@ -48,7 +56,7 @@ describe('requests for more numbers (spec §4.2: above 3, a short reason, and an
   it('raise: the limit goes up, the subscriber is mailed, the request is closed', async () => {
     requestMoreNumbers(ctx, ada, { reason: REASON, wanted: '5' }, meta);
     const [p] = pendingLimitRequests(ctx);
-    expect(p).toMatchObject({ userId: ada, name: 'ada', email: 'ada@example.org', held: 0, limit: 3, wanted: 5, verified: true });
+    expect(p).toMatchObject({ userId: ada, name: 'ada', email: 'ada@example.org', held: 3, limit: 3, wanted: 5, verified: true });
     expect(decideLimitRequest(ctx, root, p.id, { outcome: 'raised', limit: 5 }, meta)).toEqual({ ok: true });
     await ctx.mailQueue.drain();
     expect(ctx.db.select().from(users).all().find((u) => u.id === ada)?.numberLimit).toBe(5);
@@ -57,7 +65,9 @@ describe('requests for more numbers (spec §4.2: above 3, a short reason, and an
     expect(listAudit(ctx, 1)[0]).toMatchObject({ actorId: root, action: 'limit.decide', target: `user:${ada}` });
     // Decided once only.
     expect(decideLimitRequest(ctx, root, p.id, { outcome: 'raised', limit: 6 }, meta)).toMatchObject({ ok: false });
-    // A new request is possible once the last is decided.
+    // With room left there is nothing to ask for; at the new limit there is again.
+    expect(requestMoreNumbers(ctx, ada, { reason: REASON, wanted: '6' }, meta)).toMatchObject({ ok: false, error: expect.stringMatching(/still get 2/) });
+    hold(ada, 2);
     expect(requestMoreNumbers(ctx, ada, { reason: REASON, wanted: '6' }, meta)).toEqual({ ok: true });
   });
 
@@ -69,6 +79,14 @@ describe('requests for more numbers (spec §4.2: above 3, a short reason, and an
     await ctx.mailQueue.drain();
     expect(ctx.db.select().from(users).all().find((u) => u.id === ada)?.numberLimit).toBe(3);
     expect(ctx.mailer.sent.at(-1)?.text).toContain('Not while the network is this small.');
+  });
+
+  it('asking again after a decline is limited: each request mails every admin', () => {
+    for (let i = 0; i < 3; i++) {
+      expect(requestMoreNumbers(ctx, ada, { reason: REASON, wanted: '5' }, meta)).toEqual({ ok: true });
+      expect(decideLimitRequest(ctx, root, pendingLimitRequests(ctx)[0].id, { outcome: 'declined', note: 'No.' }, meta)).toEqual({ ok: true });
+    }
+    expect(requestMoreNumbers(ctx, ada, { reason: REASON, wanted: '5' }, meta)).toMatchObject({ ok: false, error: expect.stringMatching(/too often/) });
   });
 
   it('a raise must be above the current limit and at most 20', () => {

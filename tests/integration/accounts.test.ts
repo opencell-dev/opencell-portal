@@ -367,6 +367,17 @@ describe('account page services (spec §3)', () => {
     expect(ctx.db.select().from(numbers).all()).toEqual([]);
   });
 
+  it('deleting an account sees an activation the portal had not noticed: it asks, instead of failing on every retry', async () => {
+    const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
+    const n = '+883171746412345';
+    const t = await ctx.core.subCreate(userId, n);
+    ctx.db.insert(numbers).values({ userId, coreId: 'fake', createdAt: ctx.now(), number: n, state: 'unactivated', tokenExpiresAt: t.expiresAt }).run();
+    ctx.core.simActivate(t.qr, 1); // the row still says unactivated
+    expect(await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: {} }, meta)).toMatchObject({ ok: false, error: `Choose what happens to ${n}.` });
+    expect(await deleteAccount(ctx, userId, { confirmEmail: 'ada@example.org', choices: { [n]: 'keep' } }, meta)).toEqual({ ok: true });
+    expect((await ctx.core.subStatus(0, n)).state).toBe('activated');
+  });
+
   it('refuses to delete without the typed address or with an activated number left undecided', async () => {
     const { userId } = await signUpAndVerify('Ada', 'ada@example.org');
     expect(await deleteAccount(ctx, userId, { confirmEmail: 'x@example.org', choices: {} }, meta, [])).toMatchObject({ ok: false });

@@ -133,6 +133,36 @@ test('number actions posted from another origin are refused', async ({ request }
   }
 });
 
+test('the real get-a-number action, posted from another origin with the real session, is refused; from its own, it runs', async ({ page, baseURL }, info) => {
+  portalAdmin('nanpa-refresh', '--dir', 'tests/fixtures/nanpa');
+  await signUpAndVerify(page, 'Origin', uniqueEmail(info, 'origin'));
+  const station = String((info.project.name === 'phone' ? 60000 : 20000) + Math.floor(Math.random() * 30000));
+  const number = `+8831717843${station}`;
+  const url = `/numbers/new/confirm?number=${encodeURIComponent(number)}`;
+  await page.goto(url);
+  // The form's real fields, action id included: the no-JavaScript POST the page itself would send.
+  const fields = await page
+    .locator('form', { has: page.getByRole('button', { name: 'Get this number' }) })
+    .evaluate((f) => [...new FormData(f as HTMLFormElement).entries()].map(([k, v]) => [k, String(v)]));
+  expect(fields.map(([k]) => k).some((k) => k.startsWith('$ACTION'))).toBe(true);
+  const multipart = Object.fromEntries(fields);
+  const held = () => {
+    const db = e2eDb();
+    const row = db.prepare('SELECT number FROM numbers WHERE number = ?').get(number);
+    db.close();
+    return row;
+  };
+  const evil = await page.request.post(url, { headers: { Origin: 'https://evil.example' }, multipart });
+  expect(evil.status()).toBe(403);
+  expect(held()).toBeUndefined();
+  const none = await page.request.post(url, { multipart });
+  expect(none.status()).toBe(403);
+  expect(held()).toBeUndefined();
+  // The same fields from the portal's own origin do run it, so the refusals above were about the origin.
+  await page.request.post(url, { headers: { Origin: new URL(baseURL!).origin }, multipart });
+  expect(held()).toEqual({ number });
+});
+
 test('no CSP violation and no third-party request through get-a-number, the QR and My numbers; the directory is noindex', async ({ page }, info) => {
   portalAdmin('nanpa-refresh', '--dir', 'tests/fixtures/nanpa');
   const violations = await watchCsp(page);

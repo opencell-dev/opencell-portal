@@ -5,8 +5,9 @@ import { PlaceSearch } from '@/components/numbers/place-search';
 import { confirmHref } from '@/lib/numbers/format';
 import { appCtx } from '@/lib/ctx';
 import { MAX_TYPED, parseTyped } from '@/lib/numbers/input';
-import { capsOf } from '@/lib/numbers/ownership';
+import { capsOf, syncDue } from '@/lib/numbers/ownership';
 import { searchPlaces } from '@/lib/numbers/places';
+import { hit } from '@/lib/ratelimit';
 import { requireUser } from '@/server/request';
 
 export const metadata: Metadata = { title: 'Get a number' };
@@ -20,6 +21,8 @@ export default async function NewNumber({ searchParams }: { searchParams: Promis
   // A whole number typed and searched without JavaScript: straight to the confirm step.
   const typed = q.trim() === '' ? null : parseTyped(q);
   if (typed?.kind === 'number') redirect(confirmHref(typed.number));
+  // What the core says now: an activation since the last look frees a waiting slot.
+  await syncDue(ctx, user.id);
   const caps = capsOf(ctx, user.id);
   return (
     <div className="max-w-2xl space-y-6">
@@ -40,7 +43,8 @@ export default async function NewNumber({ searchParams }: { searchParams: Promis
         OpenCell numbers use real exchanges: +883 1, then a place's area code and exchange, then 5 digits. Find a place,
         or type the whole number you want.
       </p>
-      <PlaceSearch q={q} places={q.trim() === '' ? [] : searchPlaces(ctx, q)} />
+      {/* Searched without JavaScript (with it, /api/places answers as they type): the same limit. */}
+      <PlaceSearch q={q} places={q.trim() !== '' && hit(ctx, 'places_account', String(user.id)).ok ? searchPlaces(ctx, q) : []} />
     </div>
   );
 }

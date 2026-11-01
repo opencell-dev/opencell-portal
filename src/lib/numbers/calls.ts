@@ -1,6 +1,7 @@
 import type { Cdr } from '@/core/types';
 import { askWithin } from '@/lib/core-ask';
 import type { Ctx } from '@/lib/ctx';
+import { hit } from '@/lib/ratelimit';
 import { coreActor } from '@/lib/site';
 import { CORE_DEADLINE_MS, listNumbers } from './ownership';
 import { coreFor } from './route';
@@ -21,9 +22,13 @@ export type AccountCall = Cdr & { mine: string };
  * takes it (TlsCore sends seconds on the wire). A core that does not answer
  * in 3 s puts its numbers in `unavailable`.
  */
-export async function accountCalls(ctx: Ctx, userId: number, filter?: string): Promise<{ calls: AccountCall[]; unavailable: string[] }> {
+export async function accountCalls(ctx: Ctx, userId: number, filter?: string): Promise<{ calls: AccountCall[]; unavailable: string[]; limited?: string }> {
   const held = listNumbers(ctx, userId);
   const rows = filter === undefined ? held : held.filter((r) => r.number === filter);
+  if (rows.length === 0) return { calls: [], unavailable: [] };
+  // Per account: cdr.list is one bucket at the core for everyone.
+  const lim = hit(ctx, 'calls_account', String(userId));
+  if (!lim.ok) return { calls: [], unavailable: [], limited: lim.message };
   const floor = ctx.now() - CALLS_DAYS * 86400_000;
   const actor = coreActor(ctx.config.site, userId);
   const unavailable: string[] = [];

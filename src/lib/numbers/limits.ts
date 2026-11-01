@@ -5,6 +5,7 @@ import type { Result } from '@/lib/accounts';
 import { writeAudit } from '@/lib/audit';
 import type { Ctx } from '@/lib/ctx';
 import { limitDecisionMail, limitRequestMail } from '@/lib/mail-templates';
+import { hit } from '@/lib/ratelimit';
 import type { RequestMeta } from '@/lib/sessions';
 import { firstError, isOneLinePlain } from '@/lib/validation';
 import { heldCount } from './ownership';
@@ -46,8 +47,13 @@ export function requestMoreNumbers(ctx: Ctx, userId: number, input: { reason: un
   const u = ctx.db.select().from(users).where(eq(users.id, userId)).get();
   if (!u) return { ok: false, error: 'No such account.' };
   const { reason, wanted } = p.data;
+  // Only at the limit: below it there is nothing to ask for (the card shows the form only then).
+  const left = u.numberLimit - heldCount(ctx, userId);
+  if (left > 0) return { ok: false, error: `You can still get ${left} more without asking.` };
   if (wanted <= u.numberLimit || wanted > MAX_LIMIT) return { ok: false, error: `Ask for ${u.numberLimit + 1} to ${MAX_LIMIT} numbers in all.` };
   if (pendingRequestOf(ctx, userId)) return { ok: false, error: 'You have asked already: an admin will answer by email.' };
+  const lim = hit(ctx, 'limit_request_account', String(userId));
+  if (!lim.ok) return { ok: false, error: lim.message };
   ctx.db.insert(limitRequests).values({ userId, reason, wanted, createdAt: ctx.now() }).run();
   writeAudit(ctx, { actorId: userId, action: 'limit.request', target: `user:${userId}`, detail: { wanted }, ip: meta.ip });
   const admins = ctx.db

@@ -1,17 +1,14 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { isAssignable } from '@/core/numbers';
-import { isCoreError } from '@/core/types';
 import { GetNumberForm } from '@/components/numbers/qr-actions';
-import { tryWithin } from '@/lib/core-ask';
 import { appCtx } from '@/lib/ctx';
 import { sideLabel } from '@/lib/numbers/homing';
 import { activateHref, exchangeLabel, shortlistHref, spacedNumber } from '@/lib/numbers/format';
 import { parseTyped } from '@/lib/numbers/input';
-import { CORE_DEADLINE_MS, capsOf, numberOf } from '@/lib/numbers/ownership';
+import { checkFree } from '@/lib/numbers/browse';
+import { capsOf, NO_ANSWER, numberOf, syncAccount } from '@/lib/numbers/ownership';
 import { exchangeOffered, whyNotOffered } from '@/lib/numbers/places';
-import { coreFor } from '@/lib/numbers/route';
-import { coreActor } from '@/lib/site';
 import { requireUser } from '@/server/request';
 
 export const metadata: Metadata = { title: 'Confirm your number' };
@@ -25,7 +22,7 @@ function Problem({ children, back = '/numbers/new' }: { children: React.ReactNod
       <h1 className="text-2xl font-semibold">Confirm your number</h1>
       <p role="alert">{children}</p>
       <p>
-        <Link href={back} className="underline">
+        <Link href={back} prefetch={false} className="underline">
           Pick another
         </Link>
       </p>
@@ -42,6 +39,9 @@ export default async function Confirm({ searchParams }: { searchParams: Promise<
   if (typed.kind !== 'number') return <Problem>{typed.kind === 'bad' ? typed.message : 'Type a whole number, like 717-464-12345.'}</Problem>;
   const number = typed.number;
   const exchange = number.slice(0, 11);
+  // What the core says now (the caps below, and whether this is already yours).
+  const { unavailable } = await syncAccount(ctx, user.id);
+  if (unavailable) return <Problem back={shortlistHref(exchange)}>{NO_ANSWER}</Problem>;
   if (numberOf(ctx, user.id, number)) {
     return (
       <Problem back={activateHref(number)}>
@@ -55,19 +55,15 @@ export default async function Confirm({ searchParams }: { searchParams: Promise<
   const why = whyNotOffered(ctx, exchange);
   const place = exchangeOffered(ctx, exchange);
   if (why || !place) return <Problem>{why}</Problem>;
-  const h = coreFor(ctx, number);
-  const check = await tryWithin(h, 'num.check', () => h.core.numCheck(coreActor(ctx.config.site, user.id), number), CORE_DEADLINE_MS);
-  if (!check.ok) {
-    const notOpen = !('late' in check) && isCoreError(check.error) && check.error.code === 'not_assignable';
-    return <Problem back={shortlistHref(exchange)}>{notOpen ? "Numbers in this area code aren't open yet." : "The network didn't answer. Please try again in a minute."}</Problem>;
-  }
-  if (check.value === 'taken') return <Problem back={shortlistHref(exchange)}>Someone has this number. Pick another.</Problem>;
-  if (check.value === 'not_assignable') return <Problem>Numbers in this area code aren&apos;t open yet.</Problem>;
+  const check = await checkFree(ctx, user.id, number);
+  if (!check.ok) return <Problem back={shortlistHref(exchange)}>{check.error}</Problem>;
+  if (check.check === 'taken') return <Problem back={shortlistHref(exchange)}>Someone has this number. Pick another.</Problem>;
+  if (check.check === 'not_assignable') return <Problem>Numbers in this area code aren&apos;t open yet.</Problem>;
   const caps = capsOf(ctx, user.id);
   return (
     <div className="max-w-2xl space-y-6">
       <p>
-        <Link href={shortlistHref(exchange)} className="text-sm underline">
+        <Link href={shortlistHref(exchange)} prefetch={false} className="text-sm underline">
           ← Other numbers in {exchangeLabel(exchange)}
         </Link>
       </p>

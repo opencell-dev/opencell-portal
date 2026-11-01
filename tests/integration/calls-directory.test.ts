@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { numbers, users } from '@/db/schema';
 import { accountCalls, CALLS_DAYS } from '@/lib/numbers/calls';
 import { directory, DIRECTORY_PAGE } from '@/lib/numbers/directory';
+import { setLimit } from '@/lib/ratelimit';
 import { type TestCtx, testCtx } from '../helpers/ctx';
 
 let ctx: TestCtx;
@@ -65,6 +66,16 @@ describe('accountCalls (spec §5 Calls: 90 days, from each number’s home core)
   it('a number’s calls from before this account held it are not this account’s', async () => {
     ctx.db.update(numbers).set({ createdAt: ctx.now() - 2 * 3600_000 }).where(eq(numbers.number, A1)).run();
     expect((await accountCalls(ctx, ada, A1)).calls.map((c) => c.durationS)).toEqual([75]);
+  });
+
+  it('is limited per account: cdr.list is one bucket for everyone at the core', async () => {
+    setLimit(ctx, 'calls_account', 1);
+    expect((await accountCalls(ctx, ada)).calls.length).toBeGreaterThan(0);
+    expect(await accountCalls(ctx, ada)).toMatchObject({ calls: [], limited: expect.stringMatching(/too often/) });
+    // Asking about a number that isn't yours neither asks a core nor counts.
+    setLimit(ctx, 'calls_account', 1);
+    expect(await accountCalls(ctx, bob, A1)).toEqual({ calls: [], unavailable: [] });
+    expect((await accountCalls(ctx, bob)).calls.length).toBeGreaterThan(0);
   });
 
   it('a core that does not answer is named, not a failure', async () => {

@@ -29,6 +29,8 @@ const FILE_TIMEOUT_MS = 60_000;
 const LCG_DELAY_MS = 1500;
 /** A refresh that would leave fewer live exchanges than this share of today's is a truncated download. */
 const MIN_SHARE = 0.9;
+/** A region with fewer live exchanges than this can lose a tenth in a real week. */
+const MIN_REGION = 200;
 
 const CANADA = new Set(['AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT']);
 
@@ -129,13 +131,41 @@ export function readNanpaDir(dir: string): NanpaFiles {
   };
 }
 
+const tally = (regions: string[]) => {
+  const m = new Map<string, number>();
+  for (const r of regions) m.set(r, (m.get(r) ?? 0) + 1);
+  return m;
+};
+
+/**
+ * A truncated download must not withdraw the country (the plan, Task 4), nor
+ * a province or a state hiding behind the total: Canada is only 13 % of the
+ * exchanges, and Texas 7 %. So: under 90 % of the live count for either source
+ * (the US file, CNAC's), or for a region big enough for 10 % to mean something, throws.
+ */
+function refuseIfTruncated(live: string[], incoming: string[]): void {
+  const refuse = (what: string, got: number, had: number) => {
+    throw new Error(`nanpa: ${what}: this run has ${got} exchanges, under 90 % of the ${had} live ones; refusing (a truncated download?)`);
+  };
+  const was = tally(live);
+  const now = tally(incoming);
+  const inCanada = (m: Map<string, number>, canada: boolean) => [...m].reduce((n, [r, c]) => (CANADA.has(r) === canada ? n + c : n), 0);
+  for (const [what, canada] of [['the United States', false], ['Canada', true]] as const) {
+    const had = inCanada(was, canada);
+    if (had > 0 && inCanada(now, canada) < MIN_SHARE * had) refuse(what, inCanada(now, canada), had);
+  }
+  for (const [region, had] of was) {
+    if (had >= MIN_REGION && (now.get(region) ?? 0) < MIN_SHARE * had) refuse(region, now.get(region) ?? 0, had);
+  }
+}
+
 /**
  * Bring the tables up to date from `files`, in one transaction: upsert the
  * NPAs; add new exchanges; withdraw those missing from this run (only within
  * what this run covers: Canada only when CNAC's file is here); restore those
  * that came back; upsert the rate centers when they are here. Refuses (throws,
- * nothing written) when the run would leave under 90 % of today's live
- * exchanges: a truncated download must not withdraw the country. Logs the
+ * nothing written) when a source or a big region would keep under 90 % of its
+ * live exchanges (refuseIfTruncated). Logs the
  * result to nanpa_refreshes and the audit.
  */
 export function applyNanpa(ctx: Ctx, files: NanpaFiles): RefreshResult {
@@ -173,11 +203,10 @@ export function applyNanpa(ctx: Ctx, files: NanpaFiles): RefreshResult {
 
     // ---- exchanges ----
     const current = tx.select().from(exchanges).all();
-    const liveInScope = current.filter((e) => e.withdrawnAt === null && inScope(e.region)).length;
-    const incoming = [...rows.values()].filter((r) => inScope(r.region)).length;
-    if (liveInScope > 0 && incoming < MIN_SHARE * liveInScope) {
-      throw new Error(`nanpa: this run has ${incoming} exchanges, under 90 % of the ${liveInScope} live ones; refusing (a truncated download?)`);
-    }
+    refuseIfTruncated(
+      current.filter((e) => e.withdrawnAt === null && inScope(e.region)).map((e) => e.region),
+      [...rows.values()].filter((r) => inScope(r.region)).map((r) => r.region),
+    );
     const byCode = new Map(current.map((e) => [e.npaNxx, e]));
     const insert = client.prepare(
       'INSERT INTO exchanges (npa_nxx, npa, nxx, region, rate_center, ocn, company, first_seen_at, withdrawn_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)',

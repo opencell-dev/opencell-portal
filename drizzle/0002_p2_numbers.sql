@@ -12,6 +12,7 @@ CREATE TABLE `exchanges` (
 --> statement-breakpoint
 CREATE INDEX `exchanges_place` ON `exchanges` (`region`,`rate_center`);--> statement-breakpoint
 CREATE INDEX `exchanges_npa` ON `exchanges` (`npa`);--> statement-breakpoint
+CREATE INDEX `exchanges_rc` ON `exchanges` (`rate_center`);--> statement-breakpoint
 CREATE TABLE `limit_requests` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`user_id` integer NOT NULL,

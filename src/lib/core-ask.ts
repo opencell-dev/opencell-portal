@@ -41,7 +41,7 @@ export type Asked<T> = { ok: true; value: T } | { ok: false; error: unknown } | 
  * the answer, the error it failed with, or `late` after deadlineMs. A late
  * answer still arrives, to `onLate`, so the caller can record what the core
  * did after all (a number it created while the page had given up). Failures
- * other than a CoreError are logged, as askWithin does.
+ * other than a plain refusal are logged, as askWithin does.
  */
 export async function tryWithin<T>(
   h: CoreHandle,
@@ -63,7 +63,8 @@ export async function tryWithin<T>(
     .then(
       (value) => ({ ok: true as const, value }),
       (error: unknown) => {
-        if (!isCoreError(error) || error.code === 'unavailable') console.error(`oc-portal: core ${h.id} (${h.where}) ${what} failed:`, error);
+        // A refusal that is an answer (taken, not_found) is not worth a log line; these are.
+        if (!isCoreError(error) || error.code === 'unavailable' || error.code === 'rate_limited') console.error(`oc-portal: core ${h.id} (${h.where}) ${what} failed:`, error);
         return { ok: false as const, error };
       },
     )

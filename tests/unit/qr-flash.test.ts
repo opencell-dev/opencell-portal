@@ -38,6 +38,19 @@ describe('the QR flash (portal spec §7: shown once; P2: for 15 minutes, to the 
   });
 });
 
+describe('sweeping', () => {
+  it('reading sweeps too: a QR past its 15 minutes leaves memory even when nobody gets a new one', async () => {
+    const { sweepQrFlash } = await import('@/lib/numbers/qr-flash');
+    const map = () => (globalThis as { __ocQrFlash?: Map<string, unknown> }).__ocQrFlash!;
+    putQr('old', tok(A), 0);
+    expect(takeQr('someone', A, FLASH_MS)).toBeNull();
+    expect(map().has('old')).toBe(false);
+    putQr('old', tok(A), 0);
+    sweepQrFlash(FLASH_MS);
+    expect(map().has('old')).toBe(false);
+  });
+});
+
 describe('flashOf', () => {
   it('says when the QR was put', async () => {
     const { flashOf } = await import('@/lib/numbers/qr-flash');

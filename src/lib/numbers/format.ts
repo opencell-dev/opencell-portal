@@ -44,3 +44,15 @@ export function fromSegment(raw: string): string {
 export const shortlistHref = (exchange: string) => `/numbers/new/${encodeURIComponent(exchange)}`;
 export const confirmHref = (number: string) => `/numbers/new/confirm?number=${encodeURIComponent(number)}`;
 export const activateHref = (number: string) => `/numbers/${encodeURIComponent(number)}/activate`;
+
+/**
+ * At most `n` of a long list, from `offset` and round to its start, and where
+ * the next look starts (null when all of it fits). One rate center can have
+ * thousands of exchanges (a New York one has 2,215), and a page must not list them all.
+ */
+export function otherWindow<T>(list: T[], offset: number, n: number): { shown: T[]; next: number | null } {
+  if (list.length <= n) return { shown: list, next: null };
+  const start = Number.isInteger(offset) && offset > 0 ? offset % list.length : 0;
+  const shown = Array.from({ length: n }, (_, i) => list[(start + i) % list.length]);
+  return { shown, next: (start + n) % list.length };
+}

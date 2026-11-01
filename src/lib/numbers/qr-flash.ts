@@ -21,7 +21,8 @@ export interface Entry {
 const g = globalThis as typeof globalThis & { __ocQrFlash?: Map<string, Entry[]> };
 const store = (): Map<string, Entry[]> => (g.__ocQrFlash ??= new Map());
 
-function sweep(now: number): void {
+/** Forget every QR past its 15 minutes: run on every read and write, and hourly (housekeeping). */
+export function sweepQrFlash(now = Date.now()): void {
   for (const [sid, list] of store()) {
     const live = list.filter((e) => now - e.at < FLASH_MS);
     if (live.length === 0) store().delete(sid);
@@ -31,7 +32,7 @@ function sweep(now: number): void {
 
 /** Keep `t` for `sessionId` (a session's id: the hash of its cookie, never the cookie). A newer token for the same number replaces the older. */
 export function putQr(sessionId: string, t: IssuedToken, now = Date.now()): void {
-  sweep(now);
+  sweepQrFlash(now);
   const list = (store().get(sessionId) ?? []).filter((e) => e.token.number !== t.number);
   list.push({ token: t, at: now });
   store().set(sessionId, list.slice(-PER_SESSION));
@@ -39,14 +40,13 @@ export function putQr(sessionId: string, t: IssuedToken, now = Date.now()): void
 
 /** The QR this session was given for `number`, while it is fresh; it stays for a reload (not deleted). */
 export function takeQr(sessionId: string, number: string, now = Date.now()): IssuedToken | null {
-  const e = store().get(sessionId)?.find((x) => x.token.number === number);
-  return e && now - e.at < FLASH_MS ? e.token : null;
+  return flashOf(sessionId, number, now)?.token ?? null;
 }
 
 /** takeQr with the time it was put: a token issued before the number's activation was the one used up by it. */
 export function flashOf(sessionId: string, number: string, now = Date.now()): Entry | null {
-  const e = store().get(sessionId)?.find((x) => x.token.number === number);
-  return e && now - e.at < FLASH_MS ? e : null;
+  sweepQrFlash(now);
+  return store().get(sessionId)?.find((x) => x.token.number === number) ?? null;
 }
 
 /** Forget a number's QR (it was released). */

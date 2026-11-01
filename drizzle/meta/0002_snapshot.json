@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4bb12be7-6553-4014-b779-0c23d8854b60",
+  "id": "15875d8d-3c15-41a6-8cca-d8d87435729f",
   "prevId": "6e8446a7-eb5f-4f15-ac49-13ce43d51d7c",
   "tables": {
     "audit": {
@@ -323,6 +323,13 @@
           "name": "exchanges_npa",
           "columns": [
             "npa"
+          ],
+          "isUnique": false
+        },
+        "exchanges_rc": {
+          "name": "exchanges_rc",
+          "columns": [
+            "rate_center"
           ],
           "isUnique": false
         }

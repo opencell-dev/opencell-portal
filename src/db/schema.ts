@@ -143,10 +143,12 @@ export const numbers = sqliteTable(
     // Per-number directory listing (P2 decision 1); users.directoryListed is the master switch.
     listed: integer('listed', { mode: 'boolean' }).notNull().default(true),
     createdAt: integer('created_at').notNull(),
+    // When the terminal it is on now activated it, as the portal first saw it.
     activatedAt: integer('activated_at'),
     tokenExpiresAt: integer('token_expires_at'),
     state: text('state', { enum: ['unactivated', 'activated'] }).notNull(),
-    // The last sub.status the portal saw (statusAt: when).
+    // The last sub.status the portal saw. statusAt: when it last asked, answered
+    // or not, so a core that is down or limiting is not asked more often either.
     disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
     registered: integer('registered', { mode: 'boolean' }).notNull().default(false),
     cellId: integer('cell_id'),
@@ -174,7 +176,7 @@ export const limitRequests = sqliteTable(
   (t) => [index('limit_requests_user').on(t.userId)],
 );
 
-/** NANPA's NPA list (spec §4.4). Only geographic NPAs in service with a known region are offered. */
+/** NANPA's NPA list (spec §4.4). Only geographic NPAs with a known region are offered. */
 export const npas = sqliteTable('npas', {
   npa: text('npa').primaryKey(),
   // A US state / Canadian province / Caribbean country code (PA, ON, JM); '' when unknown.
@@ -202,7 +204,8 @@ export const exchanges = sqliteTable(
     firstSeenAt: integer('first_seen_at').notNull(),
     withdrawnAt: integer('withdrawn_at'),
   },
-  (t) => [index('exchanges_place').on(t.region, t.rateCenter), index('exchanges_npa').on(t.npa)],
+  // exchanges_rc: place search's prefix match on the rate center, on every key press.
+  (t) => [index('exchanges_place').on(t.region, t.rateCenter), index('exchanges_npa').on(t.npa), index('exchanges_rc').on(t.rateCenter)],
 );
 
 /** Rate centers: a pretty name and, where Local Calling Guide has them, coordinates (place search only, spec §4.4). */

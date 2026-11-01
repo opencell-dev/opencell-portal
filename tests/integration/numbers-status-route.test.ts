@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { users } from '@/db/schema';
+import { forgetCellNames } from '@/lib/numbers/cells';
 import { applyNanpa, readNanpaDir } from '@/lib/numbers/nanpa-refresh';
 import { getNumber } from '@/lib/numbers/ownership';
 import { clearQrFlash, takeQr } from '@/lib/numbers/qr-flash';
@@ -28,6 +29,7 @@ function user(name: string) {
 beforeEach(async () => {
   state.ctx = testCtx();
   clearQrFlash();
+  forgetCellNames();
   applyNanpa(state.ctx, readNanpaDir('tests/fixtures/nanpa'));
   ada = user('ada');
   bob = user('bob');
@@ -66,6 +68,22 @@ describe('GET /api/numbers/status', () => {
     const r = await status();
     expect(r.body.numbers[0]).toMatchObject({ number: A, label: 'Registered on cell Roof', tone: 'ok', terminal: '76ad' });
   });
+
+  it('a hung core: the answer within 3 s in all, the cards as they were, and it says so', async () => {
+    const ctx = state.ctx!;
+    ctx.core.simActivate(takeQr(ada.id, A, ctx.now())!.qr, 0x76ad0488);
+    ctx.core.simRegister(A, ctx.core.simAddCell('Roof', 'part15', 1));
+    ctx.clock.t += 6000;
+    state.who = ada;
+    await status(); // sees it registered
+    ctx.clock.t += 120_000; // the cell names are stale too
+    ctx.core.simDown('hang');
+    const t0 = Date.now();
+    const r = await status();
+    expect(Date.now() - t0).toBeLessThan(3500);
+    expect(r.body.unavailable).toBe(true);
+    expect(r.body.numbers[0]).toMatchObject({ number: A, label: 'Registered on cell Roof' });
+  }, 10_000);
 
   it('an expired number is gone from the answer (the card flips to Released)', async () => {
     state.ctx!.clock.t += 72 * 3600_000;

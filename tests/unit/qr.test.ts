@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { activationQrMail } from '@/lib/mail-templates';
-import { countdown, spacedNumber } from '@/lib/numbers/format';
+import { countdown, otherWindow, spacedNumber } from '@/lib/numbers/format';
 import { qrSvg } from '@/lib/qr';
 
 describe('qrSvg', () => {
@@ -24,6 +24,18 @@ describe('number display', () => {
     expect(countdown(30_000)).toBe('less than a minute');
     expect(countdown(0)).toBe('expired');
     expect(countdown(-5)).toBe('expired');
+  });
+});
+
+describe('otherWindow ("Other exchange in this area" for a place with hundreds)', () => {
+  const list = Array.from({ length: 30 }, (_, i) => String(i));
+  it('shows at most n, and walks round the list', () => {
+    expect(otherWindow(list, 0, 12)).toEqual({ shown: list.slice(0, 12), next: 12 });
+    expect(otherWindow(list, 24, 12)).toEqual({ shown: [...list.slice(24), ...list.slice(0, 6)], next: 6 });
+    expect(otherWindow(list.slice(0, 5), 3, 12)).toEqual({ shown: list.slice(0, 5), next: null });
+    expect(otherWindow([], 3, 12)).toEqual({ shown: [], next: null });
+    expect(otherWindow(list, -9, 12).shown).toEqual(list.slice(0, 12));
+    expect(otherWindow(list, Number.NaN, 12).shown).toEqual(list.slice(0, 12));
   });
 });
 

@@ -120,6 +120,28 @@ test('My numbers: the card goes waiting → activated → registered, live; rele
   await expect(page.getByTestId('get-number-card')).toContainText('2 of 3 left');
 });
 
+test('a number that leaves the core while its card is open: the card says Released, and is gone on reload (Review Focus)', async ({ page, context }, info) => {
+  await freshUser(page, info, 'Rex');
+  const url = await getLancasterNumber(page);
+  const number = decodeURIComponent(new URL(url).pathname.split('/')[2]);
+  await page.goto('/numbers');
+  const card = page.locator(`[data-testid="number-card"][data-number="${number}"]`);
+  await expect(card.getByTestId('number-state')).toHaveText(/^Waiting for activation/);
+  // Released in another tab: the first tab has only its polls to learn from.
+  const other = await context.newPage();
+  await other.goto('/numbers');
+  const there = other.locator(`[data-testid="number-card"][data-number="${number}"]`);
+  await there.getByText('Release', { exact: true }).click();
+  await there.getByRole('button', { name: 'Release this number' }).click();
+  await expect(there).toHaveCount(0);
+  await other.close();
+  await expect(card.getByTestId('number-state')).toHaveText('Released', { timeout: 10_000 });
+  await expect(card.getByRole('link', { name: 'Show QR' })).toHaveCount(0);
+  await page.reload();
+  await expect(card).toHaveCount(0);
+  await expect(page.getByTestId('get-number-card')).toContainText('3 of 3 left');
+});
+
 test('a subscriber gets a 404 on the admin pages for number limits', async ({ page }, info) => {
   await freshUser(page, info, 'Sue');
   const res = await page.goto('/admin/limits');

@@ -1,11 +1,14 @@
 import { eq } from 'drizzle-orm';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { CoreError } from '@/core/types';
 import { numbers, users } from '@/db/schema';
 import { listAudit } from '@/lib/audit';
+import { checkFree, drawFree } from '@/lib/numbers/browse';
 import { applyNanpa, readNanpaDir } from '@/lib/numbers/nanpa-refresh';
-import { capsOf, getNumber, listNumbers, releaseNumber, reissueNumber, syncDue, syncExpired, syncNumber } from '@/lib/numbers/ownership';
+import { capsOf, forgetGetting, getNumber, listNumbers, numberOf, releaseNumber, reissueNumber, syncAccount, syncDue, syncNumber, syncWaiting } from '@/lib/numbers/ownership';
 import { clearQrFlash, takeQr } from '@/lib/numbers/qr-flash';
 import { ownedNumbers } from '@/lib/owned-numbers';
+import { setLimit } from '@/lib/ratelimit';
 import { type TestCtx, testCtx } from '../helpers/ctx';
 
 const meta = { ip: '192.0.2.10' };
@@ -27,6 +30,7 @@ function user(name: string, limit = 3) {
 beforeEach(() => {
   ctx = testCtx();
   clearQrFlash();
+  forgetGetting();
   applyNanpa(ctx, readNanpaDir('tests/fixtures/nanpa'));
   ada = user('ada');
   bob = user('bob');
@@ -138,7 +142,7 @@ describe('expiry, sync, re-issue, release', () => {
     await get(ada, n(0));
     await get(bob, n(1));
     ctx.clock.t += 72 * 3600_000 + 1;
-    await syncExpired(ctx);
+    await syncWaiting(ctx, 0);
     expect(ctx.db.select().from(numbers).all()).toEqual([]);
   });
 
@@ -203,6 +207,7 @@ describe('expiry, sync, re-issue, release', () => {
     if (!r.ok) throw new Error(r.error);
     ctx.core.simActivate(r.token.qr, 1);
     expect(await releaseNumber(ctx, ada, N, meta)).toEqual({ ok: false, error: "This number is active on a terminal; it can't be released here." });
+    expect(numberOf(ctx, ada.userId, N)?.state).toBe('activated');
   });
 
   it('ownedNumbers reads the table', async () => {
@@ -219,5 +224,150 @@ describe('expiry, sync, re-issue, release', () => {
     await get();
     ctx.db.delete(users).where(eq(users.id, ada.userId)).run();
     expect(ctx.db.select().from(numbers).all()).toEqual([]);
+  });
+});
+
+describe('after the whole-branch review', () => {
+  it('a slow core: the number stays in flight until the core answers, so a retry makes no second sub.create and the cap holds', async () => {
+    vi.useFakeTimers();
+    try {
+      const real = ctx.core.subCreate.bind(ctx.core);
+      ctx.core.subCreate = async (a, num) => {
+        await new Promise((r) => setTimeout(r, 3500));
+        return real(a, num);
+      };
+      const first = get();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await first).toMatchObject({ ok: false, error: "The network didn't answer. Please try again in a minute." });
+      expect(listNumbers(ctx, ada.userId)).toEqual([]); // nothing half-written
+      expect(capsOf(ctx, ada.userId)).toMatchObject({ held: 1, unactivated: 1 }); // still counted
+      expect(await get()).toMatchObject({ ok: false, error: 'You already have this number.' });
+      await vi.advanceTimersByTimeAsync(600);
+      // It arrived after all: the row, the QR and the audit say so.
+      expect(listNumbers(ctx, ada.userId)).toHaveLength(1);
+      expect(takeQr(ada.id, N, ctx.now())).not.toBeNull();
+      expect(listAudit(ctx, 1)[0]).toMatchObject({ action: 'number.get', detail: expect.stringContaining('"late":true') });
+      expect(capsOf(ctx, ada.userId)).toMatchObject({ held: 1, unactivated: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a number whose token ran out is free for the caps and for others, with no sweep having run', async () => {
+    for (let i = 0; i < 3; i++) await get(ada, n(i));
+    ctx.clock.t += 72 * 3600_000;
+    expect(capsOf(ctx, ada.userId)).toMatchObject({ held: 0, unactivated: 0, canGet: true });
+    // Bob takes one: the stale row goes first, instead of "Someone just took that number".
+    expect(await get(bob, n(0))).toMatchObject({ ok: true });
+    expect(listNumbers(ctx, bob.userId).map((r) => r.number)).toEqual([n(0)]);
+    expect(listNumbers(ctx, ada.userId).map((r) => r.number)).toEqual([n(1), n(2)]);
+  });
+
+  it('a stale holder row with the core down: the network message, not "taken"', async () => {
+    await get();
+    ctx.clock.t += 72 * 3600_000;
+    ctx.core.simDown('refuse');
+    expect(await get(bob)).toMatchObject({ ok: false, error: "The network didn't answer. Please try again in a minute." });
+  });
+
+  it('a get that fails for want of the core does not use up the daily limit', async () => {
+    ctx.core.simDown('refuse');
+    for (let i = 0; i < 12; i++) await get(ada, n(i));
+    ctx.core.simDown(null);
+    expect(await get(ada, n(20))).toMatchObject({ ok: true });
+  });
+
+  it('asks at most once per 5 s even while sub.status fails, and says the core did not answer', async () => {
+    await get();
+    ctx.clock.t += 6000;
+    ctx.core.simDown('refuse');
+    expect(await syncAccount(ctx, ada.userId)).toMatchObject({ unavailable: true });
+    expect(await syncAccount(ctx, ada.userId)).toMatchObject({ unavailable: false }); // not asked again
+    ctx.core.simDown(null);
+    ctx.clock.t += 6000;
+    expect(await syncAccount(ctx, ada.userId)).toMatchObject({ unavailable: false, rows: [expect.objectContaining({ number: N })] });
+  });
+
+  it('a core saying rate_limited is logged, and keeps the row', async () => {
+    const r = await get();
+    if (!r.ok) throw new Error(r.error);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    ctx.core.subStatus = async () => {
+      throw new CoreError('rate_limited', 'slow down');
+    };
+    ctx.clock.t += 6000;
+    expect(await syncAccount(ctx, ada.userId)).toMatchObject({ unavailable: true });
+    expect(log.mock.calls.flat().join(' ')).toMatch(/sub\.status failed/);
+    log.mockRestore();
+  });
+
+  it('the sweep syncs every waiting number, so an activation reaches the directory without the owner looking', async () => {
+    const r = await get();
+    if (!r.ok) throw new Error(r.error);
+    await get(bob, n(1));
+    ctx.core.simActivate(r.token.qr, 1);
+    ctx.clock.t += 72 * 3600_000 + 1; // Bob's has run out; Ada's token is gone with the activation
+    expect(await syncWaiting(ctx, 0)).toBe(1);
+    expect(numberOf(ctx, ada.userId, N)?.state).toBe('activated');
+    expect(ctx.db.select().from(numbers).all()).toHaveLength(1);
+  });
+
+  it('the sweep stops at the first failure instead of hammering a limited core', async () => {
+    await get(ada, n(0));
+    await get(ada, n(1));
+    ctx.core.simDown('refuse');
+    const before = ctx.core.audit.length;
+    expect(await syncWaiting(ctx, 0)).toBe(0);
+    expect(ctx.core.audit.length).toBe(before); // gated before the audit, and only one was tried
+  });
+
+  it('a new terminal moves activatedAt (a QR from before the move is the one that was used)', async () => {
+    const r = await get();
+    if (!r.ok) throw new Error(r.error);
+    ctx.core.simActivate(r.token.qr, 0x11110000);
+    await syncDue(ctx, ada.userId, 0);
+    const t1 = numberOf(ctx, ada.userId, N)!.activatedAt;
+    const again = await reissueNumber(ctx, ada, N, meta);
+    if (!again.ok) throw new Error(again.error);
+    ctx.clock.t += 60_000;
+    ctx.core.simActivate(again.token.qr, 0x22220000);
+    await syncDue(ctx, ada.userId, 0);
+    expect(numberOf(ctx, ada.userId, N)!.activatedAt).toBe(t1! + 60_000);
+  });
+
+  it('re-issue is limited per account: the core has one bucket for everyone', async () => {
+    await get();
+    setLimit(ctx, 'number_reissue', 2);
+    expect(await reissueNumber(ctx, ada, N, meta)).toMatchObject({ ok: true });
+    expect(await reissueNumber(ctx, ada, N, meta)).toMatchObject({ ok: true });
+    expect(await reissueNumber(ctx, ada, N, meta)).toMatchObject({ ok: false, error: expect.stringMatching(/too often/) });
+  });
+});
+
+describe('the shortlist and the confirm check (browse.ts)', () => {
+  it('draws 8; limited per account', async () => {
+    setLimit(ctx, 'number_browse', 2);
+    expect(await drawFree(ctx, ada.userId, '+8831717464')).toMatchObject({ ok: true, numbers: expect.any(Array) });
+    expect(await checkFree(ctx, ada.userId, N)).toEqual({ ok: true, check: 'free' });
+    expect(await drawFree(ctx, ada.userId, '+8831717464')).toMatchObject({ ok: false, error: expect.stringMatching(/too many/i) });
+    expect(await checkFree(ctx, ada.userId, N)).toMatchObject({ ok: false, error: expect.stringMatching(/too many/i) });
+    expect(await drawFree(ctx, bob.userId, '+8831717464')).toMatchObject({ ok: true });
+  });
+
+  it('the shortlist has 8 numbers', async () => {
+    const r = await drawFree(ctx, ada.userId, '+8831717464');
+    if (!r.ok) throw new Error(r.error);
+    expect(r.numbers).toHaveLength(8);
+  });
+
+  it('says plainly when the core is down or rate-limited', async () => {
+    ctx.core.simDown('refuse');
+    expect(await drawFree(ctx, ada.userId, '+8831717464')).toMatchObject({ ok: false, error: "The network didn't answer. Please try again in a minute." });
+    expect(await checkFree(ctx, ada.userId, N)).toMatchObject({ ok: false, error: "The network didn't answer. Please try again in a minute." });
+    ctx.core.simDown(null);
+    ctx.core.numFree = async () => {
+      throw new CoreError('rate_limited', 'slow down');
+    };
+    expect(await drawFree(ctx, ada.userId, '+8831717464')).toMatchObject({ ok: false, error: expect.stringMatching(/busy/) });
   });
 });

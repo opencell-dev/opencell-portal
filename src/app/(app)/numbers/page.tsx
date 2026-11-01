@@ -15,7 +15,7 @@ export default async function Numbers() {
   const { user } = await requireUser();
   const ctx = appCtx();
   // Synced first (at most 3 s, P2 decision 3), so the page opens with what the core says now.
-  const status = await accountStatus(ctx, user.id);
+  const { numbers: status, unavailable } = await accountStatus(ctx, user.id);
   const caps = capsOf(ctx, user.id);
   const cards = status.map((s) => ({ number: s.number, place: placeOfNumber(ctx, s.number) }));
   return (
@@ -23,7 +23,7 @@ export default async function Numbers() {
       <h1 className="text-2xl font-semibold">My numbers</h1>
       {status.length === 0 && <p className="text-slate-600 dark:text-slate-300">Hello {user.name}. You have no numbers yet.</p>}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <LiveNumbers key={cards.map((c) => c.number).join(',')} cards={cards} initial={status} fake={ctx.config.core === 'fake'} />
+        <LiveNumbers key={cards.map((c) => c.number).join(',')} cards={cards} initial={status} unavailable={unavailable} fake={ctx.config.core === 'fake'} />
         <GetNumberCard held={caps.held} limit={caps.limit} why={caps.why} pending={pendingRequestOf(ctx, user.id) !== undefined} />
       </div>
     </div>
