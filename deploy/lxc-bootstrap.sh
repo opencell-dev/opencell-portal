@@ -67,7 +67,7 @@ systemctl daemon-reload
 systemctl enable oc-portal.service
 systemctl enable --now oc-portal-backup.timer
 # The weekly NANPA refresh (portal spec §4.4); the first import is run by hand
-# after the first deploy (deploy/README or the P2 runbook: oc-portal-admin nanpa-refresh).
+# after the first deploy (the runbook at the top of oc-portal-nanpa.timer).
 systemctl enable --now oc-portal-nanpa.timer
 if [ "$UNITS_CHANGED" -eq 1 ]; then
   systemctl try-restart oc-portal.service oc-portal-backup.timer oc-portal-nanpa.timer

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { addPasskey, addPasskeyDevice, altchaReady, e2eDb, liftLimits, mailedLink, signUpAndVerify, uniqueEmail, watchCsp } from './helpers';
+import { addPasskey, addPasskeyDevice, altchaReady, e2eDb, liftLimits, mailedLink, portalAdmin, signUpAndVerify, uniqueEmail, watchCsp } from './helpers';
 
 test.beforeEach(() => liftLimits());
 
@@ -110,4 +110,48 @@ test('the directory and every signed-in page need a session', async ({ page }) =
     await page.goto(path);
     await expect(page, path).toHaveURL(/\/sign-in$/);
   }
+});
+
+// ---- Portal P2: numbers (spec §10, §13) ----
+
+test('the number pages need a session; their JSON answers 401 signed out', async ({ page, request }) => {
+  for (const path of ['/numbers/new', '/numbers/new/%2B8831717464', '/numbers/new/confirm?number=%2B883171746412345', '/numbers/%2B883171746412345/activate', '/admin/limits']) {
+    await page.goto(path);
+    await expect(page, path).toHaveURL(/\/sign-in$/);
+  }
+  for (const path of ['/api/places?q=lancaster', '/api/numbers/status']) {
+    const res = await request.get(path);
+    expect(res.status(), path).toBe(401);
+    expect(res.headers()['cache-control'], path).toBe('no-store');
+  }
+});
+
+test('number actions posted from another origin are refused', async ({ request }) => {
+  for (const path of ['/numbers/new/confirm?number=%2B883171746412345', '/numbers/%2B883171746412345/activate', '/numbers', '/admin/limits']) {
+    const res = await request.post(path, { headers: { Origin: 'https://evil.example', 'Next-Action': '00' }, form: { number: '+883171746412345' } });
+    expect(res.status(), path).toBe(403);
+  }
+});
+
+test('no CSP violation and no third-party request through get-a-number, the QR and My numbers; the directory is noindex', async ({ page }, info) => {
+  portalAdmin('nanpa-refresh', '--dir', 'tests/fixtures/nanpa');
+  const violations = await watchCsp(page);
+  const foreign: string[] = [];
+  page.on('request', (r) => {
+    if (!r.url().startsWith('http://localhost:3100/') && !r.url().startsWith('data:')) foreign.push(r.url());
+  });
+  await signUpAndVerify(page, 'CspNum', uniqueEmail(info, 'cspnum'));
+  await page.goto('/numbers/new');
+  await page.getByLabel(/A city, a state/).fill('york');
+  await page.getByRole('link', { name: /^York, PA/ }).click();
+  await page.getByRole('list', { name: 'Free numbers' }).getByRole('link').first().click();
+  await page.getByRole('button', { name: 'Get this number' }).click();
+  await expect(page.getByTestId('qr').locator('svg')).toBeVisible();
+  await page.goto('/numbers');
+  await expect(page.getByTestId('number-card')).toHaveCount(1);
+  await page.goto('/calls');
+  await page.goto('/directory');
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
+  expect(violations).toEqual([]);
+  expect(foreign).toEqual([]);
 });
