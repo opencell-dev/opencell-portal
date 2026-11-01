@@ -114,6 +114,20 @@ describe.skipIf(!CORE_DIR)('the cell certificate chain on a real oc-core', () =>
     await expect(dial(n.chain, n.key, n.cellId)).rejects.toThrow(/HELLO refused|closed the link/);
   });
 
+  it('a cell revoked at the core while a CSR is in flight: the real core refuses the pin, so no bundle', async () => {
+    const req = submitRequest(ctx, alice, GOOD, META);
+    if (!req.ok) throw new Error(req.error);
+    const a = await approveRequest(ctx, root, req.id, { coreId: 'core1', anchor: 3, boardRole: 'bs' }, META);
+    if (!a.ok) throw new Error(a.error);
+    const token = makeSetupToken(ctx, a.nodeId, null).token;
+    // The core has it; the portal's row has not caught up.
+    await core.core.cellRevoke(0, a.cellId);
+    const r = await issueForToken(ctx, token, makeCsr(cellPki).csr, { ip: '198.51.100.200' });
+    expect(r.status).toBe(410);
+    expect(r.body).not.toContain('BEGIN CERTIFICATE');
+    expect((await core.core.cellStatus(0, a.cellId))[0]).toMatchObject({ revoked: true, certFpr: null });
+  });
+
   it('with cell_issuers, takes the listed intermediate and refuses another, as production will', async () => {
     const fingerprint = (crt: string) => execFileSync('openssl', ['x509', '-in', crt, '-noout', '-fingerprint', '-sha256']).toString().split('=')[1].trim().replaceAll(':', '').toLowerCase();
     const strict = await startRealCore(CORE_DIR, { pki, cellListen: true, extra: [`cell_issuers = root,${fingerprint(ica.crt)}`] });
