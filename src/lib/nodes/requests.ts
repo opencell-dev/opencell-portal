@@ -27,7 +27,8 @@ export const NOT_ON_THIS_SITE = 'Base stations are handled on the subscriber por
 
 const NO_REQUEST = 'You have no such request.';
 
-const plain = (min: number, max: number, what: string) =>
+/** One line of plain text, `min` to `max` characters; what it is goes in the messages. */
+export const plain = (min: number, max: number, what: string) =>
   z
     .string(`Please enter the ${what}.`)
     .max(max * 4, { error: `Please keep the ${what} under ${max} characters.`, abort: true })
@@ -50,7 +51,7 @@ export const requestSchema = pinSchema.extend({
   agreementVersion: z.literal(AGREEMENT_VERSION, 'The agreement has changed: please read it again.'),
 });
 
-const messageSchema = z
+export const messageSchema = z
   .string('Please write a message.')
   .max(8000, { error: 'Please keep it under 2000 characters.', abort: true })
   .trim()

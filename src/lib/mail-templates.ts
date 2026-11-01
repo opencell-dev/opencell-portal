@@ -158,3 +158,10 @@ export function nodeCertMail(name: string, siteName: string, expiresAt: number, 
       `The node's old certificate, if it had one, no longer works.\n\nIf you didn't run the setup command, tell us at once: opencell@k4ozi.com.\n\nYour node: ${link}${sig(origin)}`,
   };
 }
+
+export function nodeRetireMail(adminName: string, who: string, nodeId: number, siteName: string, note: string, link: string, origin: string): Template {
+  return {
+    subject: `OpenCell: an operator is retiring node ${nodeId}`,
+    text: `Hello ${adminName},\n\n${who} is retiring node ${nodeId} (${siteName}):\n\n${note}\n\nRevoke its cell when it is time: ${link}${sig(origin)}`,
+  };
+}

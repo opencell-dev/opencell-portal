@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -92,13 +92,13 @@ beforeEach(async () => {
 
 function run(cmd: string, env: Record<string, string> = {}): Promise<{ code: number; out: string }> {
   return new Promise((done) => {
-    const child = spawn('bash', ['-c', cmd], {
+    const child: ChildProcess = spawn('bash', ['-c', cmd], {
       env: { PATH: `${STUBS}:${process.env.PATH}`, OC_STUB_LOG: log, OC_SETUP_TEST: '1', OC_SETUP_PREFIX: root, OC_SETUP_SKIP_APT: '1', ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
-    child.stdout.on('data', (d: Buffer) => (out += d));
-    child.stderr.on('data', (d: Buffer) => (out += d));
+    child.stdout?.on('data', (d: Buffer) => (out += d));
+    child.stderr?.on('data', (d: Buffer) => (out += d));
     child.on('close', (code) => done({ code: code ?? -1, out }));
   });
 }
